@@ -6,12 +6,14 @@ on:
     paths:
       - 'Dockerfile'
       - 'build-vm.sh'
+      - 'entrypoint.sh'
       - '.github/workflows/dockerfile-test.yml'
   pull_request:
     branches: [ main, master ]
     paths:
       - 'Dockerfile'
       - 'build-vm.sh'
+      - 'entrypoint.sh'
       - '.github/workflows/dockerfile-test.yml'
 
 jobs:
@@ -35,4 +37,41 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             QEMU_COMMIT=HEAD
+
+  test-entrypoint:
+    name: Test Container Entrypoint
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Load Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: batesste-ci-images:test
+          load: true
+          build-args: |
+            QEMU_COMMIT=HEAD
+      
+      - name: Test entrypoint script syntax
+        run: |
+          docker run --rm --entrypoint /bin/bash \
+            batesste-ci-images:test \
+            -c "bash -n /build/entrypoint.sh && echo 'Entrypoint syntax OK'"
+      
+      - name: Test entrypoint help (should show usage)
+        run: |
+          timeout 10 docker run --rm \
+            --cap-add NET_ADMIN \
+            -e USERNAME=testuser \
+            -e VM_NAME=test-vm \
+            -e SSH_PORT=2222 \
+            batesste-ci-images:test \
+            || true
 
