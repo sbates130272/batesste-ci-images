@@ -1,0 +1,43 @@
+{
+  "version": "0.2",
+  "language": "en",
+  "words": [
+    "batesste",
+    "qemu",
+    "slirp",
+    "cloudinit",
+    "cloud-init",
+    "qcow",
+    "qcow2",
+    "systemd",
+    "libslirp",
+    "meson",
+    "ninja",
+    "pixman",
+    "glib",
+    "gitlab",
+    "softmmu",
+    "x86",
+    "amd64",
+    "aarch64",
+    "riscv64",
+    "virtio",
+    "nvme",
+    "vfio",
+    "pcie",
+    "pci",
+    "gen-vm",
+    "run-vm",
+    "hadolint",
+    "shellcheck",
+    "cspell"
+  ],
+  "ignoreWords": [],
+  "ignorePaths": [
+    "node_modules/**",
+    ".git/**",
+    "*.min.js",
+    "*.min.css"
+  ]
+}
+

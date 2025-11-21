@@ -1,0 +1,17 @@
+[Unit]
+Description=Build QEMU VM Image Daily
+After=network.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/batesste-ci-images/.env
+WorkingDirectory=/opt/batesste-ci-images
+ExecStart=/usr/bin/docker run --rm \
+    -v /home/stebates/Projects/qemu-minimal:/build/qemu-minimal \
+    -v /opt/batesste-ci-images/output:/output \
+    -v /opt/batesste-ci-images/.env:/build/.env:ro \
+    --name batesste-ci-vm-builder \
+    batesste-ci-images:latest
+StandardOutput=journal
+StandardError=journal
+

@@ -1,0 +1,9 @@
+output/
+.env
+*.md
+.git/
+.gitignore
+build-vm.service
+build-vm.timer
+env.example
+
