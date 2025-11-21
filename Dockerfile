@@ -46,19 +46,23 @@ RUN apt-get update && apt-get install -y \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy build script
+# Copy scripts
 COPY build-vm.sh /build/build-vm.sh
-RUN chmod +x /build/build-vm.sh
+COPY entrypoint.sh /build/entrypoint.sh
+RUN chmod +x /build/build-vm.sh /build/entrypoint.sh
 
 # Set default environment variables
 # Note: VM_NAME defaults to ${USERNAME}-ci-vm in build-vm.sh
 ENV USERNAME=batesste
 ENV PASSWORD=changeme
 ENV QEMU_PATH=/opt/qemu/bin/
+ENV SSH_PORT=2222
+ENV VCPUS=2
+ENV VMEM=4096
 
 # Create output directory
 RUN mkdir -p /output
 
-# Run build script
-CMD ["/build/build-vm.sh"]
+# Set entrypoint
+ENTRYPOINT ["/build/entrypoint.sh"]
 
