@@ -107,6 +107,11 @@ Edit the `.env` file to customize:
 - `QEMU_COMMIT`: QEMU commit hash (set at build time via `--build-arg`)
 - `QEMU_MINIMAL_COMMIT`: qemu-minimal commit hash for immutable builds
 - `QEMU_MINIMAL_REPO`: Repository URL if cloning qemu-minimal (optional)
+- `REGISTRY`: OCI registry URL (default: `docker.io` for Docker Hub)
+- `REGISTRY_IMAGE`: Image name in registry (default: `batesste-ci-images`)
+- `REGISTRY_USERNAME`: Registry username for authentication
+- `REGISTRY_PASSWORD`: Registry password or token for authentication
+- `IMAGE_TAG`: Image tag to use (default: `latest`)
 
 ### Immutable Builds
 
@@ -146,17 +151,44 @@ To set up automated daily rebuilds at 3am:
 ```bash
 sudo cp build-vm.service /etc/systemd/system/
 sudo cp build-vm.timer /etc/systemd/system/
+sudo cp build-and-push.sh /opt/batesste-ci-images/
+sudo chmod +x /opt/batesste-ci-images/build-and-push.sh
 sudo mkdir -p /opt/batesste-ci-images/output
 sudo mkdir -p /etc/batesste-ci-images
 sudo cp .env /etc/batesste-ci-images/.env
 ```
 
-### 2. Update Service File Paths
+### 2. Configure Registry Push (Optional)
+
+To push Docker images to an OCI registry (e.g., Docker Hub), edit
+`/etc/batesste-ci-images/.env` and add:
+
+```bash
+REGISTRY=docker.io
+REGISTRY_IMAGE=your-username/batesste-ci-images
+REGISTRY_USERNAME=your-username
+REGISTRY_PASSWORD=your-password-or-token
+IMAGE_TAG=latest
+```
+
+**Security Note**: For production, consider using Docker credential helpers or
+storing the password in a secure location with restricted permissions (e.g.,
+`/etc/batesste-ci-images/.env` with `chmod 600`).
+
+For Docker Hub, you can use a Personal Access Token instead of your password:
+1. Go to Docker Hub → Account Settings → Security
+2. Create a new access token
+3. Use the token as `REGISTRY_PASSWORD`
+
+### 3. Update Service File Paths
 
 Edit `/etc/systemd/system/build-vm.service` to match your system paths if
-needed.
+needed. The service will:
+1. Build the Docker image using `build-and-push.sh`
+2. Push the image to the configured registry (if credentials are provided)
+3. Run the container to build the VM image
 
-### 3. Enable and Start Timer
+### 4. Enable and Start Timer
 
 ```bash
 sudo systemctl daemon-reload
@@ -164,7 +196,7 @@ sudo systemctl enable build-vm.timer
 sudo systemctl start build-vm.timer
 ```
 
-### 4. Check Timer Status
+### 5. Check Timer Status
 
 ```bash
 sudo systemctl status build-vm.timer
