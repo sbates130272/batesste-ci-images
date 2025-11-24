@@ -2,14 +2,9 @@
 
 This repository contains a collection of Docker images for CI/CD and
 development workflows. Each image is self-contained in its own directory
-with its own Dockerfile and supporting scripts.
-
-## Overview
-
-This repository supports multiple Docker images, each in its own directory.
-Each image may have different purposes and requirements. See the
-individual image directories for specific documentation and usage
-instructions.
+with its own Dockerfile and supporting scripts. We also include a systemd
+directory that enables a systemd service based flow for the automatic updating
+and pushing of these images.
 
 ## Available Images
 
@@ -53,6 +48,12 @@ Or build a specific image:
 
 ```bash
 ./build-and-push.sh qemu-libvfio-user
+```
+
+To specify a password file for registry authentication:
+
+```bash
+./build-and-push.sh qemu-libvfio-user --password-file /path/to/password.txt
 ```
 
 You can also build images directly with Docker:
@@ -101,11 +102,21 @@ Common configuration variables:
 
 - `REGISTRY`: OCI registry URL (default: `docker.io` for Docker Hub)
 - `REGISTRY_IMAGE`: Base image name in registry (default: `batesste-ci-images`)
-  - Final image names will be `{REGISTRY_IMAGE}-{image-directory}` (e.g.,
-    `batesste-ci-images-qemu-libvfio-user`)
-- `REGISTRY_USERNAME`: Registry username for authentication
+  - Final image names will be `{REGISTRY_USERNAME}/{REGISTRY_IMAGE}-{image-directory}`
+    (e.g., `username/batesste-ci-images-qemu-libvfio-user`)
+  - If `REGISTRY_IMAGE` contains a `/`, it's used as-is
+  - If `REGISTRY_USERNAME` is set, it's prepended automatically
+- `REGISTRY_USERNAME`: Registry username for authentication (required for Docker Hub)
 - `REGISTRY_PASSWORD`: Registry password or token for authentication
+  - Can be a direct password or a path to a file containing the password
+- `REGISTRY_PASSWORD_FILE`: Alternative way to specify password file path
 - `IMAGE_TAG`: Image tag to use (default: `latest`)
+- `WORKDIR`: Working directory for builds (defaults to script directory)
+
+The `build-and-push.sh` script also supports:
+- `--password-file FILE`: Command-line option to specify password file
+- Automatically reads `.env` from script directory, current directory, or
+  `/etc/batesste-ci-images/.env` (in that order)
 
 Image-specific variables are documented in each image's directory. For
 example, the `qemu-libvfio-user` image may use variables like `QEMU_COMMIT`,
