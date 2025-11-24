@@ -29,4 +29,3 @@ jobs:
       - name: GitHub Spellcheck Action
         uses: rojopolis/spellcheck-github-actions@0.48.0
         continue-on-error: true
-

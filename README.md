@@ -1,146 +1,118 @@
 # batesste-ci-images
 
-This repository contains Docker-based tooling to build QEMU from source and
-create VM images using the qemu-minimal repository.
+This repository contains a collection of Docker images for CI/CD and
+development workflows. Each image is self-contained in its own directory
+with its own Dockerfile and supporting scripts.
 
 ## Overview
 
-The Dockerfile builds:
-- QEMU from the latest Git tag with slirp-based networking support
-- A VM image using qemu-minimal's gen-vm script with cloud-init
-- An entrypoint that runs the VM inside the container with SSH access
+This repository supports multiple Docker images, each in its own directory.
+Each image may have different purposes and requirements. See the
+individual image directories for specific documentation and usage
+instructions.
+
+## Available Images
+
+- **qemu-libvfio-user**: QEMU build with libvfio-user support for VM images
+  using qemu-minimal. See `qemu-libvfio-user/` for details.
+
+## Project Structure
+
+```
+batesste-ci-images/
+├── qemu-libvfio-user/     # QEMU libvfio-user image
+│   ├── Dockerfile
+│   ├── build-vm.sh
+│   └── entrypoint.sh
+├── build-and-push.sh      # Script to build and push all images
+├── env.example            # Example environment configuration
+└── README.md
+```
 
 ## Prerequisites
 
 - Docker installed and running
-- Access to the qemu-minimal repository (expected at
-  `/home/stebates/Projects/qemu-minimal`)
-- Systemd (for automated daily rebuilds)
+- Systemd (for automated daily rebuilds, optional)
+- Additional prerequisites may be required per image (see individual
+  image documentation)
 
 ## Quick Start
 
-### 1. Build the Docker Image
+### 1. Build Docker Images
 
-Build with a specific QEMU commit hash for reproducibility:
-
-```bash
-# Get latest QEMU commit hash
-QEMU_COMMIT=$(git ls-remote https://gitlab.com/qemu-project/qemu.git HEAD | cut -f1)
-
-# Build with specific commit
-docker build --build-arg QEMU_COMMIT=${QEMU_COMMIT} \
-  -t batesste-ci-images:latest .
-```
-
-Or use HEAD (latest) for development:
+To build all images at once, use the `build-and-push.sh` script:
 
 ```bash
-docker build -t batesste-ci-images:latest .
+./build-and-push.sh
 ```
+
+Or build a specific image:
+
+```bash
+./build-and-push.sh qemu-libvfio-user
+```
+
+You can also build images directly with Docker:
+
+```bash
+docker build -f <image-directory>/Dockerfile \
+  -t batesste-ci-images-<image-directory>:latest \
+  <image-directory>
+```
+
+Each image may support different build arguments. See the individual image
+documentation for details.
 
 ### 2. Configure Environment Variables
 
-Copy the example environment file and customize:
+Some images may require environment configuration. Copy the example
+environment file and customize as needed:
 
 ```bash
 cp env.example .env
-# Edit .env with your desired VM_NAME, USERNAME, PASSWORD, and commit hashes
+# Edit .env with your desired configuration
 ```
 
-### 3. Run the VM Container
+Note: Not all images require environment configuration. Check individual
+image documentation for requirements.
 
-The container will automatically build the VM image if it doesn't exist and
-then start the VM with SSH access:
+### 3. Using Images
 
-```bash
-docker run -d --name batesste-ci-vm \
-  --cap-add NET_ADMIN \
-  -p 2222:2222 \
-  -v /home/stebates/Projects/qemu-minimal:/build/qemu-minimal \
-  -v $(pwd)/output:/output \
-  -v $(pwd)/.env:/build/.env:ro \
-  batesste-ci-images:latest
-```
+Each image has its own purpose and usage. See the individual image
+directories for specific usage instructions. Common patterns include:
 
-**Note:** For better performance, you can enable KVM acceleration by adding
-`--device /dev/kvm` and `--privileged` flags, but this is optional. The VM
-will run with TCG emulation if KVM is not available.
+- Running containers with specific entrypoints
+- Building artifacts or images
+- Running CI/CD workflows
+- Development environments
 
-### 4. Connect to the VM via SSH
-
-Once the container is running, you can SSH into the VM:
-
-```bash
-ssh -p 2222 batesste@localhost
-# Password: changeme (or your configured password)
-```
-
-The SSH port can be configured via the `SSH_PORT` environment variable in
-your `.env` file. Make sure to map the port correctly in your `docker run`
-command (e.g., `-p 2222:2222` maps host port 2222 to container port 2222).
-
-### 5. Build VM Image Only (Without Running)
-
-If you only want to build the VM image without running it:
-
-```bash
-docker run --rm \
-  -v /home/stebates/Projects/qemu-minimal:/build/qemu-minimal \
-  -v $(pwd)/output:/output \
-  -v $(pwd)/.env:/build/.env:ro \
-  --entrypoint /build/build-vm.sh \
-  batesste-ci-images:latest
-```
-
-The VM image will be created in the `output/` directory.
+Refer to each image's documentation for detailed usage examples.
 
 ## Configuration
 
-Edit the `.env` file to customize:
+The `env.example` file provides example environment variables that may be
+used by various images. Not all images require all variables. See
+individual image documentation for specific requirements.
 
-- `USERNAME`: Username for the VM (default: `batesste`)
-- `VM_NAME`: Name of the VM image (default: `${USERNAME}-ci-vm`, e.g., `batesste-ci-vm`)
-- `PASSWORD`: Password for the VM user (default: `changeme`)
-- `SSH_PORT`: SSH port for VM access (default: `2222`)
-- `VCPUS`: Number of virtual CPUs (default: `2`)
-- `VMEM`: VM memory in MB (default: `4096`)
-- `QEMU_COMMIT`: QEMU commit hash (set at build time via `--build-arg`)
-- `QEMU_MINIMAL_COMMIT`: qemu-minimal commit hash for immutable builds
-- `QEMU_MINIMAL_REPO`: Repository URL if cloning qemu-minimal (optional)
+Common configuration variables:
+
 - `REGISTRY`: OCI registry URL (default: `docker.io` for Docker Hub)
-- `REGISTRY_IMAGE`: Image name in registry (default: `batesste-ci-images`)
+- `REGISTRY_IMAGE`: Base image name in registry (default: `batesste-ci-images`)
+  - Final image names will be `{REGISTRY_IMAGE}-{image-directory}` (e.g.,
+    `batesste-ci-images-qemu-libvfio-user`)
 - `REGISTRY_USERNAME`: Registry username for authentication
 - `REGISTRY_PASSWORD`: Registry password or token for authentication
 - `IMAGE_TAG`: Image tag to use (default: `latest`)
 
+Image-specific variables are documented in each image's directory. For
+example, the `qemu-libvfio-user` image may use variables like `QEMU_COMMIT`,
+`VM_NAME`, `USERNAME`, etc.
+
 ### Immutable Builds
 
-For reproducible builds, specify commit hashes:
-
-1. **QEMU Commit**: Set via `--build-arg QEMU_COMMIT=<hash>` when building
-   the Docker image
-
-2. **qemu-minimal Commit**: Set `QEMU_MINIMAL_COMMIT` in `.env` file. The
-   script will checkout this commit before building the VM.
-
-Example `.env`:
-
-```bash
-VM_NAME=batesste-ci-vm
-USERNAME=batesste
-PASSWORD=changeme
-QEMU_MINIMAL_COMMIT=abc123def456...
-```
-
-To get the latest commit hash:
-
-```bash
-# QEMU
-git ls-remote https://gitlab.com/qemu-project/qemu.git HEAD | cut -f1
-
-# qemu-minimal (if you have it cloned)
-cd /path/to/qemu-minimal && git rev-parse HEAD
-```
+For reproducible builds, images may support build arguments or environment
+variables to pin specific versions or commit hashes. See individual image
+documentation for details on how to configure immutable builds.
 
 ## Automated Daily Rebuilds
 
@@ -171,6 +143,12 @@ REGISTRY_PASSWORD=your-password-or-token
 IMAGE_TAG=latest
 ```
 
+Note: When using `build-and-push.sh`, images will be tagged as
+`{REGISTRY}/{REGISTRY_IMAGE}-{image-directory}:{IMAGE_TAG}`. For example,
+with `REGISTRY_IMAGE=batesste-ci-images` and `IMAGE_TAG=latest`, the
+qemu-libvfio-user image will be tagged as
+`docker.io/batesste-ci-images-qemu-libvfio-user:latest`.
+
 **Security Note**: For production, consider using Docker credential helpers or
 storing the password in a secure location with restricted permissions (e.g.,
 `/etc/batesste-ci-images/.env` with `chmod 600`).
@@ -184,9 +162,9 @@ For Docker Hub, you can use a Personal Access Token instead of your password:
 
 Edit `/etc/systemd/system/build-vm.service` to match your system paths if
 needed. The service will:
-1. Build the Docker image using `build-and-push.sh`
-2. Push the image to the configured registry (if credentials are provided)
-3. Run the container to build the VM image
+1. Build the Docker image(s) using `build-and-push.sh`
+2. Push the image(s) to the configured registry (if credentials are provided)
+3. Optionally run containers or build artifacts (image-specific)
 
 ### 4. Enable and Start Timer
 
@@ -217,77 +195,51 @@ Check logs:
 sudo journalctl -u build-vm.service -f
 ```
 
-## Output
+## Image-Specific Documentation
 
-The VM images are created in the output directory:
-- `{VM_NAME}.qcow2` - The VM disk image
-- `{VM_NAME}-backing.qcow2` - The backing file (if using backing files)
+Each image directory contains its own documentation and may have different:
+- Build requirements and arguments
+- Runtime requirements and capabilities
+- Output formats and locations
+- Usage patterns and examples
 
-Commit hashes used for the build are saved in the container at:
-- `/build/qemu-commit.txt` - QEMU commit hash
-- `/build/qemu-minimal-commit.txt` - qemu-minimal commit hash (if specified)
+Refer to the README or documentation in each image directory for specific
+details.
 
-These can be copied out of the container for verification and reproducibility.
+## Adding New Images
 
-## Running the VM Container
+To add a new image:
 
-The container entrypoint automatically:
-1. Checks if the VM image exists, builds it if needed
-2. Starts the VM with QEMU
-3. Exposes SSH access on the configured port
+1. Create a new directory (e.g., `my-new-image/`)
+2. Add a `Dockerfile` in that directory (required)
+3. Add any supporting scripts or files as needed (e.g., `entrypoint.sh`,
+   `build.sh`, etc.)
+4. Add documentation (README.md) in the image directory describing:
+   - What the image does
+   - Build requirements and arguments
+   - Usage examples
+   - Configuration options
+5. Update this top-level README to list the new image in the "Available
+   Images" section
+6. The `build-and-push.sh` script will automatically discover and build it
 
-### Container Requirements
+The image directory name will be used as part of the Docker image tag:
+`{REGISTRY_IMAGE}-{image-directory}:{IMAGE_TAG}`
 
-- **Network**: The container needs `NET_ADMIN` capability for port forwarding
-- **KVM (Optional)**: For better performance, add `--device /dev/kvm` and run with
-  `--privileged` or appropriate capabilities. Without KVM, the VM runs with TCG
-  emulation (slower but works everywhere).
+### Image Directory Structure
 
-### Example: Running with KVM
+Each image directory should contain:
+- `Dockerfile` (required) - The Docker image definition
+- Supporting scripts (optional) - Scripts used by the image
+- Documentation (recommended) - README.md or other docs explaining usage
 
-```bash
-docker run -d --name my-vm \
-  --privileged \
-  --device /dev/kvm \
-  -p 2222:2222 \
-  -v /home/stebates/Projects/qemu-minimal:/build/qemu-minimal \
-  -v $(pwd)/output:/output \
-  -v $(pwd)/.env:/build/.env:ro \
-  batesste-ci-images:latest
+Example structure:
+
 ```
-
-### Example: Running without KVM (TCG emulation)
-
-```bash
-docker run -d --name my-vm \
-  --cap-add NET_ADMIN \
-  -p 2222:2222 \
-  -v /home/stebates/Projects/qemu-minimal:/build/qemu-minimal \
-  -v $(pwd)/output:/output \
-  -v $(pwd)/.env:/build/.env:ro \
-  batesste-ci-images:latest
+my-new-image/
+├── Dockerfile
+├── entrypoint.sh      # Optional
+├── build.sh           # Optional
+└── README.md          # Recommended
 ```
-
-### Stopping the VM Container
-
-```bash
-docker stop my-vm
-docker rm my-vm
-```
-
-## QEMU Build Details
-
-The Dockerfile builds QEMU with:
-- Target: x86_64-softmmu (for qemu-system-x86_64)
-- Slirp networking support enabled
-- Dynamic linking (for compatibility)
-- Installed to `/opt/qemu/bin/` in the container
-
-## Notes
-
-- The qemu-minimal repository is mounted read-only into the container
-- The output directory should be writable by the Docker user
-- The build process generates an SSH key if one doesn't exist
-- Cloud-init is used to configure the VM with the specified username and
-  password
 
