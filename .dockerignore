@@ -3,7 +3,6 @@ output/
 *.md
 .git/
 .gitignore
-build-vm.service
-build-vm.timer
+systemd/
 env.example
 

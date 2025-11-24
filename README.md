@@ -24,6 +24,9 @@ batesste-ci-images/
 │   ├── Dockerfile
 │   ├── build-vm.sh
 │   └── entrypoint.sh
+├── systemd/                # Systemd service files
+│   ├── build-vm.service
+│   └── build-vm.timer
 ├── build-and-push.sh      # Script to build and push all images
 ├── env.example            # Example environment configuration
 └── README.md
@@ -121,8 +124,8 @@ To set up automated daily rebuilds at 3am:
 ### 1. Install Service Files
 
 ```bash
-sudo cp build-vm.service /etc/systemd/system/
-sudo cp build-vm.timer /etc/systemd/system/
+sudo cp systemd/build-vm.service /etc/systemd/system/
+sudo cp systemd/build-vm.timer /etc/systemd/system/
 sudo cp build-and-push.sh /opt/batesste-ci-images/
 sudo chmod +x /opt/batesste-ci-images/build-and-push.sh
 sudo mkdir -p /opt/batesste-ci-images/output
