@@ -1,0 +1,4 @@
+# Ignore any PA token files.
+*.token
+# Ignore the .env file.
+.env

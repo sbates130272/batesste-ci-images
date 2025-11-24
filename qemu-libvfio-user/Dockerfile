@@ -53,8 +53,9 @@ RUN chmod +x /build/build-vm.sh /build/entrypoint.sh
 
 # Set default environment variables
 # Note: VM_NAME defaults to ${USERNAME}-ci-vm in build-vm.sh
+# Note: PASSWORD should be provided at runtime via environment variable
+#       (defaults to 'changeme' in scripts if not set)
 ENV USERNAME=batesste
-ENV PASSWORD=changeme
 ENV QEMU_PATH=/opt/qemu/bin/
 ENV SSH_PORT=2222
 ENV VCPUS=2
