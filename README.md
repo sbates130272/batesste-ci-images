@@ -10,6 +10,9 @@ and pushing of these images.
 
 - **qemu-libvfio-user**: QEMU build with libvfio-user support for VM images
   using qemu-minimal. See `qemu-libvfio-user/` for details.
+- **ubuntu-kernel-build**: Ubuntu-based image with tools for building Linux
+  kernels and out-of-tree kernel modules. See `ubuntu-kernel-build/` for
+  details.
 
 ## Project Structure
 
@@ -19,6 +22,9 @@ batesste-ci-images/
 │   ├── Dockerfile
 │   ├── build-vm.sh
 │   └── entrypoint.sh
+├── ubuntu-kernel-build/   # Kernel build environment
+│   ├── Dockerfile
+│   └── README.md
 ├── systemd/                # Systemd service files
 │   ├── build-vm.service
 │   └── build-vm.timer
