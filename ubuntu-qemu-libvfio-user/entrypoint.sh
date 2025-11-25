@@ -2,7 +2,8 @@
 #
 # entrypoint.sh
 #
-# Entrypoint script to build VM if needed and run it with SSH access
+# Entrypoint script to run VM with SSH access
+# Note: VM image should be built during Dockerfile build or mounted at runtime
 #
 
 set -e
@@ -16,9 +17,7 @@ fi
 # Set defaults if not provided
 USERNAME=${USERNAME:-batesste}
 VM_NAME=${VM_NAME:-${USERNAME}-ci-vm}
-PASSWORD=${PASSWORD:-changeme}
 QEMU_PATH=${QEMU_PATH:-/opt/qemu/bin/}
-QEMU_MINIMAL_PATH=${QEMU_MINIMAL_PATH:-/build/qemu-minimal}
 SSH_PORT=${SSH_PORT:-2222}
 VCPUS=${VCPUS:-2}
 VMEM=${VMEM:-4096}
@@ -29,18 +28,18 @@ echo "Username: ${USERNAME}"
 echo "SSH Port: ${SSH_PORT}"
 echo "QEMU Path: ${QEMU_PATH}"
 
-# Check if VM image exists, if not build it
-VM_IMAGE="${QEMU_MINIMAL_PATH}/images/${VM_NAME}.qcow2"
-if [ ! -f "${VM_IMAGE}" ]; then
-    echo "VM image not found at ${VM_IMAGE}, building..."
-    /build/build-vm.sh
-else
+# Check for VM image in output directory (built during Dockerfile build)
+# or in mounted qemu-minimal directory (runtime mount)
+VM_IMAGE=""
+if [ -f "/output/${VM_NAME}.qcow2" ]; then
+    VM_IMAGE="/output/${VM_NAME}.qcow2"
     echo "VM image found at ${VM_IMAGE}"
-fi
-
-# Verify VM image exists
-if [ ! -f "${VM_IMAGE}" ]; then
-    echo "Error: VM image not found after build attempt!"
+elif [ -f "/build/qemu-minimal/images/${VM_NAME}.qcow2" ]; then
+    VM_IMAGE="/build/qemu-minimal/images/${VM_NAME}.qcow2"
+    echo "VM image found at ${VM_IMAGE}"
+else
+    echo "Error: VM image not found!"
+    echo "Expected at /output/${VM_NAME}.qcow2 or /build/qemu-minimal/images/${VM_NAME}.qcow2"
     exit 1
 fi
 

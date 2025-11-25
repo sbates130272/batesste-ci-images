@@ -5,14 +5,12 @@ on:
     branches: [ main, master ]
     paths:
       - '**/Dockerfile'
-      - '**/build-vm.sh'
       - '**/entrypoint.sh'
       - '.github/workflows/dockerfile-test.yml'
   pull_request:
     branches: [ main, master ]
     paths:
       - '**/Dockerfile'
-      - '**/build-vm.sh'
       - '**/entrypoint.sh'
       - '.github/workflows/dockerfile-test.yml'
 
