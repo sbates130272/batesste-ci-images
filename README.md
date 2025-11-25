@@ -8,8 +8,8 @@ and pushing of these images.
 
 ## Available Images
 
-- **qemu-libvfio-user**: QEMU build with libvfio-user support for VM images
-  using qemu-minimal. See `qemu-libvfio-user/` for details.
+- **ubuntu-qemu-libvfio-user**: QEMU build with libvfio-user support for VM images
+  using qemu-minimal. See `ubuntu-qemu-libvfio-user/` for details.
 - **ubuntu-kernel-build**: Ubuntu-based image with tools for building Linux
   kernels and out-of-tree kernel modules. See `ubuntu-kernel-build/` for
   details.
@@ -18,18 +18,18 @@ and pushing of these images.
 
 ```
 batesste-ci-images/
-├── qemu-libvfio-user/     # QEMU libvfio-user image
+├── ubuntu-qemu-libvfio-user/  # QEMU libvfio-user image
 │   ├── Dockerfile
 │   ├── build-vm.sh
 │   └── entrypoint.sh
-├── ubuntu-kernel-build/   # Kernel build environment
+├── ubuntu-kernel-build/       # Kernel build environment
 │   ├── Dockerfile
 │   └── README.md
-├── systemd/                # Systemd service files
+├── systemd/                    # Systemd service files
 │   ├── build-vm.service
 │   └── build-vm.timer
-├── build-and-push.sh      # Script to build and push all images
-├── env.example            # Example environment configuration
+├── build-and-push.sh          # Script to build and push all images
+├── env.example                # Example environment configuration
 └── README.md
 ```
 
@@ -53,13 +53,13 @@ To build all images at once, use the `build-and-push.sh` script:
 Or build a specific image:
 
 ```bash
-./build-and-push.sh qemu-libvfio-user
+./build-and-push.sh ubuntu-qemu-libvfio-user
 ```
 
 To specify a password file for registry authentication:
 
 ```bash
-./build-and-push.sh qemu-libvfio-user --password-file /path/to/password.txt
+./build-and-push.sh ubuntu-qemu-libvfio-user --password-file /path/to/password.txt
 ```
 
 You can also build images directly with Docker:
@@ -109,7 +109,7 @@ Common configuration variables:
 - `REGISTRY`: OCI registry URL (default: `docker.io` for Docker Hub)
 - `REGISTRY_IMAGE`: Base image name in registry (default: `batesste-ci-images`)
   - Final image names will be `{REGISTRY_USERNAME}/{REGISTRY_IMAGE}-{image-directory}`
-    (e.g., `username/batesste-ci-images-qemu-libvfio-user`)
+    (e.g., `username/batesste-ci-images-ubuntu-qemu-libvfio-user`)
   - If `REGISTRY_IMAGE` contains a `/`, it's used as-is
   - If `REGISTRY_USERNAME` is set, it's prepended automatically
 - `REGISTRY_USERNAME`: Registry username for authentication (required for Docker Hub)
@@ -125,8 +125,8 @@ The `build-and-push.sh` script also supports:
   `/etc/batesste-ci-images/.env` (in that order)
 
 Image-specific variables are documented in each image's directory. For
-example, the `qemu-libvfio-user` image may use variables like `QEMU_COMMIT`,
-`VM_NAME`, `USERNAME`, etc.
+example, the `ubuntu-qemu-libvfio-user` image may use variables like
+`QEMU_COMMIT`, `VM_NAME`, `USERNAME`, etc.
 
 ### Immutable Builds
 
@@ -166,8 +166,8 @@ IMAGE_TAG=latest
 Note: When using `build-and-push.sh`, images will be tagged as
 `{REGISTRY}/{REGISTRY_IMAGE}-{image-directory}:{IMAGE_TAG}`. For example,
 with `REGISTRY_IMAGE=batesste-ci-images` and `IMAGE_TAG=latest`, the
-qemu-libvfio-user image will be tagged as
-`docker.io/batesste-ci-images-qemu-libvfio-user:latest`.
+ubuntu-qemu-libvfio-user image will be tagged as
+`docker.io/batesste-ci-images-ubuntu-qemu-libvfio-user:latest`.
 
 **Security Note**: For production, consider using Docker credential helpers or
 storing the password in a secure location with restricted permissions (e.g.,

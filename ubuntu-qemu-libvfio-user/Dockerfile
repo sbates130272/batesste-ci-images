@@ -3,8 +3,8 @@ FROM ubuntu:24.04
 # Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install build dependencies for QEMU
-RUN apt-get update && apt-get install -y \
+# Install build dependencies for QEMU and libvfio-user
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
     python3 \
@@ -15,13 +15,27 @@ RUN apt-get update && apt-get install -y \
     libpixman-1-dev \
     libslirp-dev \
     meson \
+    libjson-c-dev \
+    libcmocka-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Accept QEMU commit hash as build argument (defaults to HEAD)
+# Accept QEMU and libvfio-user commit hashes as build arguments
 ARG QEMU_COMMIT=HEAD
+ARG LIBVFIO_USER_COMMIT=HEAD
 
 # Set working directory
 WORKDIR /build
+
+# Clone and build libvfio-user independently
+RUN git clone https://gitlab.com/qemu-project/libvfio-user.git /build/libvfio-user && \
+    cd /build/libvfio-user && \
+    git checkout ${LIBVFIO_USER_COMMIT} && \
+    git rev-parse HEAD > /build/libvfio-user-commit.txt && \
+    meson setup build && \
+    ninja -C build && \
+    ninja -C build install && \
+    cd /build && \
+    rm -rf /build/libvfio-user
 
 # Clone QEMU repository and checkout specific commit
 RUN git clone https://gitlab.com/qemu-project/qemu.git /build/qemu && \
@@ -30,6 +44,7 @@ RUN git clone https://gitlab.com/qemu-project/qemu.git /build/qemu && \
     git rev-parse HEAD > /build/qemu-commit.txt
 
 # Build QEMU with slirp networking support
+# Note: QEMU will use the system-installed libvfio-user
 WORKDIR /build/qemu
 RUN ./configure --target-list=x86_64-softmmu \
                 --enable-slirp \
@@ -40,7 +55,7 @@ RUN ./configure --target-list=x86_64-softmmu \
     rm -rf /build/qemu
 
 # Install cloud-init utilities for VM creation
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     cloud-image-utils \
     qemu-utils \
     wget \

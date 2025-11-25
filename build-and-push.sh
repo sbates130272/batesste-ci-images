@@ -4,7 +4,7 @@
 #
 # Script to build Docker image and optionally push to OCI registry
 # Usage: build-and-push.sh [IMAGE_NAME] [--password-file FILE]
-#   IMAGE_NAME: Name of the image directory (e.g., qemu-libvfio-user)
+#   IMAGE_NAME: Name of the image directory (e.g., ubuntu-qemu-libvfio-user)
 #               If not provided, builds all images
 #   --password-file FILE: Path to file containing registry password
 #                         (alternative to REGISTRY_PASSWORD env var)
@@ -61,6 +61,7 @@ REGISTRY_USERNAME=${REGISTRY_USERNAME:-}
 REGISTRY_PASSWORD=${REGISTRY_PASSWORD:-}
 REGISTRY_PASSWORD_FILE=${REGISTRY_PASSWORD_FILE:-}
 QEMU_COMMIT=${QEMU_COMMIT:-HEAD}
+LIBVFIO_USER_COMMIT=${LIBVFIO_USER_COMMIT:-HEAD}
 
 # Determine WORKDIR: use script directory if WORKDIR not set or doesn't exist
 # (SCRIPT_DIR already set above)
@@ -152,10 +153,16 @@ for IMAGE_DIR in "${IMAGE_DIRS[@]}"; do
     echo "Image: ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
     echo "Directory: ${IMAGE_DIR}"
     echo "QEMU Commit: ${QEMU_COMMIT}"
+    if [ -n "${LIBVFIO_USER_COMMIT}" ]; then
+        echo "libvfio-user Commit: ${LIBVFIO_USER_COMMIT}"
+    fi
 
     # Build the Docker image
+    # Pass build args that may be used by some images
+    # shellcheck disable=SC2086
     docker buildx build \
         --build-arg QEMU_COMMIT="${QEMU_COMMIT}" \
+        --build-arg LIBVFIO_USER_COMMIT="${LIBVFIO_USER_COMMIT}" \
         --tag "${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}" \
         --tag "${REGISTRY}/${IMAGE_NAME}:latest" \
         --load \
