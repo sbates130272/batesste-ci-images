@@ -20,7 +20,6 @@ and pushing of these images.
 batesste-ci-images/
 ├── ubuntu-qemu-libvfio-user/  # QEMU libvfio-user image
 │   ├── Dockerfile
-│   ├── build-vm.sh
 │   └── entrypoint.sh
 ├── ubuntu-kernel-build/       # Kernel build environment
 │   ├── Dockerfile
@@ -225,6 +224,58 @@ Each image directory contains its own documentation and may have different:
 
 Refer to the README or documentation in each image directory for specific
 details.
+
+### ubuntu-qemu-libvfio-user VM Image Output
+
+When the `ubuntu-qemu-libvfio-user` image is built with the `QEMU_MINIMAL_REPO`
+build argument, it creates a VM disk image during the Docker build process.
+The VM image and metadata are stored in `/output/` within the container:
+
+- **VM Disk Image**: `/output/{VM_NAME}.qcow2` - The QEMU disk image file
+- **VM Metadata**: `/output/vm-info.json` - JSON file containing VM configuration
+  and build information
+
+#### vm-info.json Format
+
+The `vm-info.json` file contains the following information:
+
+```json
+{
+  "vm_name": "batesste-ci-vm",
+  "username": "batesste",
+  "password": "changeme",
+  "image_path": "/output/batesste-ci-vm.qcow2",
+  "image_format": "qcow2",
+  "image_size_bytes": 1234567890,
+  "release": "noble",
+  "architecture": "amd64",
+  "qemu_path": "/opt/qemu/bin/",
+  "kvm_enabled": false,
+  "backing_file": false,
+  "build_info": {
+    "qemu_commit": "abc123...",
+    "libvfio_user_commit": "def456...",
+    "qemu_minimal_commit": "ghi789...",
+    "build_timestamp": "2025-01-01T12:00:00Z"
+  }
+}
+```
+
+This metadata file can be used by automation tools or scripts to programmatically
+access VM configuration without needing to parse environment variables or inspect
+the image directly.
+
+To access the VM image and metadata from a built container:
+
+```bash
+docker run --rm \
+  -v /path/to/output:/output \
+  your-registry/ubuntu-qemu-libvfio-user:latest \
+  cat /output/vm-info.json
+```
+
+Or mount the `/output` directory when running the container to access both the
+VM image and metadata file.
 
 ## Adding New Images
 

@@ -57,4 +57,5 @@ uboot
 vfio
 virt
 virtio
+vm-info
 x86

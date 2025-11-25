@@ -163,6 +163,13 @@ for IMAGE_DIR in "${IMAGE_DIRS[@]}"; do
     docker buildx build \
         --build-arg QEMU_COMMIT="${QEMU_COMMIT}" \
         --build-arg LIBVFIO_USER_COMMIT="${LIBVFIO_USER_COMMIT}" \
+        --build-arg QEMU_MINIMAL_REPO="${QEMU_MINIMAL_REPO:-}" \
+        --build-arg QEMU_MINIMAL_COMMIT="${QEMU_MINIMAL_COMMIT:-}" \
+        --build-arg USERNAME="${USERNAME:-batesste}" \
+        --build-arg VM_NAME="${VM_NAME:-}" \
+        --build-arg PASSWORD="${PASSWORD:-changeme}" \
+        --build-arg RELEASE="${RELEASE:-noble}" \
+        --build-arg ARCH="${ARCH:-amd64}" \
         --tag "${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}" \
         --tag "${REGISTRY}/${IMAGE_NAME}:latest" \
         --load \
