@@ -1,4 +1,5 @@
 build-essential
 linux-headers-${KERNEL_VERSION}
 linux-modules-extra-${KERNEL_VERSION}
+jq
 rdma-core

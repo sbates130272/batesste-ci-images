@@ -3,17 +3,25 @@
 # build-and-push.sh
 #
 # Script to build Docker image and optionally push to OCI registry
-# Usage: build-and-push.sh [IMAGE_NAME] [--password-file FILE]
+# Usage: build-and-push.sh [IMAGE_NAME] [OPTIONS]
 #   IMAGE_NAME: Name of the image directory (e.g., ubuntu-qemu-libvfio-user)
 #               If not provided, builds all images
 #   --password-file FILE: Path to file containing registry password
 #                         (alternative to REGISTRY_PASSWORD env var)
+#   --no-cache: Build without using cache (forces full rebuild)
+#   --cache-bust VALUE: Add a cache-busting build arg to force rebuild
+#                       (useful when Dockerfile logic changes but files don't)
 #
 # Password can be provided via:
 #   - REGISTRY_PASSWORD environment variable (direct password or file path)
 #   - REGISTRY_PASSWORD_FILE environment variable (file path)
 #   - --password-file command line option
 #   If REGISTRY_PASSWORD points to an existing file, it will be read as a file
+#
+# Cache invalidation:
+#   - If packages.txt changes, cache will be invalidated automatically
+#   - If Dockerfile logic changes but files don't, use --no-cache or
+#     --cache-bust with a unique value (e.g., --cache-bust $(date +%s))
 #
 
 set -e
@@ -35,6 +43,8 @@ fi
 # Parse command line arguments
 IMAGE_NAME_ARG=""
 PASSWORD_FILE=""
+NO_CACHE=false
+CACHE_BUST=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --password-file)
@@ -43,6 +53,18 @@ while [[ $# -gt 0 ]]; do
             ;;
         --password-file=*)
             PASSWORD_FILE="${1#*=}"
+            shift
+            ;;
+        --no-cache)
+            NO_CACHE=true
+            shift
+            ;;
+        --cache-bust)
+            CACHE_BUST="$2"
+            shift 2
+            ;;
+        --cache-bust=*)
+            CACHE_BUST="${1#*=}"
             shift
             ;;
         *)
@@ -159,17 +181,34 @@ for IMAGE_DIR in "${IMAGE_DIRS[@]}"; do
 
     # Build the Docker image
     # Pass build args that may be used by some images
+    # Add cache-bust arg if provided (useful for forcing rebuilds)
+    BUILD_ARGS=(
+        --build-arg QEMU_COMMIT="${QEMU_COMMIT}"
+        --build-arg LIBVFIO_USER_COMMIT="${LIBVFIO_USER_COMMIT}"
+        --build-arg QEMU_MINIMAL_REPO="${QEMU_MINIMAL_REPO:-}"
+        --build-arg QEMU_MINIMAL_COMMIT="${QEMU_MINIMAL_COMMIT:-}"
+        --build-arg USERNAME="${USERNAME:-batesste}"
+        --build-arg VM_NAME="${VM_NAME:-}"
+        --build-arg PASSWORD="${PASSWORD:-changeme}"
+        --build-arg RELEASE="${RELEASE:-noble}"
+        --build-arg ARCH="${ARCH:-amd64}"
+    )
+    if [ -n "${CACHE_BUST}" ]; then
+        BUILD_ARGS+=(--build-arg CACHE_BUST="${CACHE_BUST}")
+        echo "Using cache-bust value: ${CACHE_BUST}"
+    fi
+    
+    # Add --no-cache flag if requested
+    NO_CACHE_FLAG=""
+    if [ "${NO_CACHE}" = "true" ]; then
+        NO_CACHE_FLAG="--no-cache"
+        echo "Building without cache (--no-cache)"
+    fi
+    
     # shellcheck disable=SC2086
     docker buildx build \
-        --build-arg QEMU_COMMIT="${QEMU_COMMIT}" \
-        --build-arg LIBVFIO_USER_COMMIT="${LIBVFIO_USER_COMMIT}" \
-        --build-arg QEMU_MINIMAL_REPO="${QEMU_MINIMAL_REPO:-}" \
-        --build-arg QEMU_MINIMAL_COMMIT="${QEMU_MINIMAL_COMMIT:-}" \
-        --build-arg USERNAME="${USERNAME:-batesste}" \
-        --build-arg VM_NAME="${VM_NAME:-}" \
-        --build-arg PASSWORD="${PASSWORD:-changeme}" \
-        --build-arg RELEASE="${RELEASE:-noble}" \
-        --build-arg ARCH="${ARCH:-amd64}" \
+        "${BUILD_ARGS[@]}" \
+        ${NO_CACHE_FLAG} \
         --tag "${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}" \
         --tag "${REGISTRY}/${IMAGE_NAME}:latest" \
         --load \
