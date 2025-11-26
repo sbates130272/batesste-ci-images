@@ -74,6 +74,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Create output directory for VM images
 RUN mkdir -p /output
 
+# Copy packages file for VM customization
+COPY packages.txt /build/packages.txt
+
 # Build VM image if qemu-minimal repository is provided
 RUN set -eux; \
     if [ -n "${QEMU_MINIMAL_REPO}" ]; then \
@@ -130,7 +133,38 @@ RUN set -eux; \
         export RELEASE="${FINAL_RELEASE}"; \
         export ARCH="${FINAL_ARCH}"; \
         export KVM=false; \
-        export BACKING=false; \
+        export NO_BACKING=true; \
+        KERNEL_VERSION=$(uname -r); \
+        echo "Kernel version: ${KERNEL_VERSION}"; \
+        EXISTING_PACKAGES="${PACKAGES:-}"; \
+        echo "Existing PACKAGES: ${EXISTING_PACKAGES:-<not set - gen-vm will use defaults>}"; \
+        if [ -f /build/packages.txt ]; then \
+            echo "Reading packages from /build/packages.txt..."; \
+            ADDITIONAL_PACKAGES=$(sed "s/\${KERNEL_VERSION}/${KERNEL_VERSION}/g" /build/packages.txt | grep -v '^#' | grep -v '^$' | tr '\n' ' ' | sed 's/[[:space:]]*$//' || echo ""); \
+            echo "Additional packages: ${ADDITIONAL_PACKAGES}"; \
+            if [ -n "${ADDITIONAL_PACKAGES}" ]; then \
+                if [ -n "${EXISTING_PACKAGES}" ]; then \
+                    export PACKAGES="${EXISTING_PACKAGES} ${ADDITIONAL_PACKAGES}"; \
+                    echo "Appending additional packages to existing PACKAGES"; \
+                else \
+                    echo "PACKAGES not set - checking gen-vm for default packages..."; \
+                    GENVM_DEFAULT_PACKAGES=$(grep -E "^PACKAGES=|^DEFAULT_PACKAGES=" ./gen-vm 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || echo ""); \
+                    if [ -z "${GENVM_DEFAULT_PACKAGES}" ]; then \
+                        GENVM_DEFAULT_PACKAGES=$(grep -A 10 "PACKAGES=" ./gen-vm 2>/dev/null | grep -E "^\s*(apt-get|apt install)" | sed 's/.*install[^"]*"\([^"]*\)".*/\1/' | head -1 || echo ""); \
+                    fi; \
+                    if [ -n "${GENVM_DEFAULT_PACKAGES}" ]; then \
+                        echo "Found gen-vm default packages: ${GENVM_DEFAULT_PACKAGES}"; \
+                        export PACKAGES="${GENVM_DEFAULT_PACKAGES} ${ADDITIONAL_PACKAGES}"; \
+                    else \
+                        echo "Could not determine gen-vm default packages - setting PACKAGES to additional packages only"; \
+                        echo "Warning: Default packages may be missing!"; \
+                        export PACKAGES="${ADDITIONAL_PACKAGES}"; \
+                    fi; \
+                fi; \
+            fi; \
+        else \
+            echo "Warning: /build/packages.txt not found, skipping additional packages"; \
+        fi; \
         echo "Environment variables:"; \
         echo "  QEMU_PATH=${QEMU_PATH}"; \
         echo "  VM_NAME=${VM_NAME}"; \
@@ -139,12 +173,16 @@ RUN set -eux; \
         echo "  RELEASE=${RELEASE}"; \
         echo "  ARCH=${ARCH}"; \
         echo "  KVM=${KVM} (disabled for Docker build)"; \
-        echo "  BACKING=${BACKING} (disabled for Docker build)"; \
+        echo "  NO_BACKING=${NO_BACKING} (disabled for Docker build)"; \
+        echo "  PACKAGES=${PACKAGES}"; \
         echo "Running gen-vm (KVM disabled, no backing file)..."; \
         ./gen-vm || (echo "gen-vm failed with exit code $?" && exit 1); \
         if [ -f "${IMAGES}/${FINAL_VM_NAME}.qcow2" ]; then \
             echo "Copying VM image to /output/..."; \
             cp "${IMAGES}/${FINAL_VM_NAME}.qcow2" /output/ && \
+            echo "Copying SSH keys to /output/..."; \
+            cp /root/.ssh/id_rsa /output/id_rsa 2>/dev/null || echo "Warning: SSH private key not found"; \
+            cp /root/.ssh/id_rsa.pub /output/id_rsa.pub 2>/dev/null || echo "Warning: SSH public key not found"; \
             echo "VM image created successfully: /output/${FINAL_VM_NAME}.qcow2"; \
             echo "VM image info:"; \
             /opt/qemu/bin/qemu-img info "/output/${FINAL_VM_NAME}.qcow2" || true; \
@@ -155,20 +193,22 @@ RUN set -eux; \
             IMAGE_SIZE=$(stat -c%s "/output/${FINAL_VM_NAME}.qcow2" 2>/dev/null || echo "0"); \
             IMAGE_FORMAT=$(/opt/qemu/bin/qemu-img info "/output/${FINAL_VM_NAME}.qcow2" 2>/dev/null | grep -i "file format" | cut -d: -f2 | xargs || echo "qcow2"); \
             BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ); \
-            printf '{\n  "vm_name": "%s",\n  "username": "%s",\n  "password": "%s",\n  "image_path": "/output/%s.qcow2",\n  "image_format": "%s",\n  "image_size_bytes": %s,\n  "release": "%s",\n  "architecture": "%s",\n  "qemu_path": "/opt/qemu/bin/",\n  "kvm_enabled": false,\n  "backing_file": false,\n  "build_info": {\n    "qemu_commit": "%s",\n    "libvfio_user_commit": "%s",\n    "qemu_minimal_commit": "%s",\n    "build_timestamp": "%s"\n  }\n}\n' \
-              "${FINAL_VM_NAME}" \
-              "${FINAL_USERNAME}" \
-              "${FINAL_PASSWORD}" \
-              "${FINAL_VM_NAME}" \
-              "${IMAGE_FORMAT}" \
-              "${IMAGE_SIZE}" \
-              "${FINAL_RELEASE}" \
-              "${FINAL_ARCH}" \
-              "${QEMU_COMMIT_INFO}" \
-              "${LIBVFIO_USER_COMMIT_INFO}" \
-              "${QEMU_MINIMAL_COMMIT_INFO}" \
-              "${BUILD_TIMESTAMP}" \
-              > /output/vm-info.json && \
+            printf 'import json\nimport sys\nimport os\n\n# Parse KVM setting: "false" or empty means disabled\nkvm_val = os.environ.get("KVM", "false").lower()\nkvm_enabled = kvm_val == "true"\n\n# Parse NO_BACKING setting: "true" means no backing file (backing_file=False)\nno_backing_val = os.environ.get("NO_BACKING", "false").lower()\nbacking_file = no_backing_val != "true"\n\nvm_info = {\n    "vm_name": os.environ["FINAL_VM_NAME"],\n    "username": os.environ["FINAL_USERNAME"],\n    "password": os.environ["FINAL_PASSWORD"],\n    "image_path": f"/output/{os.environ[\047FINAL_VM_NAME\047]}.qcow2",\n    "image_format": os.environ["IMAGE_FORMAT"],\n    "image_size_bytes": int(os.environ["IMAGE_SIZE"]),\n    "release": os.environ["FINAL_RELEASE"],\n    "architecture": os.environ["FINAL_ARCH"],\n    "qemu_path": "/opt/qemu/bin/",\n    "kvm_enabled": kvm_enabled,\n    "backing_file": backing_file,\n    "ssh_keys": {\n        "private_key_path": "/output/id_rsa",\n        "public_key_path": "/output/id_rsa.pub"\n    },\n    "build_info": {\n        "qemu_commit": os.environ["QEMU_COMMIT_INFO"],\n        "libvfio_user_commit": os.environ["LIBVFIO_USER_COMMIT_INFO"],\n        "qemu_minimal_commit": os.environ["QEMU_MINIMAL_COMMIT_INFO"],\n        "build_timestamp": os.environ["BUILD_TIMESTAMP"]\n    }\n}\n\njson.dump(vm_info, sys.stdout, indent=2)\n' > /tmp/create_vm_info.py && \
+            FINAL_VM_NAME="${FINAL_VM_NAME}" \
+            FINAL_USERNAME="${FINAL_USERNAME}" \
+            FINAL_PASSWORD="${FINAL_PASSWORD}" \
+            IMAGE_FORMAT="${IMAGE_FORMAT}" \
+            IMAGE_SIZE="${IMAGE_SIZE}" \
+            FINAL_RELEASE="${FINAL_RELEASE}" \
+            FINAL_ARCH="${FINAL_ARCH}" \
+            QEMU_COMMIT_INFO="${QEMU_COMMIT_INFO}" \
+            LIBVFIO_USER_COMMIT_INFO="${LIBVFIO_USER_COMMIT_INFO}" \
+            QEMU_MINIMAL_COMMIT_INFO="${QEMU_MINIMAL_COMMIT_INFO}" \
+            BUILD_TIMESTAMP="${BUILD_TIMESTAMP}" \
+            KVM="${KVM}" \
+            NO_BACKING="${NO_BACKING}" \
+            python3 /tmp/create_vm_info.py > /output/vm-info.json && \
+            rm -f /tmp/create_vm_info.py && \
             echo "vm-info.json created at /output/vm-info.json"; \
             cat /output/vm-info.json || true; \
             ls -lh /output/ || true; \
@@ -202,4 +242,3 @@ ENV VMEM=4096
 
 # Set entrypoint
 ENTRYPOINT ["/build/entrypoint.sh"]
-
