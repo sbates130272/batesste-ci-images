@@ -229,9 +229,11 @@ details.
 
 When the `ubuntu-qemu-libvfio-user` image is built with the `QEMU_MINIMAL_REPO`
 build argument, it creates a VM disk image during the Docker build process.
-The VM image and metadata are stored in `/output/` within the container:
+The VM image, SSH keys, and metadata are stored in `/output/` within the container:
 
 - **VM Disk Image**: `/output/{VM_NAME}.qcow2` - The QEMU disk image file
+- **SSH Keys**: `/output/id_rsa` and `/output/id_rsa.pub` - SSH private and public
+  keys generated during VM build
 - **VM Metadata**: `/output/vm-info.json` - JSON file containing VM configuration
   and build information
 
@@ -252,6 +254,10 @@ The `vm-info.json` file contains the following information:
   "qemu_path": "/opt/qemu/bin/",
   "kvm_enabled": false,
   "backing_file": false,
+  "ssh_keys": {
+    "private_key_path": "/output/id_rsa",
+    "public_key_path": "/output/id_rsa.pub"
+  },
   "build_info": {
     "qemu_commit": "abc123...",
     "libvfio_user_commit": "def456...",
@@ -313,4 +319,3 @@ my-new-image/
 ├── build.sh           # Optional
 └── README.md          # Recommended
 ```
-
