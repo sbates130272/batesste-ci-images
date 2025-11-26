@@ -55,6 +55,8 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             QEMU_COMMIT=HEAD
+            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && format('QEMU_MINIMAL_REPO=https://github.com/sbates130272/qemu-minimal.git') || '' }}
+            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && format('QEMU_MINIMAL_COMMIT=30c6d09265db2817f82e495aa5609e03fd0194a9') || '' }}
 
   test-entrypoint:
     name: Test Container Entrypoint
@@ -114,3 +116,115 @@ jobs:
         if: steps.check-entrypoint.outputs.exists == 'false'
         run: |
           echo "No entrypoint.sh found, skipping entrypoint tests"
+
+  test-vm-packages:
+    name: Test VM Packages
+    runs-on: ubuntu-latest
+    needs: [discover-images, build]
+    if: contains(fromJson(needs.discover-images.outputs.images), 'ubuntu-qemu-libvfio-user')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image with VM
+        uses: docker/build-push-action@v5
+        with:
+          context: ubuntu-qemu-libvfio-user
+          file: ubuntu-qemu-libvfio-user/Dockerfile
+          push: false
+          tags: batesste-ci-images-ubuntu-qemu-libvfio-user:test
+          load: true
+          build-args: |
+            QEMU_COMMIT=HEAD
+            QEMU_MINIMAL_REPO=https://github.com/sbates130272/qemu-minimal.git
+            QEMU_MINIMAL_COMMIT=30c6d09265db2817f82e495aa5609e03fd0194a9
+
+      - name: Check packages.txt exists
+        run: |
+          if [ ! -f "ubuntu-qemu-libvfio-user/packages.txt" ]; then
+            echo "packages.txt not found, skipping package verification"
+            exit 0
+          fi
+
+      - name: Start VM container
+        id: start-vm
+        run: |
+          docker run -d --name test-vm-packages \
+            --cap-add NET_ADMIN \
+            batesste-ci-images-ubuntu-qemu-libvfio-user:test
+          echo "Waiting for VM to boot..."
+          sleep 60
+
+      - name: Verify packages are installed in VM
+        run: |
+          # Get kernel version from container
+          KERNEL_VERSION=$(docker exec test-vm-packages uname -r \
+            2>/dev/null || echo "")
+          echo "Container kernel version: ${KERNEL_VERSION}"
+          # Wait for SSH to be ready
+          echo "Waiting for SSH..."
+          for i in {1..60}; do
+            if docker exec test-vm-packages bash -c \
+              "chmod 600 /output/id_rsa && \
+               timeout 5 ssh -o StrictHostKeyChecking=no \
+               -o UserKnownHostsFile=/dev/null \
+               -o ConnectTimeout=5 \
+               -p 2222 -i /output/id_rsa \
+               batesste@localhost 'echo OK' 2>&1" | grep -q "OK"; then
+              echo "SSH is ready!"
+              break
+            fi
+            sleep 2
+          done
+          # Check for each package
+          MISSING_PACKAGES=""
+          for PKG in build-essential rdma-core; do
+            echo "Checking for ${PKG}..."
+            if docker exec test-vm-packages bash -c \
+              "chmod 600 /output/id_rsa && \
+               timeout 10 ssh -o StrictHostKeyChecking=no \
+               -o UserKnownHostsFile=/dev/null \
+               -o ConnectTimeout=10 \
+               -p 2222 -i /output/id_rsa \
+               batesste@localhost \
+               'dpkg -l | grep -E \"^ii.*${PKG}\"' 2>&1" | \
+              grep -q "^ii"; then
+              echo "✓ ${PKG} is installed"
+            else
+              echo "✗ ${PKG} is NOT installed"
+              MISSING_PACKAGES="${MISSING_PACKAGES} ${PKG}"
+            fi
+          done
+          # Check for kernel headers (version-specific)
+          if [ -n "${KERNEL_VERSION}" ]; then
+            KERNEL_MAJOR=$(echo "${KERNEL_VERSION}" | cut -d. -f1-2)
+            echo "Checking for linux-headers matching ${KERNEL_MAJOR}..."
+            if docker exec test-vm-packages bash -c \
+              "chmod 600 /output/id_rsa && \
+               timeout 10 ssh -o StrictHostKeyChecking=no \
+               -o UserKnownHostsFile=/dev/null \
+               -o ConnectTimeout=10 \
+               -p 2222 -i /output/id_rsa \
+               batesste@localhost \
+               'dpkg -l | grep linux-headers' 2>&1" | \
+              grep -q "linux-headers"; then
+              echo "✓ linux-headers is installed"
+            else
+              echo "✗ linux-headers is NOT installed"
+              MISSING_PACKAGES="${MISSING_PACKAGES} linux-headers"
+            fi
+          fi
+          if [ -n "${MISSING_PACKAGES}" ]; then
+            echo "ERROR: Missing packages:${MISSING_PACKAGES}"
+            exit 1
+          else
+            echo "All expected packages are installed!"
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop test-vm-packages 2>/dev/null || true
+          docker rm test-vm-packages 2>/dev/null || true

@@ -147,18 +147,33 @@ RUN set -eux; \
                     export PACKAGES="${EXISTING_PACKAGES} ${ADDITIONAL_PACKAGES}"; \
                     echo "Appending additional packages to existing PACKAGES"; \
                 else \
-                    echo "PACKAGES not set - checking gen-vm for default packages..."; \
-                    GENVM_DEFAULT_PACKAGES=$(grep -E "^PACKAGES=|^DEFAULT_PACKAGES=" ./gen-vm 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || echo ""); \
-                    if [ -z "${GENVM_DEFAULT_PACKAGES}" ]; then \
-                        GENVM_DEFAULT_PACKAGES=$(grep -A 10 "PACKAGES=" ./gen-vm 2>/dev/null | grep -E "^\s*(apt-get|apt install)" | sed 's/.*install[^"]*"\([^"]*\)".*/\1/' | head -1 || echo ""); \
+                    echo "PACKAGES not set - checking gen-vm for default packages file..."; \
+                    GENVM_DEFAULT_PACKAGES_FILE=$(grep -E "^PACKAGES=" ./gen-vm 2>/dev/null | head -1 | sed 's/.*:-\([^}]*\)}.*/\1/' || echo ""); \
+                    if [ -z "${GENVM_DEFAULT_PACKAGES_FILE}" ]; then \
+                        GENVM_DEFAULT_PACKAGES_FILE="../packages.d/packages-default"; \
                     fi; \
-                    if [ -n "${GENVM_DEFAULT_PACKAGES}" ]; then \
-                        echo "Found gen-vm default packages: ${GENVM_DEFAULT_PACKAGES}"; \
-                        export PACKAGES="${GENVM_DEFAULT_PACKAGES} ${ADDITIONAL_PACKAGES}"; \
+                    echo "Looking for default packages file at: ${GENVM_DEFAULT_PACKAGES_FILE}"; \
+                    if [ -f "${GENVM_DEFAULT_PACKAGES_FILE}" ]; then \
+                        echo "Found gen-vm default packages file: ${GENVM_DEFAULT_PACKAGES_FILE}"; \
+                        COMBINED_PACKAGES_FILE="/tmp/packages-combined"; \
+                        echo "Creating combined packages file: ${COMBINED_PACKAGES_FILE}"; \
+                        cat "${GENVM_DEFAULT_PACKAGES_FILE}" > "${COMBINED_PACKAGES_FILE}"; \
+                        echo "" >> "${COMBINED_PACKAGES_FILE}"; \
+                        echo "# Additional packages from packages.txt" >> "${COMBINED_PACKAGES_FILE}"; \
+                        for PKG in ${ADDITIONAL_PACKAGES}; do \
+                            echo "  - ${PKG}" >> "${COMBINED_PACKAGES_FILE}"; \
+                        done; \
+                        echo "Combined packages file created with defaults + additional packages"; \
+                        export PACKAGES="${COMBINED_PACKAGES_FILE}"; \
                     else \
-                        echo "Could not determine gen-vm default packages - setting PACKAGES to additional packages only"; \
-                        echo "Warning: Default packages may be missing!"; \
-                        export PACKAGES="${ADDITIONAL_PACKAGES}"; \
+                        echo "Default packages file not found: ${GENVM_DEFAULT_PACKAGES_FILE}"; \
+                        echo "Creating packages file with additional packages only..."; \
+                        COMBINED_PACKAGES_FILE="/tmp/packages-combined"; \
+                        echo "# Packages from packages.txt" > "${COMBINED_PACKAGES_FILE}"; \
+                        for PKG in ${ADDITIONAL_PACKAGES}; do \
+                            echo "  - ${PKG}" >> "${COMBINED_PACKAGES_FILE}"; \
+                        done; \
+                        export PACKAGES="${COMBINED_PACKAGES_FILE}"; \
                     fi; \
                 fi; \
             fi; \
