@@ -31,6 +31,8 @@ ARG VM_NAME=
 ARG PASSWORD=changeme
 ARG RELEASE=noble
 ARG ARCH=amd64
+# Cache-busting arg (can be set to force rebuild when Dockerfile logic changes)
+ARG CACHE_BUST=
 
 # Set working directory
 WORKDIR /build
@@ -78,6 +80,7 @@ RUN mkdir -p /output
 COPY packages.txt /build/packages.txt
 
 # Build VM image if qemu-minimal repository is provided
+# Note: CACHE_BUST arg is referenced here to invalidate cache when needed
 RUN set -eux; \
     if [ -n "${QEMU_MINIMAL_REPO}" ]; then \
         QEMU_MINIMAL_PATH=/build/qemu-minimal; \
@@ -91,6 +94,7 @@ RUN set -eux; \
         FINAL_RELEASE="${RELEASE:-noble}"; \
         FINAL_ARCH="${ARCH:-amd64}"; \
         echo "=== VM Build Configuration ==="; \
+        echo "Cache-bust: ${CACHE_BUST:-none}"; \
         echo "QEMU_MINIMAL_REPO: ${QEMU_MINIMAL_REPO}"; \
         echo "QEMU_MINIMAL_COMMIT: ${QEMU_MINIMAL_COMMIT:-HEAD}"; \
         echo "VM_NAME: ${FINAL_VM_NAME}"; \

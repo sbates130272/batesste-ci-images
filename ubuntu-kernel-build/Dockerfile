@@ -3,6 +3,9 @@ FROM ubuntu:24.04
 # Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Cache-busting arg (can be set to force rebuild when Dockerfile logic changes)
+ARG CACHE_BUST=
+
 # Install kernel build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
