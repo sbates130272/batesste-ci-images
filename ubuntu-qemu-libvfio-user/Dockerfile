@@ -17,7 +17,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libslirp-dev \
     meson \
     libjson-c-dev \
-    libcmocka-dev \
+    libcmocka-dev
+
+# Disable unattended-upgrade
+RUN apt-get remove -y unattended-upgrades \
     && rm -rf /var/lib/apt/lists/*
 
 # Accept QEMU and libvfio-user commit hashes as build arguments

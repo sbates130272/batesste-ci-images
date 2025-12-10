@@ -20,7 +20,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rsync \
     kmod \
     cpio \
-    linux-headers-generic \
+    linux-headers-generic
+
+# Disable unattended-upgrade
+RUN apt-get remove -y unattended-upgrades \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory and create output directory
