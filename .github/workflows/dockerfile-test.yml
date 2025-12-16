@@ -2,13 +2,13 @@ name: Dockerfile Test
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
     paths:
       - '**/Dockerfile'
       - '**/entrypoint.sh'
       - '.github/workflows/dockerfile-test.yml'
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
     paths:
       - '**/Dockerfile'
       - '**/entrypoint.sh'
@@ -55,8 +55,10 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             QEMU_COMMIT=HEAD
-            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && format('QEMU_MINIMAL_REPO=https://github.com/sbates130272/qemu-minimal.git') || '' }}
-            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && format('QEMU_MINIMAL_COMMIT=30c6d09265db2817f82e495aa5609e03fd0194a9') || '' }}
+            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' &&
+              format('QEMU_MINIMAL_REPO=https://github.com/sbates130272/qemu-minimal.git') || '' }}
+            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' &&
+              format('QEMU_MINIMAL_COMMIT=30c6d09265db2817f82e495aa5609e03fd0194a9') || '' }}
 
   test-entrypoint:
     name: Test Container Entrypoint
@@ -121,7 +123,11 @@ jobs:
     name: Test VM Packages
     runs-on: ubuntu-latest
     needs: [discover-images, build]
-    if: contains(fromJson(needs.discover-images.outputs.images), 'ubuntu-qemu-libvfio-user')
+    if: >
+      contains(
+        fromJson(needs.discover-images.outputs.images),
+        'ubuntu-qemu-libvfio-user'
+      )
     steps:
       - uses: actions/checkout@v4
 
