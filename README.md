@@ -8,11 +8,13 @@ and pushing of these images.
 
 ## Available Images
 
-- **ubuntu-qemu-libvfio-user**: QEMU build with libvfio-user support for VM images
-  using qemu-minimal. See `ubuntu-qemu-libvfio-user/` for details.
+- **ubuntu-qemu-libvfio-user**: QEMU build with libvfio-user support for VM
+  images using qemu-minimal. See `ubuntu-qemu-libvfio-user/` for details.
 - **ubuntu-kernel-build**: Ubuntu-based image with tools for building Linux
   kernels and out-of-tree kernel modules. See `ubuntu-kernel-build/` for
   details.
+- **ubuntu-rocm**: Ubuntu-based image with AMD ROCm stack for GPU
+  development and CI/CD workflows. See `ubuntu-rocm/` for details.
 
 ## Project Structure
 
@@ -23,6 +25,10 @@ batesste-ci-images/
 │   └── entrypoint.sh
 ├── ubuntu-kernel-build/       # Kernel build environment
 │   ├── Dockerfile
+│   └── README.md
+├── ubuntu-rocm/               # ROCm development environment
+│   ├── Dockerfile
+│   ├── rocm-latest
 │   └── README.md
 ├── systemd/                    # Systemd service files
 │   ├── build-vm.service
