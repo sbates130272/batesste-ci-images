@@ -54,7 +54,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
-            QEMU_COMMIT=HEAD
+            QEMU_COMMIT=v10.2.2
+            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && format('LIBVFIO_USER_COMMIT=082925c65d98021af5c0f36f60a98e0bb6ddb329') || '' }}
             ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && format('QEMU_MINIMAL_REPO=https://github.com/sbates130272/qemu-minimal.git') || '' }}
             ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && format('QEMU_MINIMAL_COMMIT=30c6d09265db2817f82e495aa5609e03fd0194a9') || '' }}
 
@@ -91,7 +92,8 @@ jobs:
           tags: batesste-ci-images-${{ matrix.image }}:test
           load: true
           build-args: |
-            QEMU_COMMIT=HEAD
+            QEMU_COMMIT=v10.2.2
+            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'LIBVFIO_USER_COMMIT=082925c65d98021af5c0f36f60a98e0bb6ddb329' || '' }}
 
       - name: Test entrypoint script syntax
         if: steps.check-entrypoint.outputs.exists == 'true'
@@ -137,7 +139,8 @@ jobs:
           tags: batesste-ci-images-ubuntu-qemu-libvfio-user:test
           load: true
           build-args: |
-            QEMU_COMMIT=HEAD
+            QEMU_COMMIT=v10.2.2
+            LIBVFIO_USER_COMMIT=082925c65d98021af5c0f36f60a98e0bb6ddb329
             QEMU_MINIMAL_REPO=https://github.com/sbates130272/qemu-minimal.git
             QEMU_MINIMAL_COMMIT=30c6d09265db2817f82e495aa5609e03fd0194a9
 

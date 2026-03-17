@@ -20,9 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcmocka-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Accept QEMU and libvfio-user commit hashes as build arguments
-ARG QEMU_COMMIT=HEAD
-ARG LIBVFIO_USER_COMMIT=HEAD
+# Accept QEMU and libvfio-user tags or commit SHAs as build arguments
+ARG QEMU_COMMIT=v10.2.2
+ARG LIBVFIO_USER_COMMIT=082925c65d98021af5c0f36f60a98e0bb6ddb329
 
 # Accept qemu-minimal configuration as build arguments
 ARG QEMU_MINIMAL_REPO=
