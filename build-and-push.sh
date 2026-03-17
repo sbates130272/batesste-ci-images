@@ -60,12 +60,22 @@ Environment variables:
                          (default: latest)
   REGISTRY               OCI registry
                          (default: docker.io)
+  REGISTRY_IMAGE         Full image name override, including registry
   REGISTRY_USERNAME      Registry login username
   REGISTRY_PASSWORD      Registry login password
   REGISTRY_PASSWORD_FILE File containing password
-  QEMU_COMMIT            QEMU version/commit
-                         to build
+  WORKDIR                Working directory for build context
+  QEMU_COMMIT            QEMU version/commit to build
+                         (default: HEAD)
+  QEMU_MINIMAL_REPO      Repository URL for minimal QEMU source
+  QEMU_MINIMAL_COMMIT    Commit hash for minimal QEMU build
   LIBVFIO_USER_COMMIT    libvfio-user commit hash
+                         (default: HEAD)
+  USERNAME               Username for guest/VM user inside the image
+  PASSWORD               Password for guest/VM user inside the image
+  VM_NAME                Name of the virtual machine or image variant
+  RELEASE                Base OS release (e.g., jammy, noble)
+  ARCH                   Target architecture (e.g., amd64, arm64)
 EOF
 }
 
