@@ -2,3 +2,5 @@
 *.token
 # Ignore the .env file.
 .env
+# Cached cloud images (downloaded in CI)
+**/cloud-image-cache/*.img
