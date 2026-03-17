@@ -1,17 +1,23 @@
 name: Dockerfile Test
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [ main, master ]
     paths:
       - '**/Dockerfile'
       - '**/entrypoint.sh'
+      - '**/packages.txt'
       - '.github/workflows/dockerfile-test.yml'
   pull_request:
     branches: [ main, master ]
     paths:
       - '**/Dockerfile'
       - '**/entrypoint.sh'
+      - '**/packages.txt'
       - '.github/workflows/dockerfile-test.yml'
 
 jobs:
@@ -25,8 +31,10 @@ jobs:
       - name: Find all Dockerfiles
         id: find-images
         run: |
-          IMAGES=$(find . -maxdepth 2 -name "Dockerfile" -type f | \
-            sed 's|^\./||' | sed 's|/Dockerfile$||' | sort | \
+          IMAGES=$(find . -maxdepth 2 \
+            -name "Dockerfile" -type f | \
+            sed 's|^\./||' | \
+            sed 's|/Dockerfile$||' | sort | \
             jq -R -s -c 'split("\n")[:-1]')
           echo "images=$IMAGES" >> $GITHUB_OUTPUT
           echo "Found images: $IMAGES"
@@ -41,6 +49,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Ensure cloud image cache dir exists
+        run: |
+          mkdir -p "${{ matrix.image }}/cloud-image-cache"
+
+      - name: Cache Ubuntu cloud image
+        if: matrix.image == 'ubuntu-qemu-libvfio-user'
+        uses: actions/cache@v4
+        with:
+          path: ${{ matrix.image }}/cloud-image-cache
+          key: cloud-image-noble-amd64
+          restore-keys: cloud-image-noble-
+
+      - name: Pre-download cloud image
+        if: matrix.image == 'ubuntu-qemu-libvfio-user'
+        run: |
+          DIR="${{ matrix.image }}/cloud-image-cache"
+          IMG="${DIR}/noble-server-cloudimg-amd64.img"
+          if [ ! -f "$IMG" ]; then
+            wget -q -O "$IMG" \
+              "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+          fi
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -50,14 +80,27 @@ jobs:
           context: ${{ matrix.image }}
           file: ${{ matrix.image }}/Dockerfile
           push: false
+          load: true
           tags: batesste-ci-images-${{ matrix.image }}:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
             QEMU_COMMIT=v10.2.2
-            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && format('LIBVFIO_USER_COMMIT=082925c65d98021af5c0f36f60a98e0bb6ddb329') || '' }}
-            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && format('QEMU_MINIMAL_REPO=https://github.com/sbates130272/qemu-minimal.git') || '' }}
-            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && format('QEMU_MINIMAL_COMMIT=30c6d09265db2817f82e495aa5609e03fd0194a9') || '' }}
+            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'LIBVFIO_USER_COMMIT=082925c65d98021af5c0f36f60a98e0bb6ddb329' || '' }}
+            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_REPO=https://github.com/sbates130272/qemu-minimal.git' || '' }}
+            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_COMMIT=30c6d09265db2817f82e495aa5609e03fd0194a9' || '' }}
+
+      - name: Export Docker image
+        run: |
+          docker save \
+            "batesste-ci-images-${{ matrix.image }}:test" \
+            | gzip > "/tmp/${{ matrix.image }}.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-${{ matrix.image }}
+          path: /tmp/${{ matrix.image }}.tar.gz
+          retention-days: 1
 
   test-entrypoint:
     name: Test Container Entrypoint
@@ -78,28 +121,23 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Set up Docker Buildx
+      - name: Download Docker image artifact
         if: steps.check-entrypoint.outputs.exists == 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-${{ matrix.image }}
 
       - name: Load Docker image
         if: steps.check-entrypoint.outputs.exists == 'true'
-        uses: docker/build-push-action@v5
-        with:
-          context: ${{ matrix.image }}
-          file: ${{ matrix.image }}/Dockerfile
-          push: false
-          tags: batesste-ci-images-${{ matrix.image }}:test
-          load: true
-          build-args: |
-            QEMU_COMMIT=v10.2.2
-            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'LIBVFIO_USER_COMMIT=082925c65d98021af5c0f36f60a98e0bb6ddb329' || '' }}
+        run: |
+          gunzip -c "${{ matrix.image }}.tar.gz" \
+            | docker load
 
       - name: Test entrypoint script syntax
         if: steps.check-entrypoint.outputs.exists == 'true'
         run: |
           docker run --rm --entrypoint /bin/bash \
-            batesste-ci-images-${{ matrix.image }}:test \
+            "batesste-ci-images-${{ matrix.image }}:test" \
             -c "bash -n /build/entrypoint.sh && \
                 echo 'Entrypoint syntax OK'"
 
@@ -111,116 +149,121 @@ jobs:
             -e USERNAME=testuser \
             -e VM_NAME=test-vm \
             -e SSH_PORT=2222 \
-            batesste-ci-images-${{ matrix.image }}:test \
+            "batesste-ci-images-${{ matrix.image }}:test" \
             || true
 
       - name: Skip entrypoint test
         if: steps.check-entrypoint.outputs.exists == 'false'
         run: |
-          echo "No entrypoint.sh found, skipping entrypoint tests"
+          echo "No entrypoint.sh found, skipping"
 
   test-vm-packages:
     name: Test VM Packages
     runs-on: ubuntu-latest
     needs: [discover-images, build]
-    if: contains(fromJson(needs.discover-images.outputs.images), 'ubuntu-qemu-libvfio-user')
+    if: >-
+      contains(
+        fromJson(needs.discover-images.outputs.images),
+        'ubuntu-qemu-libvfio-user'
+      )
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Docker image with VM
-        uses: docker/build-push-action@v5
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
         with:
-          context: ubuntu-qemu-libvfio-user
-          file: ubuntu-qemu-libvfio-user/Dockerfile
-          push: false
-          tags: batesste-ci-images-ubuntu-qemu-libvfio-user:test
-          load: true
-          build-args: |
-            QEMU_COMMIT=v10.2.2
-            LIBVFIO_USER_COMMIT=082925c65d98021af5c0f36f60a98e0bb6ddb329
-            QEMU_MINIMAL_REPO=https://github.com/sbates130272/qemu-minimal.git
-            QEMU_MINIMAL_COMMIT=30c6d09265db2817f82e495aa5609e03fd0194a9
+          name: docker-image-ubuntu-qemu-libvfio-user
+
+      - name: Load Docker image
+        run: |
+          gunzip -c ubuntu-qemu-libvfio-user.tar.gz \
+            | docker load
 
       - name: Check packages.txt exists
         run: |
           if [ ! -f "ubuntu-qemu-libvfio-user/packages.txt" ]; then
-            echo "packages.txt not found, skipping package verification"
+            echo "packages.txt not found, skipping"
             exit 0
           fi
 
-      - name: Start VM container
+      - name: Start VM and wait for boot
         id: start-vm
         run: |
           docker run -d --name test-vm-packages \
             --cap-add NET_ADMIN \
             batesste-ci-images-ubuntu-qemu-libvfio-user:test
           echo "Waiting for VM to boot..."
-          sleep 60
-
-      - name: Verify packages are installed in VM
-        run: |
-          # Get kernel version from container
-          KERNEL_VERSION=$(docker exec test-vm-packages uname -r \
-            2>/dev/null || echo "")
-          echo "Container kernel version: ${KERNEL_VERSION}"
-          # Wait for SSH to be ready
-          echo "Waiting for SSH..."
-          for i in {1..60}; do
+          for i in $(seq 1 90); do
             if docker exec test-vm-packages bash -c \
               "chmod 600 /output/id_rsa && \
-               timeout 5 ssh -o StrictHostKeyChecking=no \
+               timeout 5 ssh \
+               -o StrictHostKeyChecking=no \
                -o UserKnownHostsFile=/dev/null \
-               -o ConnectTimeout=5 \
+               -o ConnectTimeout=3 \
                -p 2222 -i /output/id_rsa \
-               batesste@localhost 'echo OK' 2>&1" | grep -q "OK"; then
-              echo "SSH is ready!"
+               batesste@localhost \
+               'echo OK' 2>&1" \
+              | grep -q "OK"; then
+              echo "VM booted after ~$((i * 2))s"
               break
+            fi
+            if [ "$i" -eq 90 ]; then
+              echo "ERROR: VM failed to boot in 180s"
+              docker logs test-vm-packages
+              exit 1
             fi
             sleep 2
           done
-          # Check for each package
+
+      - name: Verify packages are installed in VM
+        run: |
+          KERNEL_VERSION=$(docker exec \
+            test-vm-packages uname -r \
+            2>/dev/null || echo "")
+          echo "Container kernel: ${KERNEL_VERSION}"
           MISSING_PACKAGES=""
           for PKG in build-essential rdma-core; do
             echo "Checking for ${PKG}..."
             if docker exec test-vm-packages bash -c \
               "chmod 600 /output/id_rsa && \
-               timeout 10 ssh -o StrictHostKeyChecking=no \
+               timeout 10 ssh \
+               -o StrictHostKeyChecking=no \
                -o UserKnownHostsFile=/dev/null \
                -o ConnectTimeout=10 \
                -p 2222 -i /output/id_rsa \
                batesste@localhost \
-               'dpkg -l | grep -E \"^ii.*${PKG}\"' 2>&1" | \
+               'dpkg -l | grep -E \"^ii.*${PKG}\"' \
+               2>&1" | \
               grep -q "^ii"; then
-              echo "✓ ${PKG} is installed"
+              echo "OK ${PKG} is installed"
             else
-              echo "✗ ${PKG} is NOT installed"
+              echo "FAIL ${PKG} is NOT installed"
               MISSING_PACKAGES="${MISSING_PACKAGES} ${PKG}"
             fi
           done
-          # Check for kernel headers (version-specific)
           if [ -n "${KERNEL_VERSION}" ]; then
-            KERNEL_MAJOR=$(echo "${KERNEL_VERSION}" | cut -d. -f1-2)
-            echo "Checking for linux-headers matching ${KERNEL_MAJOR}..."
+            KERNEL_MAJOR=$(echo "${KERNEL_VERSION}" \
+              | cut -d. -f1-2)
+            echo "Checking linux-headers ~${KERNEL_MAJOR}"
             if docker exec test-vm-packages bash -c \
               "chmod 600 /output/id_rsa && \
-               timeout 10 ssh -o StrictHostKeyChecking=no \
+               timeout 10 ssh \
+               -o StrictHostKeyChecking=no \
                -o UserKnownHostsFile=/dev/null \
                -o ConnectTimeout=10 \
                -p 2222 -i /output/id_rsa \
                batesste@localhost \
-               'dpkg -l | grep linux-headers' 2>&1" | \
+               'dpkg -l | grep linux-headers' \
+               2>&1" | \
               grep -q "linux-headers"; then
-              echo "✓ linux-headers is installed"
+              echo "OK linux-headers is installed"
             else
-              echo "✗ linux-headers is NOT installed"
+              echo "FAIL linux-headers is NOT installed"
               MISSING_PACKAGES="${MISSING_PACKAGES} linux-headers"
             fi
           fi
           if [ -n "${MISSING_PACKAGES}" ]; then
-            echo "ERROR: Missing packages:${MISSING_PACKAGES}"
+            echo "ERROR: Missing:${MISSING_PACKAGES}"
             exit 1
           else
             echo "All expected packages are installed!"
@@ -229,5 +272,7 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          docker stop test-vm-packages 2>/dev/null || true
-          docker rm test-vm-packages 2>/dev/null || true
+          docker stop test-vm-packages 2>/dev/null \
+            || true
+          docker rm test-vm-packages 2>/dev/null \
+            || true
