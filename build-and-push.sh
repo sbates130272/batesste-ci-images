@@ -24,6 +24,61 @@
 #     --cache-bust with a unique value (e.g., --cache-bust $(date +%s))
 #
 
+show_usage() {
+    cat <<'EOF'
+Usage: build-and-push.sh [IMAGE_NAME] [OPTIONS]
+
+Arguments:
+  IMAGE_NAME
+      Name of the image directory
+      (e.g., ubuntu-qemu-libvfio-user).
+      If not provided, builds all images.
+
+Options:
+  --password-file FILE
+      Path to file containing registry password
+      (alternative to REGISTRY_PASSWORD env var).
+  --no-cache
+      Build without using cache (forces full
+      rebuild).
+  --cache-bust VALUE
+      Add a cache-busting build arg to force
+      rebuild (useful when Dockerfile logic
+      changes but files don't).
+  -h, --help
+      Show this help message and exit.
+
+Password can be provided via:
+  - REGISTRY_PASSWORD env var (direct or file)
+  - REGISTRY_PASSWORD_FILE env var (file path)
+  - --password-file command line option
+  If REGISTRY_PASSWORD points to an existing
+  file, it will be read as a file.
+
+Environment variables:
+  IMAGE_TAG              Tag for the image
+                         (default: latest)
+  REGISTRY               OCI registry
+                         (default: docker.io)
+  REGISTRY_IMAGE         Full image name override, including registry
+  REGISTRY_USERNAME      Registry login username
+  REGISTRY_PASSWORD      Registry login password
+  REGISTRY_PASSWORD_FILE File containing password
+  WORKDIR                Working directory for build context
+  QEMU_COMMIT            QEMU version/commit to build
+                         (default: HEAD)
+  QEMU_MINIMAL_REPO      Repository URL for minimal QEMU source
+  QEMU_MINIMAL_COMMIT    Commit hash for minimal QEMU build
+  LIBVFIO_USER_COMMIT    libvfio-user commit hash
+                         (default: HEAD)
+  USERNAME               Username for guest/VM user inside the image
+  PASSWORD               Password for guest/VM user inside the image
+  VM_NAME                Name of the virtual machine or image variant
+  RELEASE                Base OS release (e.g., jammy, noble)
+  ARCH                   Target architecture (e.g., amd64, arm64)
+EOF
+}
+
 set -e
 
 # Source environment variables from .env if it exists
@@ -47,6 +102,10 @@ NO_CACHE=false
 CACHE_BUST=""
 while [[ $# -gt 0 ]]; do
     case $1 in
+        -h|--help)
+            show_usage
+            exit 0
+            ;;
         --password-file)
             PASSWORD_FILE="$2"
             shift 2
