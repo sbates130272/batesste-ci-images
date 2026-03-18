@@ -2,5 +2,9 @@
 *.token
 # Ignore the .env file.
 .env
+# Python virtual environment
+.venv/
 # Cached cloud images (downloaded in CI)
 **/cloud-image-cache/*.img
+# VSCode 
+.vscode

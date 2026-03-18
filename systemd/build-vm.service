@@ -8,7 +8,7 @@ Type=oneshot
 EnvironmentFile=/etc/batesste-ci-images/.env
 WorkingDirectory=/opt/batesste-ci-images
 # First, build and push the Docker image
-ExecStartPre=/opt/batesste-ci-images/build-and-push.sh
+ExecStartPre=/opt/batesste-ci-images/.venv/bin/python /opt/batesste-ci-images/ci-images-tool.py build
 # Then, run the container to build the VM image
 ExecStart=/usr/bin/docker run --rm \
     -v /home/stebates/Projects/qemu-minimal:/build/qemu-minimal \
