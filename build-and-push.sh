@@ -65,6 +65,8 @@ Environment variables:
   REGISTRY_PASSWORD      Registry login password
   REGISTRY_PASSWORD_FILE File containing password
   WORKDIR                Working directory for build context
+  QEMU_REPO              QEMU git repo URL
+                         (default: gitlab upstream)
   QEMU_COMMIT            QEMU version/commit to build
                          (default: HEAD)
   QEMU_MINIMAL_REPO      Repository URL for minimal QEMU source
@@ -141,6 +143,7 @@ REGISTRY=${REGISTRY:-docker.io}
 REGISTRY_USERNAME=${REGISTRY_USERNAME:-}
 REGISTRY_PASSWORD=${REGISTRY_PASSWORD:-}
 REGISTRY_PASSWORD_FILE=${REGISTRY_PASSWORD_FILE:-}
+QEMU_REPO=${QEMU_REPO:-https://gitlab.com/qemu-project/qemu.git}
 QEMU_COMMIT=${QEMU_COMMIT:-v10.2.2}
 LIBVFIO_USER_COMMIT=${LIBVFIO_USER_COMMIT:-082925c65d98021af5c0f36f60a98e0bb6ddb329}
 
@@ -242,6 +245,7 @@ for IMAGE_DIR in "${IMAGE_DIRS[@]}"; do
     # Pass build args that may be used by some images
     # Add cache-bust arg if provided (useful for forcing rebuilds)
     BUILD_ARGS=(
+        --build-arg QEMU_REPO="${QEMU_REPO}"
         --build-arg QEMU_COMMIT="${QEMU_COMMIT}"
         --build-arg LIBVFIO_USER_COMMIT="${LIBVFIO_USER_COMMIT}"
         --build-arg QEMU_MINIMAL_REPO="${QEMU_MINIMAL_REPO:-}"
