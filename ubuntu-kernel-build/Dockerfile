@@ -6,6 +6,16 @@ ARG CACHE_BUST=
 # Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Disable unattended-upgrades to prevent apt lock conflicts
+RUN apt-get update && \
+    apt-get remove -y --purge \
+      unattended-upgrades || true && \
+    echo 'APT::Periodic::Update-Package-Lists "0";' \
+      > /etc/apt/apt.conf.d/20auto-upgrades && \
+    echo 'APT::Periodic::Unattended-Upgrade "0";' \
+      >> /etc/apt/apt.conf.d/20auto-upgrades && \
+    rm -rf /var/lib/apt/lists/*
+
 # Install kernel build dependencies and headers
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
