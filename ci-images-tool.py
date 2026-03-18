@@ -543,7 +543,7 @@ def _query_registry(cfg: Config, repo_name: str) -> None:
     tags_url = f"{base}/v2/{repo_name}/tags/list"
     try:
         resp = requests.get(tags_url, headers=headers, timeout=15)
-    except requests.ConnectionError:
+    except requests.RequestException:
         console.print(f"  [red]Cannot reach registry:[/] {base}")
         return
 
