@@ -45,24 +45,43 @@ jobs:
     needs: discover-images
     strategy:
       matrix:
-        image: ${{ fromJson(needs.discover-images.outputs.images) }}
+        image: >-
+          ${{
+            fromJson(
+              needs.discover-images.outputs.images
+            )
+          }}
+        variant: ['']
+        include:
+          - image: ubuntu-qemu-libvfio-user
+            variant: '-sbates-fork'
+            qemu_repo: >-
+              https://github.com/sbates130272/qemu.git
+            qemu_commit: >-
+              dev/stephen/pci-mmio-bridge-submit
     steps:
       - uses: actions/checkout@v4
 
       - name: Ensure cloud image cache dir exists
         run: |
-          mkdir -p "${{ matrix.image }}/cloud-image-cache"
+          mkdir -p \
+            "${{ matrix.image }}/cloud-image-cache"
 
       - name: Cache Ubuntu cloud image
-        if: matrix.image == 'ubuntu-qemu-libvfio-user'
+        if: >-
+          matrix.image ==
+          'ubuntu-qemu-libvfio-user'
         uses: actions/cache@v4
         with:
-          path: ${{ matrix.image }}/cloud-image-cache
+          path: >-
+            ${{ matrix.image }}/cloud-image-cache
           key: cloud-image-noble-amd64
           restore-keys: cloud-image-noble-
 
       - name: Pre-download cloud image
-        if: matrix.image == 'ubuntu-qemu-libvfio-user'
+        if: >-
+          matrix.image ==
+          'ubuntu-qemu-libvfio-user'
         run: |
           DIR="${{ matrix.image }}/cloud-image-cache"
           IMG="${DIR}/noble-server-cloudimg-amd64.img"
@@ -81,11 +100,27 @@ jobs:
           file: ${{ matrix.image }}/Dockerfile
           push: false
           load: true
-          tags: batesste-ci-images-${{ matrix.image }}:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: >-
+            batesste-ci-images-${{
+              matrix.image
+            }}${{
+              matrix.variant
+            }}:test
+          cache-from: >-
+            type=gha,scope=${{
+              matrix.image
+            }}${{
+              matrix.variant
+            }}
+          cache-to: >-
+            type=gha,mode=max,scope=${{
+              matrix.image
+            }}${{
+              matrix.variant
+            }}
           build-args: |
-            QEMU_COMMIT=v10.2.2
+            QEMU_REPO=${{ matrix.qemu_repo || 'https://gitlab.com/qemu-project/qemu.git' }}
+            QEMU_COMMIT=${{ matrix.qemu_commit || 'v10.2.2' }}
             ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'LIBVFIO_USER_COMMIT=082925c65d98021af5c0f36f60a98e0bb6ddb329' || '' }}
             ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_REPO=https://github.com/sbates130272/qemu-minimal.git' || '' }}
             ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_COMMIT=30c6d09265db2817f82e495aa5609e03fd0194a9' || '' }}
@@ -93,13 +128,24 @@ jobs:
       - name: Export Docker image
         run: |
           docker save \
-            "batesste-ci-images-${{ matrix.image }}:test" \
-            | gzip > "/tmp/${{ matrix.image }}.tar.gz"
+            "batesste-ci-images-${{ matrix.image }}${{ matrix.variant }}:test" \
+            | gzip \
+            > "/tmp/${{ matrix.image }}${{ matrix.variant }}.tar.gz"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: docker-image-${{ matrix.image }}
-          path: /tmp/${{ matrix.image }}.tar.gz
+          name: >-
+            docker-image-${{
+              matrix.image
+            }}${{
+              matrix.variant
+            }}
+          path: >-
+            /tmp/${{
+              matrix.image
+            }}${{
+              matrix.variant
+            }}.tar.gz
           retention-days: 1
 
   test-entrypoint:
@@ -108,52 +154,81 @@ jobs:
     needs: [discover-images, build]
     strategy:
       matrix:
-        image: ${{ fromJson(needs.discover-images.outputs.images) }}
+        image: >-
+          ${{
+            fromJson(
+              needs.discover-images.outputs.images
+            )
+          }}
+        variant: ['']
+        include:
+          - image: ubuntu-qemu-libvfio-user
+            variant: '-sbates-fork'
     steps:
       - uses: actions/checkout@v4
 
       - name: Check if entrypoint.sh exists
         id: check-entrypoint
         run: |
-          if [ -f "${{ matrix.image }}/entrypoint.sh" ]; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+          if [ -f \
+            "${{ matrix.image }}/entrypoint.sh" \
+          ]; then
+            echo "exists=true" \
+              >> $GITHUB_OUTPUT
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "exists=false" \
+              >> $GITHUB_OUTPUT
           fi
 
       - name: Download Docker image artifact
-        if: steps.check-entrypoint.outputs.exists == 'true'
+        if: >-
+          steps.check-entrypoint.outputs.exists
+          == 'true'
         uses: actions/download-artifact@v4
         with:
-          name: docker-image-${{ matrix.image }}
+          name: >-
+            docker-image-${{
+              matrix.image
+            }}${{
+              matrix.variant
+            }}
 
       - name: Load Docker image
-        if: steps.check-entrypoint.outputs.exists == 'true'
+        if: >-
+          steps.check-entrypoint.outputs.exists
+          == 'true'
         run: |
-          gunzip -c "${{ matrix.image }}.tar.gz" \
+          gunzip -c \
+            "${{ matrix.image }}${{ matrix.variant }}.tar.gz" \
             | docker load
 
       - name: Test entrypoint script syntax
-        if: steps.check-entrypoint.outputs.exists == 'true'
+        if: >-
+          steps.check-entrypoint.outputs.exists
+          == 'true'
         run: |
           docker run --rm --entrypoint /bin/bash \
-            "batesste-ci-images-${{ matrix.image }}:test" \
+            "batesste-ci-images-${{ matrix.image }}${{ matrix.variant }}:test" \
             -c "bash -n /build/entrypoint.sh && \
                 echo 'Entrypoint syntax OK'"
 
-      - name: Test entrypoint help (should show usage)
-        if: steps.check-entrypoint.outputs.exists == 'true'
+      - name: Test entrypoint help
+        if: >-
+          steps.check-entrypoint.outputs.exists
+          == 'true'
         run: |
           timeout 10 docker run --rm \
             --cap-add NET_ADMIN \
             -e USERNAME=testuser \
             -e VM_NAME=test-vm \
             -e SSH_PORT=2222 \
-            "batesste-ci-images-${{ matrix.image }}:test" \
+            "batesste-ci-images-${{ matrix.image }}${{ matrix.variant }}:test" \
             || true
 
       - name: Skip entrypoint test
-        if: steps.check-entrypoint.outputs.exists == 'false'
+        if: >-
+          steps.check-entrypoint.outputs.exists
+          == 'false'
         run: |
           echo "No entrypoint.sh found, skipping"
 

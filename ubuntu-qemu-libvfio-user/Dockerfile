@@ -33,6 +33,7 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Accept QEMU and libvfio-user tags or commit SHAs
+ARG QEMU_REPO=https://gitlab.com/qemu-project/qemu.git
 ARG QEMU_COMMIT=v10.2.2
 ARG LIBVFIO_USER_COMMIT=082925c65d98021af5c0f36f60a98e0bb6ddb329
 
@@ -53,7 +54,7 @@ RUN git clone --filter=blob:none \
     https://gitlab.com/qemu-project/libvfio-user.git \
     /build/libvfio-user && \
     cd /build/libvfio-user && \
-    git checkout ${LIBVFIO_USER_COMMIT} && \
+    git checkout "${LIBVFIO_USER_COMMIT}" && \
     git rev-parse HEAD \
         > /build/libvfio-user-commit.txt && \
     meson setup build && \
@@ -65,14 +66,14 @@ RUN git clone --filter=blob:none \
 RUN if echo "${QEMU_COMMIT}" | \
         grep -qE '^[0-9a-f]{7,40}$'; then \
         git clone --filter=blob:none \
-            https://gitlab.com/qemu-project/qemu.git \
+            "${QEMU_REPO}" \
             /build/qemu && \
         cd /build/qemu && \
-        git checkout ${QEMU_COMMIT}; \
+        git checkout "${QEMU_COMMIT}"; \
     else \
         git clone --depth 1 \
-            --branch ${QEMU_COMMIT} \
-            https://gitlab.com/qemu-project/qemu.git \
+            --branch "${QEMU_COMMIT}" \
+            "${QEMU_REPO}" \
             /build/qemu; \
     fi && \
     cd /build/qemu && \
