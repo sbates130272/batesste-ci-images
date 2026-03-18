@@ -24,10 +24,12 @@ batesste-ci-images/
 ├── ubuntu-kernel-build/       # Kernel build environment
 │   ├── Dockerfile
 │   └── README.md
-├── systemd/                    # Systemd service files
+├── systemd/                   # Systemd service files
 │   ├── build-vm.service
 │   └── build-vm.timer
-├── build-and-push.sh          # Script to build and push all images
+├── ci-images-tool.py          # Python CLI for build/push/inspect
+├── requirements.txt           # Python dependencies
+├── .python-version            # Python version pin (3.12)
 ├── env.example                # Example environment configuration
 └── README.md
 ```
@@ -35,30 +37,76 @@ batesste-ci-images/
 ## Prerequisites
 
 - Docker installed and running
+- Python 3.12+ (for the CLI tool)
 - Systemd (for automated daily rebuilds, optional)
-- Additional prerequisites may be required per image (see individual
-  image documentation)
+- Additional prerequisites may be required per image (see
+  individual image documentation)
 
 ## Quick Start
 
-### 1. Build Docker Images
-
-To build all images at once, use the `build-and-push.sh` script:
+### 0. Set Up the Python Virtual Environment
 
 ```bash
-./build-and-push.sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 1. Build Docker Images
+
+Build all images at once:
+
+```bash
+./ci-images-tool.py build
 ```
 
 Or build a specific image:
 
 ```bash
-./build-and-push.sh ubuntu-qemu-libvfio-user
+./ci-images-tool.py build ubuntu-qemu-libvfio-user
 ```
 
-To specify a password file for registry authentication:
+Preview the docker commands without executing them:
 
 ```bash
-./build-and-push.sh ubuntu-qemu-libvfio-user --password-file /path/to/password.txt
+./ci-images-tool.py build --dry-run
+```
+
+Specify a password file for registry authentication:
+
+```bash
+./ci-images-tool.py build \
+  ubuntu-qemu-libvfio-user \
+  --password-file /path/to/password.txt
+```
+
+### 1a. List and Inspect Images
+
+List all discoverable image directories:
+
+```bash
+./ci-images-tool.py list
+```
+
+Inspect a locally-built image (size, layers, tags):
+
+```bash
+./ci-images-tool.py inspect ubuntu-qemu-libvfio-user
+```
+
+Check what tags exist on the remote registry:
+
+```bash
+./ci-images-tool.py status
+```
+
+### 1b. Push Images Separately
+
+Build first, then push as a separate step:
+
+```bash
+./ci-images-tool.py build ubuntu-qemu-libvfio-user
+./ci-images-tool.py push ubuntu-qemu-libvfio-user
 ```
 
 You can also build images directly with Docker:
@@ -69,8 +117,8 @@ docker build -f <image-directory>/Dockerfile \
   <image-directory>
 ```
 
-Each image may support different build arguments. See the individual image
-documentation for details.
+Each image may support different build arguments. See the
+individual image documentation for details.
 
 ### 2. Configure Environment Variables
 
@@ -118,10 +166,11 @@ Common configuration variables:
 - `IMAGE_TAG`: Image tag to use (default: `latest`)
 - `WORKDIR`: Working directory for builds (defaults to script directory)
 
-The `build-and-push.sh` script also supports:
-- `--password-file FILE`: Command-line option to specify password file
-- Automatically reads `.env` from script directory, current directory, or
-  `/etc/batesste-ci-images/.env` (in that order)
+The `ci-images-tool.py` CLI also supports:
+- `--password-file FILE`: specify a password file
+- `--env-file PATH`: override the `.env` search path
+- Automatically reads `.env` from script directory, current
+  directory, or `/etc/batesste-ci-images/.env` (in order)
 
 Image-specific variables are documented in each image's directory. For
 example, the `ubuntu-qemu-libvfio-user` image may use variables like
@@ -142,8 +191,12 @@ To set up automated daily rebuilds at 3am:
 ```bash
 sudo cp systemd/build-vm.service /etc/systemd/system/
 sudo cp systemd/build-vm.timer /etc/systemd/system/
-sudo cp build-and-push.sh /opt/batesste-ci-images/
-sudo chmod +x /opt/batesste-ci-images/build-and-push.sh
+sudo cp ci-images-tool.py /opt/batesste-ci-images/
+sudo cp requirements.txt /opt/batesste-ci-images/
+sudo chmod +x /opt/batesste-ci-images/ci-images-tool.py
+sudo python3 -m venv /opt/batesste-ci-images/.venv
+sudo /opt/batesste-ci-images/.venv/bin/pip install \
+  -r /opt/batesste-ci-images/requirements.txt
 sudo mkdir -p /opt/batesste-ci-images/output
 sudo mkdir -p /etc/batesste-ci-images
 sudo cp .env /etc/batesste-ci-images/.env
@@ -162,7 +215,7 @@ REGISTRY_PASSWORD=your-password-or-token
 IMAGE_TAG=latest
 ```
 
-Note: When using `build-and-push.sh`, images will be tagged as
+Note: When using `ci-images-tool.py`, images are tagged as
 `{REGISTRY}/{REGISTRY_IMAGE}-{image-directory}:{IMAGE_TAG}`. For example,
 with `REGISTRY_IMAGE=batesste-ci-images` and `IMAGE_TAG=latest`, the
 ubuntu-qemu-libvfio-user image will be tagged as
@@ -181,9 +234,11 @@ For Docker Hub, you can use a Personal Access Token instead of your password:
 
 Edit `/etc/systemd/system/build-vm.service` to match your system paths if
 needed. The service will:
-1. Build the Docker image(s) using `build-and-push.sh`
-2. Push the image(s) to the configured registry (if credentials are provided)
-3. Optionally run containers or build artifacts (image-specific)
+1. Build the Docker image(s) using `ci-images-tool.py`
+2. Push the image(s) to the configured registry (if
+   credentials are provided)
+3. Optionally run containers or build artifacts
+   (image-specific)
 
 ### 4. Enable and Start Timer
 
@@ -298,7 +353,8 @@ To add a new image:
    - Configuration options
 5. Update this top-level README to list the new image in the "Available
    Images" section
-6. The `build-and-push.sh` script will automatically discover and build it
+6. The `ci-images-tool.py` CLI will automatically
+   discover and build it
 
 The image directory name will be used as part of the Docker image tag:
 `{REGISTRY_IMAGE}-{image-directory}:{IMAGE_TAG}`
