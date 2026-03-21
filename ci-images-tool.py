@@ -35,6 +35,7 @@ DEFAULT_USERNAME = "batesste"
 DEFAULT_PASSWORD = "changeme"
 DEFAULT_RELEASE = "noble"
 DEFAULT_ARCH = "amd64"
+DEFAULT_COMPRESS_VM_QCOW2 = "true"
 
 ENV_SEARCH_PATHS = [
     ".env",
@@ -67,6 +68,7 @@ class Config:
     password: str = DEFAULT_PASSWORD
     release: str = DEFAULT_RELEASE
     arch: str = DEFAULT_ARCH
+    compress_vm_qcow2: str = DEFAULT_COMPRESS_VM_QCOW2
 
 
 def _resolve_password(
@@ -152,6 +154,10 @@ def load_config(
         password=os.environ.get("PASSWORD", DEFAULT_PASSWORD),
         release=os.environ.get("RELEASE", DEFAULT_RELEASE),
         arch=os.environ.get("ARCH", DEFAULT_ARCH),
+        compress_vm_qcow2=os.environ.get(
+            "COMPRESS_VM_QCOW2",
+            DEFAULT_COMPRESS_VM_QCOW2,
+        ),
     )
 
     cfg.registry_password = _resolve_password(password_file, cfg)
@@ -318,6 +324,7 @@ def cmd_build(args: argparse.Namespace) -> None:
             f"PASSWORD={cfg.password}",
             f"RELEASE={cfg.release}",
             f"ARCH={cfg.arch}",
+            f"COMPRESS_VM_QCOW2={cfg.compress_vm_qcow2}",
         ]
         if args.cache_bust:
             build_args.append(f"CACHE_BUST={args.cache_bust}")
@@ -384,6 +391,7 @@ def _print_build_summary(
         table.add_row("Cache Bust", args.cache_bust)
     if args.no_cache:
         table.add_row("No Cache", "true")
+    table.add_row("Compress VM qcow2", cfg.compress_vm_qcow2)
     console.print(table)
 
 

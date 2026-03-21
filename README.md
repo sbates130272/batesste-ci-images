@@ -338,6 +338,43 @@ docker run --rm \
 Or mount the `/output` directory when running the container to access both the
 VM image and metadata file.
 
+### Performance Notes for GitHub Actions
+
+If this image is used as the container image for CI in another repository, the
+largest bottlenecks are usually image pull time and VM boot time.
+
+#### 1. KVM Acceleration on GitHub Runners
+
+KVM can be used when the runner exposes `/dev/kvm` and you pass it through to
+the container:
+
+```bash
+docker run --rm --device /dev/kvm ...
+```
+
+In workflows, always detect `/dev/kvm` first and fall back to TCG when it is
+not present. This repository's Dockerfile test workflow now does this
+automatically.
+
+#### 2. Smaller Embedded qcow2 Artifacts
+
+The `ubuntu-qemu-libvfio-user` image supports qcow2 compression during build
+with:
+
+```bash
+COMPRESS_VM_QCOW2=true
+```
+
+Compression is enabled by default and reduces registry transfer size for image
+pulls. If your workload is more sensitive to VM disk CPU overhead than pull
+time, set `COMPRESS_VM_QCOW2=false`.
+
+#### 3. Runtime Image Size Reduction
+
+The Dockerfile removes build-only dependencies after QEMU and VM image build so
+the final image carries less toolchain bloat. This improves pull/start latency
+for downstream CI jobs.
+
 ## Adding New Images
 
 To add a new image:

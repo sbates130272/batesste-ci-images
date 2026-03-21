@@ -217,7 +217,15 @@ jobs:
           steps.check-entrypoint.outputs.exists
           == 'true'
         run: |
+          KVM_ARGS=""
+          if [ -c /dev/kvm ]; then
+            KVM_ARGS="--device /dev/kvm"
+            echo "KVM available: enabling /dev/kvm pass-through"
+          else
+            echo "KVM not available: using TCG emulation"
+          fi
           timeout 10 docker run --rm \
+            ${KVM_ARGS} \
             --cap-add NET_ADMIN \
             -e USERNAME=testuser \
             -e VM_NAME=test-vm \
@@ -264,7 +272,15 @@ jobs:
       - name: Start VM and wait for boot
         id: start-vm
         run: |
+          KVM_ARGS=""
+          if [ -c /dev/kvm ]; then
+            KVM_ARGS="--device /dev/kvm"
+            echo "KVM available: enabling /dev/kvm pass-through"
+          else
+            echo "KVM not available: using TCG emulation"
+          fi
           docker run -d --name test-vm-packages \
+            ${KVM_ARGS} \
             --cap-add NET_ADMIN \
             batesste-ci-images-ubuntu-qemu-libvfio-user:test
           echo "Waiting for VM to boot..."

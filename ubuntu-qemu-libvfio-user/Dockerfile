@@ -46,6 +46,7 @@ ARG PASSWORD=changeme
 ARG RELEASE=noble
 ARG ARCH=amd64
 ARG CACHE_BUST=
+ARG COMPRESS_VM_QCOW2=true
 
 WORKDIR /build
 
@@ -86,6 +87,8 @@ RUN ./configure --target-list=x86_64-softmmu \
                 --prefix=/opt/qemu && \
     make -j$(nproc) && \
     make install && \
+    strip /opt/qemu/bin/qemu-system-* \
+        /opt/qemu/bin/qemu-img || true && \
     rm -rf /build/qemu
 
 # Install cloud-init utilities for VM creation
@@ -214,8 +217,22 @@ RUN --mount=type=bind,source=cloud-image-cache,target=/tmp/cloud-cache \
         [ -f "${IMAGES}/${FINAL_VM_NAME}.qcow2" ] || \
             { echo "Error: VM image not created!"; \
               ls -la "${IMAGES}/"; exit 1; }; \
-        cp "${IMAGES}/${FINAL_VM_NAME}.qcow2" \
-            /output/ && \
+        SOURCE_VM_IMAGE="${IMAGES}/${FINAL_VM_NAME}.qcow2"; \
+        FINAL_VM_IMAGE="${SOURCE_VM_IMAGE}"; \
+        if [ "${COMPRESS_VM_QCOW2}" = "true" ]; then \
+            echo "Compressing qcow2 image for smaller CI pulls..."; \
+            COMPRESSED_VM_IMAGE="/tmp/${FINAL_VM_NAME}.qcow2"; \
+            /opt/qemu/bin/qemu-img convert \
+                -f qcow2 \
+                -O qcow2 \
+                -c \
+                "${SOURCE_VM_IMAGE}" \
+                "${COMPRESSED_VM_IMAGE}"; \
+            FINAL_VM_IMAGE="${COMPRESSED_VM_IMAGE}"; \
+        fi; \
+        cp "${FINAL_VM_IMAGE}" \
+            "/output/${FINAL_VM_NAME}.qcow2" && \
+        rm -f /tmp/"${FINAL_VM_NAME}.qcow2" && \
         cp /root/.ssh/id_rsa /output/id_rsa \
             2>/dev/null || true; \
         cp /root/.ssh/id_rsa.pub /output/id_rsa.pub \
@@ -257,6 +274,22 @@ RUN --mount=type=bind,source=cloud-image-cache,target=/tmp/cloud-cache \
         rm -f /tmp/create_vm_info.py && \
         rm -rf "${QM}"; \
     fi
+
+# Remove build-only dependencies to reduce runtime image size
+RUN apt-get update && \
+    apt-get purge -y \
+    build-essential \
+    git \
+    ninja-build \
+    pkg-config \
+    libglib2.0-dev \
+    libpixman-1-dev \
+    libslirp-dev \
+    meson \
+    libjson-c-dev \
+    libcmocka-dev \
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy scripts
 COPY entrypoint.sh /build/entrypoint.sh
