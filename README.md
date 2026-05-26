@@ -13,6 +13,8 @@ and pushing of these images.
 - **ubuntu-kernel-build**: Ubuntu-based image with tools for building Linux
   kernels and out-of-tree kernel modules. See `ubuntu-kernel-build/` for
   details.
+- **ubuntu-cuda-rocm**: Toolkit-only dual-stack environment with CUDA and
+  ROCm/HIP tools on Ubuntu 24.04. See `ubuntu-cuda-rocm/` for details.
 
 ## Project Structure
 
@@ -24,6 +26,11 @@ batesste-ci-images/
 ├── ubuntu-kernel-build/       # Kernel build environment
 │   ├── Dockerfile
 │   └── README.md
+├── ubuntu-cuda-rocm/          # CUDA + ROCm toolchains
+│   ├── Dockerfile
+│   ├── README.md
+│   ├── cuda-latest
+│   └── rocm-latest
 ├── systemd/                   # Systemd service files
 │   ├── build-vm.service
 │   └── build-vm.timer
@@ -163,7 +170,8 @@ Common configuration variables:
 - `REGISTRY_PASSWORD`: Registry password or token for authentication
   - Can be a direct password or a path to a file containing the password
 - `REGISTRY_PASSWORD_FILE`: Alternative way to specify password file path
-- `IMAGE_TAG`: Image tag to use (default: `latest`)
+- `IMAGE_TAG`: Image tag to use (`auto` = today's date, e.g.
+  `may-26-2026`; set `latest` to pin that tag)
 - `WORKDIR`: Working directory for builds (defaults to script directory)
 
 The `ci-images-tool.py` CLI also supports:

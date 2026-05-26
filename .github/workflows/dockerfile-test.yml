@@ -351,3 +351,41 @@ jobs:
             || true
           docker rm test-vm-packages 2>/dev/null \
             || true
+
+  test-gpu-toolchains:
+    name: Test GPU Toolchains (CUDA + ROCm)
+    runs-on: ubuntu-latest
+    needs: [discover-images, build]
+    if: >-
+      contains(
+        fromJson(needs.discover-images.outputs.images),
+        'ubuntu-cuda-rocm'
+      )
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-ubuntu-cuda-rocm
+
+      - name: Load Docker image
+        run: |
+          gunzip -c ubuntu-cuda-rocm.tar.gz \
+            | docker load
+
+      - name: Verify toolkit binaries and install paths
+        run: |
+          docker run --rm \
+            "batesste-ci-images-ubuntu-cuda-rocm:test" \
+            bash -lc '
+              set -e
+              echo "CUDA version file:"; cat /etc/cuda-version
+              echo "ROCm version file:"; cat /etc/rocm-version
+
+              echo "CUDA nvcc:"; which nvcc; nvcc --version
+              echo "ROCm hipcc:"; which hipcc; hipcc --version
+
+              test -d /opt/rocm
+              test -e /usr/local/cuda || test -n "$(ls -d /usr/local/cuda-* 2>/dev/null | head -n 1)"
+            '

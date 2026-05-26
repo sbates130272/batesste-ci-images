@@ -1,0 +1,26 @@
+#!/bin/bash
+#
+# Query the NVIDIA CUDA apt repository for the highest cuda-toolkit-M-N
+# package version. Use QUIET=true to print only the M-N tag (e.g. 13-2).
+
+CUDA_REPO=${CUDA_REPO:-https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64}
+QUIET=${QUIET:-false}
+
+PACKAGES_URL="${CUDA_REPO}/Packages"
+
+LATEST=$(curl -fsSL "${PACKAGES_URL}" | \
+    awk '/^Package: cuda-toolkit-[0-9]+-[0-9]+$/{print $2}' | \
+    sed 's/^cuda-toolkit-//' | \
+    sort -V | \
+    tail -n 1)
+
+if [ -z "${LATEST}" ]; then
+    echo "cuda-latest: failed to detect cuda-toolkit version" >&2
+    exit 1
+fi
+
+if [ "${QUIET}" = "true" ]; then
+    echo "${LATEST}"
+else
+    echo "CUDA toolkit latest: ${LATEST}"
+fi
