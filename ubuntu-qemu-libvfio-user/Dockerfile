@@ -4,16 +4,6 @@ FROM ubuntu:24.04
 # Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Disable unattended-upgrades to prevent apt lock conflicts
-RUN apt-get update && \
-    apt-get remove -y --purge \
-      unattended-upgrades || true && \
-    echo 'APT::Periodic::Update-Package-Lists "0";' \
-      > /etc/apt/apt.conf.d/20auto-upgrades && \
-    echo 'APT::Periodic::Unattended-Upgrade "0";' \
-      >> /etc/apt/apt.conf.d/20auto-upgrades && \
-    rm -rf /var/lib/apt/lists/*
-
 # Install build dependencies for QEMU and libvfio-user
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -269,5 +259,21 @@ ENV PATH=/opt/qemu/bin:${PATH}
 ENV SSH_PORT=2222
 ENV VCPUS=2
 ENV VMEM=4096
+
+# Disable unattended-upgrades to prevent apt lock conflicts.
+# Must run after all other apt-get install steps so nothing
+# pulls the package back in as a dependency.
+RUN apt-get update && \
+    apt-get remove -y --purge \
+      unattended-upgrades || true && \
+    echo 'APT::Periodic::Update-Package-Lists "0";' \
+      > /etc/apt/apt.conf.d/20auto-upgrades && \
+    echo 'APT::Periodic::Download-Upgradeable-Packages "0";' \
+      >> /etc/apt/apt.conf.d/20auto-upgrades && \
+    echo 'APT::Periodic::AutocleanInterval "0";' \
+      >> /etc/apt/apt.conf.d/20auto-upgrades && \
+    echo 'APT::Periodic::Unattended-Upgrade "0";' \
+      >> /etc/apt/apt.conf.d/20auto-upgrades && \
+    rm -rf /var/lib/apt/lists/*
 
 ENTRYPOINT ["/build/entrypoint.sh"]
