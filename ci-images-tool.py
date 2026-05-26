@@ -14,6 +14,7 @@ import argparse
 import os
 import subprocess
 import sys
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -35,11 +36,28 @@ DEFAULT_USERNAME = "batesste"
 DEFAULT_PASSWORD = "changeme"
 DEFAULT_RELEASE = "noble"
 DEFAULT_ARCH = "amd64"
+DEFAULT_CUDA_VERSION = "latest"
+DEFAULT_ROCM_VERSION = "latest"
 
 ENV_SEARCH_PATHS = [
     ".env",
     "/etc/batesste-ci-images/.env",
 ]
+
+
+def resolve_image_tag(raw: Optional[str] = None) -> str:
+    """Return the effective OCI image tag.
+
+    When unset, empty, or set to ``auto``/``date``, use today's date in the
+    form ``may-26-2026``. Otherwise return the provided tag (e.g. ``latest``).
+    """
+
+    if raw is None:
+        raw = os.environ.get("IMAGE_TAG", "")
+    tag = (raw or "").strip()
+    if not tag or tag.lower() in {"auto", "date"}:
+        return datetime.now().strftime("%B-%d-%Y").lower()
+    return tag
 
 
 # ── configuration ──────────────────────────────────────
@@ -67,6 +85,8 @@ class Config:
     password: str = DEFAULT_PASSWORD
     release: str = DEFAULT_RELEASE
     arch: str = DEFAULT_ARCH
+    cuda_version: str = DEFAULT_CUDA_VERSION
+    rocm_version: str = DEFAULT_ROCM_VERSION
 
 
 def _resolve_password(
@@ -133,7 +153,7 @@ def load_config(
         workdir = script_dir
 
     cfg = Config(
-        image_tag=os.environ.get("IMAGE_TAG", DEFAULT_IMAGE_TAG),
+        image_tag=resolve_image_tag(os.environ.get("IMAGE_TAG")),
         registry=os.environ.get("REGISTRY", DEFAULT_REGISTRY),
         registry_image=os.environ.get("REGISTRY_IMAGE", ""),
         registry_username=os.environ.get("REGISTRY_USERNAME", ""),
@@ -152,6 +172,8 @@ def load_config(
         password=os.environ.get("PASSWORD", DEFAULT_PASSWORD),
         release=os.environ.get("RELEASE", DEFAULT_RELEASE),
         arch=os.environ.get("ARCH", DEFAULT_ARCH),
+        cuda_version=os.environ.get("CUDA_VERSION", DEFAULT_CUDA_VERSION),
+        rocm_version=os.environ.get("ROCM_VERSION", DEFAULT_ROCM_VERSION),
     )
 
     cfg.registry_password = _resolve_password(password_file, cfg)
@@ -319,6 +341,11 @@ def cmd_build(args: argparse.Namespace) -> None:
             f"RELEASE={cfg.release}",
             f"ARCH={cfg.arch}",
         ]
+        if image_dir == "ubuntu-cuda-rocm":
+            build_args += [
+                f"CUDA_VERSION={cfg.cuda_version}",
+                f"ROCM_VERSION={cfg.rocm_version}",
+            ]
         if args.cache_bust:
             build_args.append(f"CACHE_BUST={args.cache_bust}")
 
