@@ -14,10 +14,9 @@ import argparse
 import os
 import subprocess
 import sys
-from datetime import datetime
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 import docker
 import requests
@@ -45,7 +44,7 @@ ENV_SEARCH_PATHS = [
 ]
 
 
-def resolve_image_tag(raw: Optional[str] = None) -> str:
+def resolve_image_tag(raw: str | None = None) -> str:
     """Return the effective OCI image tag.
 
     When unset, empty, or set to ``auto``/``date``, use today's date in the
@@ -56,7 +55,7 @@ def resolve_image_tag(raw: Optional[str] = None) -> str:
         raw = os.environ.get("IMAGE_TAG", "")
     tag = (raw or "").strip()
     if not tag or tag.lower() in {"auto", "date"}:
-        return datetime.now().strftime("%B-%d-%Y").lower()
+        return datetime.now(tz=timezone.utc).strftime("%B-%d-%Y").lower()
     return tag
 
 
@@ -90,13 +89,13 @@ class Config:
 
 
 def _resolve_password(
-    password_file_cli: Optional[str],
+    password_file_cli: str | None,
     cfg: Config,
 ) -> str:
     """Resolve registry password: CLI file > env file >
     env literal.  Mirrors the shell script precedence."""
 
-    pw_file: Optional[str] = None
+    pw_file: str | None = None
 
     if password_file_cli:
         pw_file = password_file_cli
@@ -118,8 +117,8 @@ def _resolve_password(
 
 
 def load_config(
-    env_file: Optional[str] = None,
-    password_file: Optional[str] = None,
+    env_file: str | None = None,
+    password_file: str | None = None,
 ) -> Config:
     """Load .env then populate a Config from the
     environment, applying defaults."""
@@ -193,7 +192,7 @@ def discover_images(workdir: Path) -> list[str]:
     return dirs
 
 
-def resolve_image_dirs(workdir: Path, image_arg: Optional[str]) -> list[str]:
+def resolve_image_dirs(workdir: Path, image_arg: str | None) -> list[str]:
     """If the caller specified a single image name, return
     it; otherwise discover all."""
     if image_arg:
@@ -227,7 +226,7 @@ def full_image_ref(cfg: Config, image_dir: str) -> str:
     return name
 
 
-def tagged_ref(cfg: Config, image_dir: str, tag: Optional[str] = None) -> str:
+def tagged_ref(cfg: Config, image_dir: str, tag: str | None = None) -> str:
     """Full registry/name:tag string."""
     t = tag or cfg.image_tag
     name = full_image_ref(cfg, image_dir)
@@ -265,11 +264,13 @@ def ensure_builder() -> None:
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
     use_proc = subprocess.run(
         ["docker", "buildx", "use", "builder"],
         capture_output=True,
         text=True,
+        check=False,
     )
     if use_proc.returncode != 0:
         console.print(
@@ -529,7 +530,7 @@ def _registry_base_url(registry: str) -> str:
     return registry
 
 
-def _docker_hub_token(repo: str) -> Optional[str]:
+def _docker_hub_token(repo: str) -> str | None:
     """Obtain a Docker Hub bearer token for public
     read access."""
     url = (

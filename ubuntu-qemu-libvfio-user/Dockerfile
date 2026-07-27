@@ -3,14 +3,6 @@ FROM ubuntu:24.04
 # Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install AMD/Zscaler corporate CA so apt-get, git, wget, curl
-# all work through the TLS-inspecting proxy on this build node.
-COPY amd-root-ca.crt /usr/local/share/ca-certificates/amd-root-ca.crt
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
-    update-ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
-
 # Install build dependencies for QEMU and libvfio-user
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
