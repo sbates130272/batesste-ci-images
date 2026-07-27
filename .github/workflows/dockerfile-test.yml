@@ -297,7 +297,7 @@ jobs:
             2>/dev/null || echo "")
           echo "Container kernel: ${KERNEL_VERSION}"
           MISSING_PACKAGES=""
-          for PKG in build-essential rdma-core; do
+          for PKG in build-essential rdma-core ibverbs-utils libibverbs-dev cmake ninja-build pkg-config; do
             echo "Checking for ${PKG}..."
             if docker exec test-vm-packages bash -c \
               "chmod 600 /output/id_rsa && \
