@@ -2,3 +2,8 @@ build-essential
 linux-headers-${KERNEL_VERSION}
 linux-modules-extra-${KERNEL_VERSION}
 rdma-core
+ibverbs-utils
+libibverbs-dev
+cmake
+ninja-build
+pkg-config
