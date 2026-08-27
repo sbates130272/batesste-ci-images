@@ -15,6 +15,9 @@ and pushing of these images.
   details.
 - **ubuntu-cuda-rocm**: Toolkit-only dual-stack environment with CUDA and
   ROCm/HIP tools on Ubuntu 24.04. See `ubuntu-cuda-rocm/` for details.
+- **ubuntu-rocm-ernic**: Ubuntu 24.04 image with libvfio-user and rocm-ernic
+  built from pinned source commits. Designed for RDMA/ERNIC development and
+  CI. See `ubuntu-rocm-ernic/` for details.
 
 ## Project Structure
 
@@ -31,6 +34,9 @@ batesste-ci-images/
 │   ├── README.md
 │   ├── cuda-latest
 │   └── rocm-latest
+├── ubuntu-rocm-ernic/         # libvfio-user + rocm-ernic build environment
+│   ├── Dockerfile
+│   └── amd-root-ca.crt
 ├── systemd/                   # Systemd service files
 │   ├── build-vm.service
 │   └── build-vm.timer
