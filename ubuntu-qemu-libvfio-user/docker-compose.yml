@@ -1,0 +1,33 @@
+services:
+  qemu:
+    image: batesste-ci-images-ubuntu-qemu-libvfio-user:latest
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - vfio-sockets:/tmp/vfio-sockets
+    environment:
+      USERNAME: batesste
+      VM_NAME: batesste-ci-vm
+      SSH_PORT: "2222"
+      VCPUS: "2"
+      VMEM: "4096"
+    ports:
+      - "2222:2222"
+
+  rocm-ernic:
+    image: batesste-ci-images-ubuntu-rocm-ernic:latest
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - vfio-sockets:/tmp/vfio-sockets
+    command:
+      - rocm-ernic
+      - --socket
+      - /tmp/vfio-sockets/rocm-ernic.sock
+      - --backend
+      - loopback
+    depends_on:
+      - qemu
+
+volumes:
+  vfio-sockets:

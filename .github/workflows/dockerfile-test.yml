@@ -59,6 +59,10 @@ jobs:
               https://github.com/sbates130272/qemu.git
             qemu_commit: >-
               dev/stephen/pci-mmio-bridge-submit
+          - image: ubuntu-rocm-ernic
+            variant: ''
+            rocm_ernic_commit: >-
+              e65d71539e62403f278c36055c7fe1e97d86202a
     steps:
       - uses: actions/checkout@v4
 
@@ -124,6 +128,7 @@ jobs:
             ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'LIBVFIO_USER_COMMIT=082925c65d98021af5c0f36f60a98e0bb6ddb329' || '' }}
             ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_REPO=https://github.com/sbates130272/qemu-minimal.git' || '' }}
             ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_COMMIT=30c6d09265db2817f82e495aa5609e03fd0194a9' || '' }}
+            ${{ matrix.image == 'ubuntu-rocm-ernic' && format('ROCM_ERNIC_COMMIT={0}', matrix.rocm_ernic_commit) || '' }}
 
       - name: Export Docker image
         run: |
@@ -389,3 +394,145 @@ jobs:
               test -d /opt/rocm
               test -e /usr/local/cuda || test -n "$(ls -d /usr/local/cuda-* 2>/dev/null | head -n 1)"
             '
+
+  test-rocm-ernic:
+    name: Test rocm-ernic Binary
+    runs-on: ubuntu-latest
+    needs: [discover-images, build]
+    if: >-
+      contains(
+        fromJson(needs.discover-images.outputs.images),
+        'ubuntu-rocm-ernic'
+      )
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-ubuntu-rocm-ernic
+
+      - name: Load Docker image
+        run: |
+          gunzip -c ubuntu-rocm-ernic.tar.gz \
+            | docker load
+
+      - name: Verify rocm-ernic binary exists
+        run: |
+          docker run --rm \
+            "batesste-ci-images-ubuntu-rocm-ernic:test" \
+            which rocm-ernic
+
+      - name: Verify rocm-ernic commit metadata
+        run: |
+          docker run --rm \
+            "batesste-ci-images-ubuntu-rocm-ernic:test" \
+            cat /usr/local/share/rocm-ernic-commit.txt
+
+      - name: Run rocm-ernic loopback smoke test
+        run: |
+          docker run --rm --name rocm-ernic-test \
+            --cap-add NET_ADMIN \
+            "batesste-ci-images-ubuntu-rocm-ernic:test" \
+            bash -c "
+              mkdir -p /tmp/vfio-sockets
+              rocm-ernic \
+                --socket /tmp/vfio-sockets/rocm-ernic.sock \
+                --backend loopback \
+                --verbose &
+              SERVER_PID=\$!
+              sleep 3
+              if ! kill -0 \${SERVER_PID} 2>/dev/null; then
+                echo 'ERROR: rocm-ernic exited prematurely'
+                exit 1
+              fi
+              echo \"rocm-ernic is running (PID \${SERVER_PID})\"
+              kill \${SERVER_PID}
+            "
+
+  test-compose:
+    name: Test Docker Compose Stack
+    runs-on: ubuntu-latest
+    needs: [discover-images, build]
+    if: >-
+      contains(
+        fromJson(needs.discover-images.outputs.images),
+        'ubuntu-qemu-libvfio-user'
+      ) &&
+      contains(
+        fromJson(needs.discover-images.outputs.images),
+        'ubuntu-rocm-ernic'
+      )
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download qemu image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-ubuntu-qemu-libvfio-user
+
+      - name: Download rocm-ernic image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-ubuntu-rocm-ernic
+
+      - name: Load Docker images
+        run: |
+          gunzip -c ubuntu-qemu-libvfio-user.tar.gz \
+            | docker load
+          gunzip -c ubuntu-rocm-ernic.tar.gz \
+            | docker load
+          docker tag \
+            batesste-ci-images-ubuntu-qemu-libvfio-user:test \
+            batesste-ci-images-ubuntu-qemu-libvfio-user:latest
+          docker tag \
+            batesste-ci-images-ubuntu-rocm-ernic:test \
+            batesste-ci-images-ubuntu-rocm-ernic:latest
+
+      - name: Start compose stack
+        run: |
+          docker compose \
+            -f ubuntu-qemu-libvfio-user/docker-compose.yml \
+            up -d
+
+      - name: Wait for rocm-ernic to start
+        run: |
+          for i in $(seq 1 30); do
+            if docker compose \
+              -f ubuntu-qemu-libvfio-user/docker-compose.yml \
+              ps rocm-ernic \
+              | grep -q "Up\|running"; then
+              echo "rocm-ernic running after ~${i}s"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "ERROR: rocm-ernic not running"
+              docker compose \
+                -f ubuntu-qemu-libvfio-user/docker-compose.yml \
+                logs rocm-ernic
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Verify rocm-ernic socket is present
+        run: |
+          docker compose \
+            -f ubuntu-qemu-libvfio-user/docker-compose.yml \
+            exec rocm-ernic \
+            test -S \
+            /tmp/vfio-sockets/rocm-ernic.sock
+
+      - name: Show compose logs
+        if: always()
+        run: |
+          docker compose \
+            -f ubuntu-qemu-libvfio-user/docker-compose.yml \
+            logs
+
+      - name: Teardown
+        if: always()
+        run: |
+          docker compose \
+            -f ubuntu-qemu-libvfio-user/docker-compose.yml \
+            down -v

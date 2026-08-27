@@ -6,6 +6,8 @@
 .venv/
 # Cached cloud images (downloaded in CI)
 **/cloud-image-cache/*.img
+# AMD corporate root CA (ZScaler) - local only, not committed
+**/amd-root-ca.crt
 # VSCode 
 .vscode
 # Python cache

@@ -37,6 +37,7 @@ DEFAULT_RELEASE = "noble"
 DEFAULT_ARCH = "amd64"
 DEFAULT_CUDA_VERSION = "latest"
 DEFAULT_ROCM_VERSION = "latest"
+DEFAULT_ROCM_ERNIC_COMMIT = "e65d71539e62403f278c36055c7fe1e97d86202a"
 
 ENV_SEARCH_PATHS = [
     ".env",
@@ -86,6 +87,7 @@ class Config:
     arch: str = DEFAULT_ARCH
     cuda_version: str = DEFAULT_CUDA_VERSION
     rocm_version: str = DEFAULT_ROCM_VERSION
+    rocm_ernic_commit: str = DEFAULT_ROCM_ERNIC_COMMIT
 
 
 def _resolve_password(
@@ -173,6 +175,10 @@ def load_config(
         arch=os.environ.get("ARCH", DEFAULT_ARCH),
         cuda_version=os.environ.get("CUDA_VERSION", DEFAULT_CUDA_VERSION),
         rocm_version=os.environ.get("ROCM_VERSION", DEFAULT_ROCM_VERSION),
+        rocm_ernic_commit=os.environ.get(
+            "ROCM_ERNIC_COMMIT",
+            DEFAULT_ROCM_ERNIC_COMMIT,
+        ),
     )
 
     cfg.registry_password = _resolve_password(password_file, cfg)
@@ -347,6 +353,10 @@ def cmd_build(args: argparse.Namespace) -> None:
                 f"CUDA_VERSION={cfg.cuda_version}",
                 f"ROCM_VERSION={cfg.rocm_version}",
             ]
+        if image_dir == "ubuntu-rocm-ernic":
+            build_args.append(
+                f"ROCM_ERNIC_COMMIT={cfg.rocm_ernic_commit}",
+            )
         if args.cache_bust:
             build_args.append(f"CACHE_BUST={args.cache_bust}")
 
