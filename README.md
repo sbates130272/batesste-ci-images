@@ -1,5 +1,12 @@
 # batesste-ci-images
 
+[![Lint](https://github.com/sbates130272/batesste-ci-images/actions/workflows/lint.yml/badge.svg)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/lint.yml)
+[![Dockerfile Test](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml/badge.svg)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml)
+[![Release](https://github.com/sbates130272/batesste-ci-images/actions/workflows/release.yml/badge.svg)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/release.yml)
+[![Latest Release](https://img.shields.io/github/v/release/sbates130272/batesste-ci-images)](https://github.com/sbates130272/batesste-ci-images/releases)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![Docker Hub](https://img.shields.io/badge/Docker%20Hub-sbates130272-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/u/sbates130272)
+
 This repository contains a collection of Docker images for CI/CD and
 development workflows. Each image is self-contained in its own directory
 with its own Dockerfile and supporting scripts. We also include a systemd
