@@ -1,0 +1,51 @@
+name: Version Scrub
+
+on:
+  schedule:
+    # Monday 08:00 UTC
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  version-scrub:
+    name: Check and Update Pinned Versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: sudo apt-get install -y jq
+
+      - name: Run version scrub
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/version-scrub.sh
+
+      - name: Open PR if versions changed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git diff --quiet; then
+            echo "No version changes, nothing to PR."
+            exit 0
+          fi
+          DATE=$(date -u +%Y-%m-%d)
+          BRANCH="chore/version-scrub-${DATE}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add -u
+          git commit -m "chore: version scrub ${DATE}"
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "chore: version scrub ${DATE}" \
+            --body "Automated version scrub — upstream dependency updates detected and applied by \`scripts/version-scrub.sh\`.
+
+**Note:** \`ROCJITSU_COMMIT\` is intentionally excluded from automated updates (tracks a user feature branch; requires human decision)." \
+            --base main \
+            --head "$BRANCH" \
+            --label "dependencies,ci"
