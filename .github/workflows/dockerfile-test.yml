@@ -31,7 +31,7 @@ jobs:
     outputs:
       images: ${{ steps.find-images.outputs.images }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Find all Dockerfiles
         id: find-images
         run: |
@@ -76,7 +76,7 @@ jobs:
             rocjitsu_commit: >-
               3429877a85455f446b30684198ec44060938e0ed
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Ensure cloud image cache dir exists
         run: |
@@ -185,7 +185,7 @@ jobs:
           - image: ubuntu-qemu-libvfio-user
             variant: '-sbates-fork'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check if entrypoint.sh exists
         id: check-entrypoint
@@ -262,7 +262,7 @@ jobs:
         'ubuntu-qemu-libvfio-user'
       )
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download Docker image artifact
         uses: actions/download-artifact@v4
@@ -382,7 +382,7 @@ jobs:
         'ubuntu-cuda-rocm'
       )
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download Docker image artifact
         uses: actions/download-artifact@v4
@@ -420,7 +420,7 @@ jobs:
         'ubuntu-rocm-ernic'
       )
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download Docker image artifact
         uses: actions/download-artifact@v4
@@ -475,7 +475,7 @@ jobs:
         'ubuntu-rocm-rocjitsu'
       )
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download Docker image artifact
         uses: actions/download-artifact@v4
@@ -537,7 +537,7 @@ jobs:
         'ubuntu-rocm-rocjitsu'
       )
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download qemu image artifact
         uses: actions/download-artifact@v4
