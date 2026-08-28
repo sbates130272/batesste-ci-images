@@ -38,6 +38,9 @@ DEFAULT_ARCH = "amd64"
 DEFAULT_CUDA_VERSION = "latest"
 DEFAULT_ROCM_VERSION = "latest"
 DEFAULT_ROCM_ERNIC_COMMIT = "e65d71539e62403f278c36055c7fe1e97d86202a"
+DEFAULT_ROCM_ROCJITSU_REPO = "https://github.com/ROCm/rocm-systems.git"
+DEFAULT_ROCM_ROCJITSU_BRANCH = "users/agutierr/vfu-pci-device-stage0"
+DEFAULT_ROCM_ROCJITSU_COMMIT = "3429877a85455f446b30684198ec44060938e0ed"
 
 ENV_SEARCH_PATHS = [
     ".env",
@@ -88,6 +91,9 @@ class Config:
     cuda_version: str = DEFAULT_CUDA_VERSION
     rocm_version: str = DEFAULT_ROCM_VERSION
     rocm_ernic_commit: str = DEFAULT_ROCM_ERNIC_COMMIT
+    rocm_rocjitsu_repo: str = DEFAULT_ROCM_ROCJITSU_REPO
+    rocm_rocjitsu_branch: str = DEFAULT_ROCM_ROCJITSU_BRANCH
+    rocm_rocjitsu_commit: str = DEFAULT_ROCM_ROCJITSU_COMMIT
 
 
 def _resolve_password(
@@ -178,6 +184,18 @@ def load_config(
         rocm_ernic_commit=os.environ.get(
             "ROCM_ERNIC_COMMIT",
             DEFAULT_ROCM_ERNIC_COMMIT,
+        ),
+        rocm_rocjitsu_repo=os.environ.get(
+            "ROCM_ROCJITSU_REPO",
+            DEFAULT_ROCM_ROCJITSU_REPO,
+        ),
+        rocm_rocjitsu_branch=os.environ.get(
+            "ROCM_ROCJITSU_BRANCH",
+            DEFAULT_ROCM_ROCJITSU_BRANCH,
+        ),
+        rocm_rocjitsu_commit=os.environ.get(
+            "ROCM_ROCJITSU_COMMIT",
+            DEFAULT_ROCM_ROCJITSU_COMMIT,
         ),
     )
 
@@ -357,6 +375,12 @@ def cmd_build(args: argparse.Namespace) -> None:
             build_args.append(
                 f"ROCM_ERNIC_COMMIT={cfg.rocm_ernic_commit}",
             )
+        if image_dir == "ubuntu-rocm-rocjitsu":
+            build_args += [
+                f"ROCJITSU_REPO={cfg.rocm_rocjitsu_repo}",
+                f"ROCJITSU_BRANCH={cfg.rocm_rocjitsu_branch}",
+                f"ROCJITSU_COMMIT={cfg.rocm_rocjitsu_commit}",
+            ]
         if args.cache_bust:
             build_args.append(f"CACHE_BUST={args.cache_bust}")
 
@@ -372,7 +396,7 @@ def cmd_build(args: argparse.Namespace) -> None:
             "-f",
             str(cfg.workdir / image_dir / "Dockerfile"),
         ]
-        cmd.append(str(cfg.workdir / image_dir))
+        cmd.append(str(cfg.workdir))
 
         console.rule(f"[bold]Building {image_dir}[/]")
         _print_build_summary(cfg, image_dir, args)

@@ -25,6 +25,10 @@ and pushing of these images.
 - **ubuntu-rocm-ernic**: Ubuntu 24.04 image with libvfio-user and rocm-ernic
   built from pinned source commits. Designed for RDMA/ERNIC development and
   CI. See `ubuntu-rocm-ernic/` for details.
+- **ubuntu-rocm-rocjitsu**: Ubuntu 24.04 image with rocjitsu built from a
+  pinned source commit with `-DROCJITSU_ENABLE_VFIO=ON`. Provides a
+  software-emulated AMD GPU vfio-user server for KFD/amdgpu bring-up without
+  real hardware. See `ubuntu-rocm-rocjitsu/` for details.
 
 ## Project Structure
 
@@ -42,8 +46,15 @@ batesste-ci-images/
 │   ├── cuda-latest
 │   └── rocm-latest
 ├── ubuntu-rocm-ernic/         # libvfio-user + rocm-ernic build environment
-│   ├── Dockerfile
+│   └── Dockerfile
+├── ubuntu-rocm-rocjitsu/      # rocjitsu vfio-user emulated GPU image
+│   └── Dockerfile
+├── common/                    # Shared build-context assets
 │   └── amd-root-ca.crt
+├── compose/                   # Docker Compose stacks
+│   └── docker-compose.yml
+├── scripts/                   # Repository maintenance scripts
+│   └── check-readme-structure.sh
 ├── systemd/                   # Systemd service files
 │   ├── build-vm.service
 │   └── build-vm.timer

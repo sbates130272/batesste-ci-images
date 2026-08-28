@@ -24,8 +24,8 @@ RUN apt-get update && \
 # No-op in CI where the file is absent.
 # hadolint ignore=DL3003
 RUN --mount=type=bind,source=.,target=/ctx \
-    if [ -f /ctx/amd-root-ca.crt ]; then \
-        cp /ctx/amd-root-ca.crt \
+    if [ -f /ctx/common/amd-root-ca.crt ]; then \
+        cp /ctx/common/amd-root-ca.crt \
             /usr/local/share/ca-certificates/amd-root-ca.crt && \
         update-ca-certificates; \
     fi
