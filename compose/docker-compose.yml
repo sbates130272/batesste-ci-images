@@ -37,6 +37,8 @@ services:
       - vfio-sockets:/tmp/vfio-sockets
     command:
       - rocjitsu
+      - --config
+      - /usr/local/share/rocjitsu-configs/gfx950_mi355x.json
       - --vfio-socket
       - /tmp/vfio-sockets/rocjitsu.sock
     depends_on:

@@ -507,6 +507,7 @@ jobs:
             bash -c "
               mkdir -p /tmp/vfio-sockets
               rocjitsu \
+                --config /usr/local/share/rocjitsu-configs/gfx950_mi355x.json \
                 --vfio-socket /tmp/vfio-sockets/rocjitsu.sock &
               SERVER_PID=\$!
               sleep 3

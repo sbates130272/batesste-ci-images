@@ -62,6 +62,8 @@ RUN cmake \
 
 RUN cp /build/rocjitsu-commit.txt \
         /usr/local/share/rocjitsu-commit.txt && \
+    cp -r /build/rocm-systems/emulation/rocjitsu/configs \
+        /usr/local/share/rocjitsu-configs && \
     rm -rf /build/rocm-systems /tmp/deps
 
 ENV PATH=/usr/local/bin:${PATH}
