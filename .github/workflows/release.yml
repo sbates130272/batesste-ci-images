@@ -53,6 +53,14 @@ jobs:
             variant: ''
             rocm_ernic_commit: >-
               e65d71539e62403f278c36055c7fe1e97d86202a
+          - image: ubuntu-rocm-rocjitsu
+            variant: ''
+            rocjitsu_repo: >-
+              https://github.com/ROCm/rocm-systems.git
+            rocjitsu_branch: >-
+              users/agutierr/vfu-pci-device-stage0
+            rocjitsu_commit: >-
+              3429877a85455f446b30684198ec44060938e0ed
     steps:
       - uses: actions/checkout@v4
 
@@ -99,7 +107,7 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ${{ matrix.image }}
+          context: .
           file: ${{ matrix.image }}/Dockerfile
           push: true
           tags: |
@@ -124,6 +132,8 @@ jobs:
             ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_REPO=https://github.com/sbates130272/qemu-minimal.git' || '' }}
             ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_COMMIT=30c6d09265db2817f82e495aa5609e03fd0194a9' || '' }}
             ${{ matrix.image == 'ubuntu-rocm-ernic' && format('ROCM_ERNIC_COMMIT={0}', matrix.rocm_ernic_commit) || '' }}
+            ${{ matrix.image == 'ubuntu-rocm-rocjitsu' && format('ROCJITSU_BRANCH={0}', matrix.rocjitsu_branch) || '' }}
+            ${{ matrix.image == 'ubuntu-rocm-rocjitsu' && format('ROCJITSU_COMMIT={0}', matrix.rocjitsu_commit) || '' }}
           labels: |
             org.opencontainers.image.version=${{ steps.version.outputs.tag }}
             org.opencontainers.image.revision=${{ github.sha }}

@@ -54,6 +54,12 @@ softmmu
 stebates
 systemd
 uboot
+amdgpu
+amdkfd
+KFD
+memfd
+rocjitsu
+simdojo
 vfio
 virt
 virtio

@@ -36,6 +36,14 @@ jobs:
       - name: Run ruff format check
         run: ruff format --check .
 
+  readme-structure:
+    name: README Project Structure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check all image directories are documented
+        run: bash scripts/check-readme-structure.sh
+
   dockerfile-lint:
     name: Dockerfile Linting
     runs-on: ubuntu-latest

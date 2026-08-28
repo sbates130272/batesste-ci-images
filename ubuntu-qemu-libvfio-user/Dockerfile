@@ -88,7 +88,7 @@ RUN apt-get update && \
 
 # Create output directory and copy packages file
 RUN mkdir -p /output
-COPY packages.txt /build/packages.txt
+COPY ubuntu-qemu-libvfio-user/packages.txt /build/packages.txt
 
 # Generate SSH keys for VM access
 RUN mkdir -p /root/.ssh && \
@@ -118,7 +118,7 @@ RUN set -eux; \
 # context; pre-downloaded images are placed where
 # gen-vm looks so it can skip the download.
 # hadolint ignore=DL3059
-RUN --mount=type=bind,source=cloud-image-cache,target=/tmp/cloud-cache \
+RUN --mount=type=bind,source=ubuntu-qemu-libvfio-user/cloud-image-cache,target=/tmp/cloud-cache \
     set -eux; \
     if [ ! -d /build/qemu-minimal ]; then \
         echo "No qemu-minimal, skipping VM build"; \
@@ -248,7 +248,7 @@ RUN --mount=type=bind,source=cloud-image-cache,target=/tmp/cloud-cache \
     fi
 
 # Copy scripts
-COPY entrypoint.sh /build/entrypoint.sh
+COPY ubuntu-qemu-libvfio-user/entrypoint.sh /build/entrypoint.sh
 RUN chmod +x /build/entrypoint.sh
 
 # Set default environment variables

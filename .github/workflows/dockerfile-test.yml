@@ -11,6 +11,8 @@ on:
       - '**/Dockerfile'
       - '**/entrypoint.sh'
       - '**/packages.txt'
+      - 'compose/**'
+      - 'common/**'
       - '.github/workflows/dockerfile-test.yml'
   pull_request:
     branches: [ main, master ]
@@ -18,6 +20,8 @@ on:
       - '**/Dockerfile'
       - '**/entrypoint.sh'
       - '**/packages.txt'
+      - 'compose/**'
+      - 'common/**'
       - '.github/workflows/dockerfile-test.yml'
 
 jobs:
@@ -63,6 +67,14 @@ jobs:
             variant: ''
             rocm_ernic_commit: >-
               e65d71539e62403f278c36055c7fe1e97d86202a
+          - image: ubuntu-rocm-rocjitsu
+            variant: ''
+            rocjitsu_repo: >-
+              https://github.com/ROCm/rocm-systems.git
+            rocjitsu_branch: >-
+              users/agutierr/vfu-pci-device-stage0
+            rocjitsu_commit: >-
+              3429877a85455f446b30684198ec44060938e0ed
     steps:
       - uses: actions/checkout@v4
 
@@ -100,7 +112,7 @@ jobs:
       - name: Build Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ${{ matrix.image }}
+          context: .
           file: ${{ matrix.image }}/Dockerfile
           push: false
           load: true
@@ -129,6 +141,9 @@ jobs:
             ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_REPO=https://github.com/sbates130272/qemu-minimal.git' || '' }}
             ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_COMMIT=30c6d09265db2817f82e495aa5609e03fd0194a9' || '' }}
             ${{ matrix.image == 'ubuntu-rocm-ernic' && format('ROCM_ERNIC_COMMIT={0}', matrix.rocm_ernic_commit) || '' }}
+            ${{ matrix.image == 'ubuntu-rocm-rocjitsu' && format('ROCJITSU_REPO={0}', matrix.rocjitsu_repo) || '' }}
+            ${{ matrix.image == 'ubuntu-rocm-rocjitsu' && format('ROCJITSU_BRANCH={0}', matrix.rocjitsu_branch) || '' }}
+            ${{ matrix.image == 'ubuntu-rocm-rocjitsu' && format('ROCJITSU_COMMIT={0}', matrix.rocjitsu_commit) || '' }}
 
       - name: Export Docker image
         run: |
@@ -450,6 +465,59 @@ jobs:
               kill \${SERVER_PID}
             "
 
+  test-rocm-rocjitsu:
+    name: Test rocm-rocjitsu Binary
+    runs-on: ubuntu-latest
+    needs: [discover-images, build]
+    if: >-
+      contains(
+        fromJson(needs.discover-images.outputs.images),
+        'ubuntu-rocm-rocjitsu'
+      )
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-ubuntu-rocm-rocjitsu
+
+      - name: Load Docker image
+        run: |
+          gunzip -c ubuntu-rocm-rocjitsu.tar.gz \
+            | docker load
+
+      - name: Verify rocjitsu binary exists
+        run: |
+          docker run --rm \
+            "batesste-ci-images-ubuntu-rocm-rocjitsu:test" \
+            which rocjitsu
+
+      - name: Verify rocjitsu commit metadata
+        run: |
+          docker run --rm \
+            "batesste-ci-images-ubuntu-rocm-rocjitsu:test" \
+            cat /usr/local/share/rocjitsu-commit.txt
+
+      - name: Run rocjitsu vfio-socket smoke test
+        run: |
+          docker run --rm --name rocjitsu-test \
+            --cap-add NET_ADMIN \
+            "batesste-ci-images-ubuntu-rocm-rocjitsu:test" \
+            bash -c "
+              mkdir -p /tmp/vfio-sockets
+              rocjitsu \
+                --vfio-socket /tmp/vfio-sockets/rocjitsu.sock &
+              SERVER_PID=\$!
+              sleep 3
+              if ! kill -0 \${SERVER_PID} 2>/dev/null; then
+                echo 'ERROR: rocjitsu exited prematurely'
+                exit 1
+              fi
+              echo \"rocjitsu is running (PID \${SERVER_PID})\"
+              kill \${SERVER_PID}
+            "
+
   test-compose:
     name: Test Docker Compose Stack
     runs-on: ubuntu-latest
@@ -462,6 +530,10 @@ jobs:
       contains(
         fromJson(needs.discover-images.outputs.images),
         'ubuntu-rocm-ernic'
+      ) &&
+      contains(
+        fromJson(needs.discover-images.outputs.images),
+        'ubuntu-rocm-rocjitsu'
       )
     steps:
       - uses: actions/checkout@v4
@@ -476,11 +548,18 @@ jobs:
         with:
           name: docker-image-ubuntu-rocm-ernic
 
+      - name: Download rocm-rocjitsu image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-ubuntu-rocm-rocjitsu
+
       - name: Load Docker images
         run: |
           gunzip -c ubuntu-qemu-libvfio-user.tar.gz \
             | docker load
           gunzip -c ubuntu-rocm-ernic.tar.gz \
+            | docker load
+          gunzip -c ubuntu-rocm-rocjitsu.tar.gz \
             | docker load
           docker tag \
             batesste-ci-images-ubuntu-qemu-libvfio-user:test \
@@ -488,18 +567,21 @@ jobs:
           docker tag \
             batesste-ci-images-ubuntu-rocm-ernic:test \
             batesste-ci-images-ubuntu-rocm-ernic:latest
+          docker tag \
+            batesste-ci-images-ubuntu-rocm-rocjitsu:test \
+            batesste-ci-images-ubuntu-rocm-rocjitsu:latest
 
       - name: Start compose stack
         run: |
           docker compose \
-            -f ubuntu-qemu-libvfio-user/docker-compose.yml \
+            -f compose/docker-compose.yml \
             up -d
 
       - name: Wait for rocm-ernic to start
         run: |
           for i in $(seq 1 30); do
             if docker compose \
-              -f ubuntu-qemu-libvfio-user/docker-compose.yml \
+              -f compose/docker-compose.yml \
               ps rocm-ernic \
               | grep -q "Up\|running"; then
               echo "rocm-ernic running after ~${i}s"
@@ -508,7 +590,7 @@ jobs:
             if [ "$i" -eq 30 ]; then
               echo "ERROR: rocm-ernic not running"
               docker compose \
-                -f ubuntu-qemu-libvfio-user/docker-compose.yml \
+                -f compose/docker-compose.yml \
                 logs rocm-ernic
               exit 1
             fi
@@ -518,21 +600,49 @@ jobs:
       - name: Verify rocm-ernic socket is present
         run: |
           docker compose \
-            -f ubuntu-qemu-libvfio-user/docker-compose.yml \
+            -f compose/docker-compose.yml \
             exec rocm-ernic \
             test -S \
             /tmp/vfio-sockets/rocm-ernic.sock
+
+      - name: Wait for rocm-rocjitsu to start
+        run: |
+          for i in $(seq 1 30); do
+            if docker compose \
+              -f compose/docker-compose.yml \
+              ps rocm-rocjitsu \
+              | grep -q "Up\|running"; then
+              echo "rocm-rocjitsu running after ~${i}s"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "ERROR: rocm-rocjitsu not running"
+              docker compose \
+                -f compose/docker-compose.yml \
+                logs rocm-rocjitsu
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Verify rocjitsu socket is present
+        run: |
+          docker compose \
+            -f compose/docker-compose.yml \
+            exec rocm-rocjitsu \
+            test -S \
+            /tmp/vfio-sockets/rocjitsu.sock
 
       - name: Show compose logs
         if: always()
         run: |
           docker compose \
-            -f ubuntu-qemu-libvfio-user/docker-compose.yml \
+            -f compose/docker-compose.yml \
             logs
 
       - name: Teardown
         if: always()
         run: |
           docker compose \
-            -f ubuntu-qemu-libvfio-user/docker-compose.yml \
+            -f compose/docker-compose.yml \
             down -v

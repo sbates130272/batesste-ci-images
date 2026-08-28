@@ -29,5 +29,18 @@ services:
     depends_on:
       - qemu
 
+  rocm-rocjitsu:
+    image: batesste-ci-images-ubuntu-rocm-rocjitsu:latest
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - vfio-sockets:/tmp/vfio-sockets
+    command:
+      - rocjitsu
+      - --vfio-socket
+      - /tmp/vfio-sockets/rocjitsu.sock
+    depends_on:
+      - qemu
+
 volumes:
   vfio-sockets:

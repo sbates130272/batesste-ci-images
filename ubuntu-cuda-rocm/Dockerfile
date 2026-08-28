@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-COPY cuda-latest rocm-latest /usr/local/bin/
+COPY ubuntu-cuda-rocm/cuda-latest ubuntu-cuda-rocm/rocm-latest /usr/local/bin/
 RUN chmod +x /usr/local/bin/cuda-latest /usr/local/bin/rocm-latest
 
 RUN echo "Cache bust: ${CACHE_BUST:-none}" > /tmp/cache_bust.txt
