@@ -9,7 +9,6 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  workflows: write
 
 jobs:
   version-scrub:
@@ -23,12 +22,12 @@ jobs:
 
       - name: Run version scrub
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.VERSION_SCRUB_PAT || secrets.GITHUB_TOKEN }}
         run: bash scripts/version-scrub.sh
 
       - name: Open PR if versions changed
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.VERSION_SCRUB_PAT || secrets.GITHUB_TOKEN }}
           PR_BODY: |
             Automated version scrub — upstream dependency updates detected
             and applied by `scripts/version-scrub.sh`.
