@@ -28,6 +28,13 @@ jobs:
       - name: Open PR if versions changed
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_BODY: |
+            Automated version scrub — upstream dependency updates detected
+            and applied by `scripts/version-scrub.sh`.
+
+            **Note:** `ROCJITSU_COMMIT` is intentionally excluded from
+            automated updates (tracks a user feature branch; requires a
+            human decision before advancing).
         run: |
           if git diff --quiet; then
             echo "No version changes, nothing to PR."
@@ -43,9 +50,7 @@ jobs:
           git push origin "$BRANCH"
           gh pr create \
             --title "chore: version scrub ${DATE}" \
-            --body "Automated version scrub — upstream dependency updates detected and applied by \`scripts/version-scrub.sh\`.
-
-**Note:** \`ROCJITSU_COMMIT\` is intentionally excluded from automated updates (tracks a user feature branch; requires human decision)." \
+            --body "$PR_BODY" \
             --base main \
             --head "$BRANCH" \
             --label "dependencies,ci"
