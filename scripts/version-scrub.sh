@@ -18,6 +18,16 @@ WORKFLOW_RELEASE="$REPO_ROOT/.github/workflows/release.yml"
 
 changed=0
 
+# Abort if a fetched value is empty or null — better to skip than corrupt.
+check_nonempty() {
+    local val="$1" label="$2"
+    if [[ -z "$val" || "$val" == "null" ]]; then
+        echo "  WARNING: could not fetch $label (got: '$val'), skipping."
+        return 1
+    fi
+    return 0
+}
+
 replace_in_files() {
     local old="$1"
     local new="$2"
@@ -32,12 +42,13 @@ replace_in_files() {
 }
 
 echo "==> Fetching latest QEMU release tag..."
+# Use the tags API sorted by version; releases API can return empty for QEMU.
 QEMU_LATEST=$(curl -fsSL \
-    "https://gitlab.com/api/v4/projects/qemu-project%2Fqemu/releases?per_page=1" \
-    | jq -r '.[0].tag_name')
+    "https://gitlab.com/api/v4/projects/qemu-project%2Fqemu/repository/tags?per_page=20&order_by=version&sort=desc" \
+    | jq -r '[.[] | select(.name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))] | .[0].name')
 QEMU_CURRENT=$(grep -oP 'DEFAULT_QEMU_COMMIT\s*=\s*"\K[^"]+' "$TOOL")
 echo "    current: $QEMU_CURRENT  latest: $QEMU_LATEST"
-if [[ "$QEMU_CURRENT" != "$QEMU_LATEST" ]]; then
+if check_nonempty "$QEMU_LATEST" "QEMU tag" && [[ "$QEMU_CURRENT" != "$QEMU_LATEST" ]]; then
     replace_in_files "$QEMU_CURRENT" "$QEMU_LATEST" \
         "$TOOL" "$ENV_EXAMPLE" "$WORKFLOW_TEST" "$WORKFLOW_RELEASE"
 fi
@@ -48,7 +59,7 @@ LIBVFIO_LATEST=$(curl -fsSL \
     | jq -r '.id')
 LIBVFIO_CURRENT=$(grep -oP 'DEFAULT_LIBVFIO_USER_COMMIT\s*=\s*"\K[^"]+' "$TOOL")
 echo "    current: $LIBVFIO_CURRENT  latest: $LIBVFIO_LATEST"
-if [[ "$LIBVFIO_CURRENT" != "$LIBVFIO_LATEST" ]]; then
+if check_nonempty "$LIBVFIO_LATEST" "libvfio-user HEAD" && [[ "$LIBVFIO_CURRENT" != "$LIBVFIO_LATEST" ]]; then
     replace_in_files "$LIBVFIO_CURRENT" "$LIBVFIO_LATEST" \
         "$TOOL" "$ENV_EXAMPLE" "$WORKFLOW_TEST" "$WORKFLOW_RELEASE" \
         "$REPO_ROOT/ubuntu-rocm-ernic/Dockerfile" \
@@ -62,7 +73,7 @@ ERNIC_LATEST=$(curl -fsSL \
     | jq -r '.sha')
 ERNIC_CURRENT=$(grep -oP 'DEFAULT_ROCM_ERNIC_COMMIT\s*=\s*"\K[^"]+' "$TOOL")
 echo "    current: $ERNIC_CURRENT  latest: $ERNIC_LATEST"
-if [[ "$ERNIC_CURRENT" != "$ERNIC_LATEST" ]]; then
+if check_nonempty "$ERNIC_LATEST" "ROCM_ERNIC HEAD" && [[ "$ERNIC_CURRENT" != "$ERNIC_LATEST" ]]; then
     replace_in_files "$ERNIC_CURRENT" "$ERNIC_LATEST" \
         "$TOOL" "$WORKFLOW_TEST" "$WORKFLOW_RELEASE" \
         "$REPO_ROOT/ubuntu-rocm-ernic/Dockerfile"
@@ -77,7 +88,7 @@ KEYRING_LATEST=$(echo "$KEYRING_PAGE" \
 KEYRING_CURRENT=$(grep -oP 'cuda-keyring_[0-9.]+-[0-9]+_all\.deb' \
     "$REPO_ROOT/ubuntu-cuda-rocm/Dockerfile" | head -1)
 echo "    current: $KEYRING_CURRENT  latest: $KEYRING_LATEST"
-if [[ -n "$KEYRING_LATEST" && "$KEYRING_CURRENT" != "$KEYRING_LATEST" ]]; then
+if check_nonempty "$KEYRING_LATEST" "cuda-keyring deb" && [[ "$KEYRING_CURRENT" != "$KEYRING_LATEST" ]]; then
     replace_in_files "$KEYRING_CURRENT" "$KEYRING_LATEST" \
         "$REPO_ROOT/ubuntu-cuda-rocm/Dockerfile"
 fi
