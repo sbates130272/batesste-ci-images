@@ -45,6 +45,9 @@ DEFAULT_ROCM_ERNIC_COMMIT = "66512ca117b9e7c7f0fd825c6a7daf8b0d5a2263"
 DEFAULT_ROCM_ROCJITSU_REPO = "https://github.com/ROCm/rocm-systems.git"
 DEFAULT_ROCM_ROCJITSU_BRANCH = "develop"
 DEFAULT_ROCM_ROCJITSU_COMMIT = "8a43c008e9090f47038ccac33adff130beb853f1"
+DEFAULT_FIO_REPO = "https://github.com/axboe/fio.git"
+DEFAULT_FIO_COMMIT = "ae35a58399b28edf857f7ebc43b3eb40d86ac29b"
+FIO_BASE_IMAGE_DIR = "ubuntu-cuda-rocm"
 
 BUILDER_NAME = "builder"
 BUILDKITD_FLAGS = (
@@ -106,6 +109,9 @@ class Config:
     rocm_rocjitsu_repo: str = DEFAULT_ROCM_ROCJITSU_REPO
     rocm_rocjitsu_branch: str = DEFAULT_ROCM_ROCJITSU_BRANCH
     rocm_rocjitsu_commit: str = DEFAULT_ROCM_ROCJITSU_COMMIT
+    fio_repo: str = DEFAULT_FIO_REPO
+    fio_commit: str = DEFAULT_FIO_COMMIT
+    fio_base_image: str = ""
 
 
 def _resolve_password(
@@ -236,6 +242,9 @@ def load_config(
             "ROCM_ROCJITSU_COMMIT",
             DEFAULT_ROCM_ROCJITSU_COMMIT,
         ),
+        fio_repo=os.environ.get("FIO_REPO", DEFAULT_FIO_REPO),
+        fio_commit=os.environ.get("FIO_COMMIT", DEFAULT_FIO_COMMIT),
+        fio_base_image=os.environ.get("FIO_BASE_IMAGE", ""),
     )
 
     cfg.registry_password = _resolve_password(password_file, cfg)
@@ -294,6 +303,18 @@ def tagged_ref(cfg: Config, image_dir: str, tag: str | None = None) -> str:
     t = tag or cfg.image_tag
     name = full_image_ref(cfg, image_dir)
     return f"{cfg.registry}/{name}:{t}"
+
+
+def fio_base_image(cfg: Config) -> str:
+    """Base image for ubuntu-cuda-rocm-fio.
+
+    Defaults to this run's own ubuntu-cuda-rocm tag: ``discover_images``
+    returns sorted names, so a full build produces and ``--load``s the base
+    before the derived image needs it.
+    """
+    if cfg.fio_base_image:
+        return cfg.fio_base_image
+    return tagged_ref(cfg, FIO_BASE_IMAGE_DIR)
 
 
 # ── docker helpers ─────────────────────────────────────
@@ -483,10 +504,22 @@ def cmd_build(args: argparse.Namespace) -> None:
                 f"ROCJITSU_BRANCH={cfg.rocm_rocjitsu_branch}",
                 f"ROCJITSU_COMMIT={cfg.rocm_rocjitsu_commit}",
             ]
+        if image_dir == "ubuntu-cuda-rocm-fio":
+            build_args += [
+                f"BASE_IMAGE={fio_base_image(cfg)}",
+                f"FIO_REPO={cfg.fio_repo}",
+                f"FIO_COMMIT={cfg.fio_commit}",
+            ]
         if args.cache_bust:
             build_args.append(f"CACHE_BUST={args.cache_bust}")
 
         cmd: list[str] = ["docker", "buildx", "build"]
+        # The named builder uses the docker-container driver, which has its
+        # own image store and cannot resolve a base image that only exists
+        # in the local daemon.  Derived images therefore build on the
+        # 'default' (docker driver) builder.
+        if image_dir == "ubuntu-cuda-rocm-fio" and not cfg.fio_base_image:
+            cmd += ["--builder", "default"]
         # The vm-kvm stage runs QEMU against /dev/kvm, which only
         # an insecure-entitlement RUN can reach.  vm-tcg does not
         # need (and must not request) the entitlement.
@@ -563,6 +596,9 @@ def _print_build_summary(
     elif image_dir == "ubuntu-rocm-rocjitsu":
         table.add_row("ROCjitsu Branch", cfg.rocm_rocjitsu_branch)
         table.add_row("ROCjitsu Commit", cfg.rocm_rocjitsu_commit)
+    elif image_dir == "ubuntu-cuda-rocm-fio":
+        table.add_row("Base Image", fio_base_image(cfg))
+        table.add_row("fio Commit", cfg.fio_commit)
     elif image_dir == "ubuntu-qemu-libvfio-user":
         table.add_row("QEMU Commit", cfg.qemu_commit)
         table.add_row("libvfio-user Commit", cfg.libvfio_user_commit)

@@ -80,12 +80,28 @@ RUN mkdir -p /etc/apt/keyrings && \
             > /etc/apt/preferences.d/rocm-pin-600; \
     fi
 
-# CUDA toolkit (dev only; no drivers)
+# CUDA toolkit (dev only; no kernel driver)
+#
+# cuda-compat is NVIDIA's CUDA Forward Compatibility package. The toolkit
+# itself ships only a link-time stub for libcuda, so anything linking -lcuda
+# cannot even start without the host driver. cuda-compat provides a real
+# libcuda.so.1 under ${CUDA_PATH}/compat, which lets such binaries run on a
+# host with no NVIDIA driver at all (AMD-only machines, CI runners) while
+# still deferring to the host driver when one is injected -- see the
+# lowest-precedence ld.so.conf entry further down.
 RUN set -eux; \
     CUDA_PKG_VER=$(cat /etc/cuda-version); \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         "cuda-toolkit-${CUDA_PKG_VER}"; \
+    if apt-get install -y --no-install-recommends \
+            "cuda-compat-${CUDA_PKG_VER}"; then \
+        echo "yes" > /etc/cuda-compat-installed; \
+    else \
+        echo "no" > /etc/cuda-compat-installed; \
+        echo "WARNING: cuda-compat-${CUDA_PKG_VER} unavailable; binaries" \
+             "linking -lcuda will require a host NVIDIA driver." >&2; \
+    fi; \
     rm -rf /var/lib/apt/lists/*
 
 # ROCm development stack (dev only; no drivers)
@@ -94,9 +110,11 @@ RUN set -eux; \
     apt-get update; \
     ROCM_STREAM=$(cat /etc/rocm-stream); \
     if [ "${ROCM_STREAM}" = "therock" ]; then \
-        ROCM_META=amdrocm; \
+        # The therock 'amdrocm' meta ships hipcc and the HIP runtime but not
+        # the HIP headers, so pull the runtime dev package explicitly.
+        set -- amdrocm amdrocm-runtime-dev; \
     else \
-        ROCM_META=rocm; \
+        set -- rocm; \
     fi; \
     apt-get install -y --no-install-recommends \
         clang \
@@ -105,27 +123,56 @@ RUN set -eux; \
         libboost-program-options-dev \
         libmount-dev \
         libstdc++-14-dev \
-        "${ROCM_META}" \
+        "$@" \
     && update-pciids \
     && rm -rf /var/lib/apt/lists/*
 
-# Linker configuration
-RUN cat <<EOF > /etc/ld.so.conf.d/rocm.conf
-/opt/rocm/lib
-/opt/rocm/lib64
-EOF
+# Resolve the installed toolkit roots. The therock stream nests everything
+# under /opt/rocm/core-<ver> rather than /opt/rocm, so the root must be probed
+# rather than assumed. Recorded for downstream images to consume.
+RUN set -eux; \
+    if [ -f /opt/rocm/include/hip/hip_runtime.h ]; then \
+        ROCM_ROOT=/opt/rocm; \
+    else \
+        ROCM_ROOT=$(find /opt/rocm -maxdepth 1 -mindepth 1 -type d -name 'core-*' \
+            | sort -V | tail -n 1); \
+    fi; \
+    test -n "${ROCM_ROOT}"; \
+    echo "${ROCM_ROOT}" > /etc/rocm-path; \
+    if [ -d /usr/local/cuda ]; then \
+        CUDA_ROOT=/usr/local/cuda; \
+    else \
+        CUDA_ROOT=$(find /usr/local -maxdepth 1 -mindepth 1 -type d -name 'cuda-*' \
+            | sort -V | tail -n 1); \
+    fi; \
+    test -n "${CUDA_ROOT}"; \
+    echo "${CUDA_ROOT}" > /etc/cuda-path
 
-RUN cat <<EOF > /etc/ld.so.conf.d/cuda.conf
-/usr/local/cuda/lib64
-EOF
-
-RUN ldconfig
+# Linker configuration.
+#
+# The compat directory is deliberately a separate 'zz-' file: ld.so.conf.d is
+# processed in glob (alphabetical) order, so it sorts after
+# x86_64-linux-gnu.conf and the compat libcuda loses to a host driver that
+# nvidia-container-toolkit mounts into /usr/lib/x86_64-linux-gnu. With no
+# host driver, compat is the only libcuda.so.1 and wins by default.
+RUN set -eux; \
+    ROCM_ROOT=$(cat /etc/rocm-path); \
+    CUDA_ROOT=$(cat /etc/cuda-path); \
+    printf '%s/lib\n%s/lib64\n' "${ROCM_ROOT}" "${ROCM_ROOT}" \
+        > /etc/ld.so.conf.d/rocm.conf; \
+    printf '%s/lib64\n' "${CUDA_ROOT}" > /etc/ld.so.conf.d/cuda.conf; \
+    if [ -d "${CUDA_ROOT}/compat" ]; then \
+        printf '%s/compat\n' "${CUDA_ROOT}" \
+            > /etc/ld.so.conf.d/zz-cuda-compat.conf; \
+    fi; \
+    ldconfig
 
 # Per-stack environment (avoid mixing LD_LIBRARY_PATH in Dockerfile ENV)
 RUN cat <<'EOF' > /etc/profile.d/cuda.sh
 # NVIDIA CUDA toolkit environment
-if [ -d /usr/local/cuda ]; then
-    export CUDA_HOME=/usr/local/cuda
+if [ -r /etc/cuda-path ]; then
+    CUDA_HOME="$(cat /etc/cuda-path)"
+    export CUDA_HOME
     export PATH="${CUDA_HOME}/bin:${PATH}"
     export LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH:-}"
 fi
@@ -133,9 +180,12 @@ EOF
 
 RUN cat <<'EOF' > /etc/profile.d/rocm.sh
 # AMD ROCm / HIP development environment
-export ROCM_PATH=/opt/rocm
-export PATH="${ROCM_PATH}/bin:${PATH}"
-export LD_LIBRARY_PATH="${ROCM_PATH}/lib:${ROCM_PATH}/lib64:${LD_LIBRARY_PATH:-}"
+if [ -r /etc/rocm-path ]; then
+    ROCM_PATH="$(cat /etc/rocm-path)"
+    export ROCM_PATH
+    export PATH="${ROCM_PATH}/bin:${PATH}"
+    export LD_LIBRARY_PATH="${ROCM_PATH}/lib:${ROCM_PATH}/lib64:${LD_LIBRARY_PATH:-}"
+fi
 EOF
 
 WORKDIR /build

@@ -35,11 +35,14 @@ jobs:
       - name: Find all Dockerfiles
         id: find-images
         run: |
+          # ubuntu-cuda-rocm-fio layers on ubuntu-cuda-rocm, so it cannot
+          # run in the flat parallel matrix -- see the build-derived job.
           IMAGES=$(find . -maxdepth 2 \
             -name "Dockerfile" -type f | \
             sed 's|^\./||' | \
             sed 's|/Dockerfile$||' | sort | \
-            jq -R -s -c 'split("\n")[:-1]')
+            jq -R -s -c 'split("\n")[:-1]
+              | map(select(. != "ubuntu-cuda-rocm-fio"))')
           echo "images=$IMAGES" >> $GITHUB_OUTPUT
           echo "Found images: $IMAGES"
 
@@ -406,13 +409,132 @@ jobs:
               set -e
               echo "CUDA version file:"; cat /etc/cuda-version
               echo "ROCm version file:"; cat /etc/rocm-version
+              echo "CUDA path file:"; cat /etc/cuda-path
+              echo "ROCm path file:"; cat /etc/rocm-path
 
               echo "CUDA nvcc:"; which nvcc; nvcc --version
               echo "ROCm hipcc:"; which hipcc; hipcc --version
 
-              test -d /opt/rocm
-              test -e /usr/local/cuda || test -n "$(ls -d /usr/local/cuda-* 2>/dev/null | head -n 1)"
+              test -x "$(cat /etc/rocm-path)/bin/hipcc"
+              test -f "$(cat /etc/rocm-path)/include/hip/hip_runtime.h"
+              test -d "$(cat /etc/cuda-path)/lib64"
+
+              echo "cuda-compat:"; cat /etc/cuda-compat-installed
+              test "$(cat /etc/cuda-compat-installed)" = "yes"
+              test -e "$(cat /etc/cuda-path)/compat/libcuda.so.1"
+              ldconfig -p | grep "libcuda.so.1"
             '
+
+  build-derived:
+    name: Build Derived Images
+    runs-on: ubuntu-latest
+    needs: [discover-images, build]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download cuda-rocm image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-ubuntu-cuda-rocm
+
+      - name: Load base image
+        run: |
+          gunzip -c ubuntu-cuda-rocm.tar.gz | docker load
+
+      # Built on the default docker driver rather than via
+      # setup-buildx-action: the docker-container driver keeps its own image
+      # store and cannot resolve a BASE_IMAGE that only exists in the local
+      # daemon.  That rules out the gha layer cache for this job.
+      - name: Build ubuntu-cuda-rocm-fio
+        run: |
+          docker build \
+            -f ubuntu-cuda-rocm-fio/Dockerfile \
+            --build-arg BASE_IMAGE=batesste-ci-images-ubuntu-cuda-rocm:test \
+            --build-arg FIO_REPO=https://github.com/axboe/fio.git \
+            --build-arg FIO_COMMIT=ae35a58399b28edf857f7ebc43b3eb40d86ac29b \
+            -t batesste-ci-images-ubuntu-cuda-rocm-fio:test \
+            .
+
+      - name: Export Docker image
+        run: |
+          docker save \
+            "batesste-ci-images-ubuntu-cuda-rocm-fio:test" \
+            | gzip > /tmp/ubuntu-cuda-rocm-fio.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-ubuntu-cuda-rocm-fio
+          path: /tmp/ubuntu-cuda-rocm-fio.tar.gz
+          retention-days: 1
+
+  test-fio:
+    name: Test fio GPU Engines
+    runs-on: ubuntu-latest
+    needs: build-derived
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download fio image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-ubuntu-cuda-rocm-fio
+
+      - name: Load Docker image
+        run: |
+          gunzip -c ubuntu-cuda-rocm-fio.tar.gz | docker load
+
+      # Runners have no NVIDIA driver. fio starts anyway because the base
+      # image ships cuda-compat, so no LD_LIBRARY_PATH juggling is needed.
+      - name: Verify both GPU engines are compiled in
+        run: |
+          docker run --rm \
+            "batesste-ci-images-ubuntu-cuda-rocm-fio:test" \
+            bash -lc '
+              set -e
+              fio --version
+              cat /usr/local/share/fio-commit.txt
+              fio --enghelp | grep -qE "^[[:space:]]*libhipfile$"
+              fio --enghelp | grep -qE "^[[:space:]]*libcufile$"
+              echo "libhipfile and libcufile both present"
+            '
+
+      - name: Verify libcuda resolves to cuda-compat, not a stub
+        run: |
+          docker run --rm \
+            "batesste-ci-images-ubuntu-cuda-rocm-fio:test" \
+            bash -lc '
+              set -e
+              # compat must be last in ld.so.conf.d so a host-injected
+              # driver takes precedence over it
+              test -f /etc/ld.so.conf.d/zz-cuda-compat.conf
+              RESOLVED=$(ldd "$(command -v fio)" \
+                | awk "/libcuda\.so\.1/ {print \$3}")
+              echo "libcuda.so.1 -> ${RESOLVED}"
+              case "${RESOLVED}" in
+                */compat/*) echo "resolves to cuda-compat, as expected" ;;
+                *) echo "ERROR: unexpected libcuda source"; exit 1 ;;
+              esac
+              # the hand-rolled stub directory must never come back
+              test ! -e /opt/fio/cuda-stubs
+            '
+
+      - name: Verify pinned fio commit
+        run: |
+          ACTUAL=$(docker run --rm \
+            "batesste-ci-images-ubuntu-cuda-rocm-fio:test" \
+            cat /usr/local/share/fio-commit.txt)
+          EXPECTED=ae35a58399b28edf857f7ebc43b3eb40d86ac29b
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "ERROR: fio commit $ACTUAL != $EXPECTED"
+            exit 1
+          fi
+
+      - name: Run fio smoke job
+        run: |
+          docker run --rm \
+            "batesste-ci-images-ubuntu-cuda-rocm-fio:test" \
+            fio --name=smoke --ioengine=psync --rw=write \
+                --bs=64k --size=4m --directory=/tmp --minimal
 
   test-rocm-ernic:
     name: Test rocm-ernic Binary
