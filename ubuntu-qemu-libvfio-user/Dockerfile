@@ -107,6 +107,14 @@ RUN apt-get update && \
     openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
+# Python packaging tooling. setuptools is no longer implicit on 3.12, and pipx
+# installs CLI tools without hand-rolling a venv for each one.
+RUN apt-get update -qq && \
+    apt-get install -y -qq \
+    pipx \
+    python3-setuptools \
+    && rm -rf /var/lib/apt/lists/*
+
 # Create output directory and copy packages file
 RUN mkdir -p /output
 COPY ubuntu-qemu-libvfio-user/packages.txt /build/packages.txt
