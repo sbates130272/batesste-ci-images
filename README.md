@@ -314,8 +314,9 @@ details.
 
 ### ubuntu-qemu-libvfio-user VM Image Output
 
-When the `ubuntu-qemu-libvfio-user` image is built with the `QEMU_MINIMAL_REPO`
-build argument, it creates a VM disk image during the Docker build process.
+The `ubuntu-qemu-libvfio-user` build creates a VM disk image during the Docker
+build process, using `qemu-tool gen-vm` from the pinned `QEMU_MINIMAL_REPO`
+checkout. Set `QEMU_MINIMAL_REPO=none` in `.env` to skip the VM build.
 The VM image, SSH keys, and metadata are stored in `/output/` within the container:
 
 - **VM Disk Image**: `/output/{VM_NAME}.qcow2` - The QEMU disk image file
@@ -323,6 +324,20 @@ The VM image, SSH keys, and metadata are stored in `/output/` within the contain
   keys generated during VM build
 - **VM Metadata**: `/output/vm-info.json` - JSON file containing VM configuration
   and build information
+
+#### KVM acceleration
+
+The VM build runs with KVM by default (`KVM=true`), which needs `/dev/kvm` on
+the build host and a BuildKit builder started with
+`--allow-insecure-entitlement=security.insecure`; `ci-images-tool.py` creates
+(or recreates) its `builder` that way automatically.
+
+When either is missing the build does not fail: the tool prints a warning and
+selects the `vm-tcg` Dockerfile stage instead of `vm-kvm`, so the VM is built
+under TCG emulation — same result, much slower. `KVM=false` forces that path.
+Building the Dockerfile directly (without `ci-images-tool.py`) defaults to the
+`vm-kvm` stage, so pass `--allow security.insecure`, or
+`--build-arg VM_STAGE=vm-tcg` to opt out.
 
 #### vm-info.json Format
 

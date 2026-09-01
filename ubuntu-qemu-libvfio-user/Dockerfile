@@ -1,4 +1,11 @@
-FROM ubuntu:24.04
+# syntax=docker/dockerfile:1-labs
+
+# Selects which VM build stage the final image is assembled
+# from: vm-kvm needs the security.insecure entitlement, vm-tcg
+# does not.  ci-images-tool.py picks one; see README.md.
+ARG VM_STAGE=vm-kvm
+
+FROM ubuntu:24.04 AS base
 
 # Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -39,6 +46,7 @@ ARG LIBVFIO_USER_COMMIT=323f4cb6cddc3713fb7aebe44436f28b28b5413a
 # Accept qemu-minimal configuration as build arguments
 ARG QEMU_MINIMAL_REPO=
 ARG QEMU_MINIMAL_COMMIT=
+ARG KVM=true
 ARG USERNAME=batesste
 ARG VM_NAME=
 ARG PASSWORD=changeme
@@ -123,139 +131,64 @@ RUN set -eux; \
             > /build/qemu-minimal-commit.txt; \
     fi
 
-# Build VM image and generate metadata.
-# --mount binds cloud-image-cache/ from the build
-# context; pre-downloaded images are placed where
-# gen-vm looks so it can skip the download.
-# hadolint ignore=DL3059
-RUN --mount=type=bind,source=ubuntu-qemu-libvfio-user/cloud-image-cache,target=/tmp/cloud-cache \
-    set -eux; \
-    if [ ! -d /build/qemu-minimal ]; then \
-        echo "No qemu-minimal, skipping VM build"; \
-    else \
-        QM=/build/qemu-minimal; \
-        FINAL_VM_NAME="${VM_NAME:-${USERNAME}-ci-vm}"; \
-        FINAL_USERNAME="${USERNAME:-batesste}"; \
-        FINAL_PASSWORD="${PASSWORD:-changeme}"; \
-        FINAL_RELEASE="${RELEASE:-noble}"; \
-        FINAL_ARCH="${ARCH:-amd64}"; \
-        KERNEL_VERSION=$(uname -r); \
-        echo "=== VM Build Configuration ==="; \
-        echo "Cache-bust: ${CACHE_BUST:-none}"; \
-        echo "QEMU_MINIMAL_REPO: ${QEMU_MINIMAL_REPO}"; \
-        echo "QEMU_MINIMAL_COMMIT: ${QEMU_MINIMAL_COMMIT:-HEAD}"; \
-        echo "VM_NAME: ${FINAL_VM_NAME}"; \
-        echo "USERNAME: ${FINAL_USERNAME}"; \
-        echo "RELEASE: ${FINAL_RELEASE}"; \
-        echo "ARCH: ${FINAL_ARCH}"; \
-        echo "Kernel version: ${KERNEL_VERSION}"; \
-        mkdir -p "${QM}/images"; \
-        cp /tmp/cloud-cache/*.img \
-            "${QM}/images/" 2>/dev/null || true; \
-        [ -d "${QM}/qemu" ] || \
-            { echo "Error: qemu directory not found!"; \
-              ls -la "${QM}/"; exit 1; }; \
-        [ -f "${QM}/qemu/gen-vm" ] || \
-            { echo "Error: gen-vm script not found!"; \
-              ls -la "${QM}/qemu/"; exit 1; }; \
-        cd "${QM}/qemu"; \
-        export QEMU_PATH=/opt/qemu/bin/ \
-               VM_NAME="${FINAL_VM_NAME}" \
-               USERNAME="${FINAL_USERNAME}" \
-               PASS="${FINAL_PASSWORD}" \
-               IMAGES="${QM}/images" \
-               RELEASE="${FINAL_RELEASE}" \
-               ARCH="${FINAL_ARCH}" \
-               KVM=false \
-               NO_BACKING=true; \
-        if [ -f /build/packages.txt ]; then \
-            ADDITIONAL_PACKAGES=$(sed \
-                "s/\${KERNEL_VERSION}/${KERNEL_VERSION}/g" \
-                /build/packages.txt | \
-                grep -v '^#' | grep -v '^$' | \
-                tr '\n' ' ' | \
-                sed 's/[[:space:]]*$//'); \
-            if [ -n "${ADDITIONAL_PACKAGES}" ]; then \
-                if [ -n "${PACKAGES:-}" ]; then \
-                    export PACKAGES="${PACKAGES} ${ADDITIONAL_PACKAGES}"; \
-                else \
-                    GENVM_DEFAULT_PACKAGES_FILE=$( \
-                        grep -E "^PACKAGES=" \
-                            ./gen-vm 2>/dev/null | \
-                        head -1 | \
-                        sed 's/.*:-\([^}]*\)}.*/\1/' \
-                        || echo \
-                        "../packages.d/packages-default" \
-                    ); \
-                    COMBINED="/tmp/packages-combined"; \
-                    if [ -f "${GENVM_DEFAULT_PACKAGES_FILE}" ]; then \
-                        cat "${GENVM_DEFAULT_PACKAGES_FILE}" \
-                            > "${COMBINED}"; \
-                        echo "" >> "${COMBINED}"; \
-                        echo "# Additional packages from packages.txt" \
-                            >> "${COMBINED}"; \
-                    else \
-                        echo "# Packages from packages.txt" \
-                            > "${COMBINED}"; \
-                    fi; \
-                    for PKG in ${ADDITIONAL_PACKAGES}; do \
-                        echo "  - ${PKG}" \
-                            >> "${COMBINED}"; \
-                    done; \
-                    export PACKAGES="${COMBINED}"; \
-                fi; \
-            fi; \
-        fi; \
-        echo "Running gen-vm (KVM disabled, no backing file)..."; \
-        ./gen-vm || \
-            { echo "gen-vm failed with exit code $?"; \
-              exit 1; }; \
-        [ -f "${IMAGES}/${FINAL_VM_NAME}.qcow2" ] || \
-            { echo "Error: VM image not created!"; \
-              ls -la "${IMAGES}/"; exit 1; }; \
-        cp "${IMAGES}/${FINAL_VM_NAME}.qcow2" \
-            /output/ && \
-        cp /root/.ssh/id_rsa /output/id_rsa \
-            2>/dev/null || true; \
-        cp /root/.ssh/id_rsa.pub /output/id_rsa.pub \
-            2>/dev/null || true; \
-        QEMU_COMMIT_INFO=$(cat \
-            /build/qemu-commit.txt 2>/dev/null \
-            || echo "unknown"); \
-        LIBVFIO_USER_COMMIT_INFO=$(cat \
-            /build/libvfio-user-commit.txt \
-            2>/dev/null || echo "unknown"); \
-        QEMU_MINIMAL_COMMIT_INFO=$(cat \
-            /build/qemu-minimal-commit.txt \
-            2>/dev/null || echo "unknown"); \
-        IMAGE_SIZE=$(stat -c%s \
-            "/output/${FINAL_VM_NAME}.qcow2" \
-            2>/dev/null || echo "0"); \
-        IMAGE_FORMAT=$(/opt/qemu/bin/qemu-img info \
-            "/output/${FINAL_VM_NAME}.qcow2" \
-            2>/dev/null | \
-            grep -i "file format" | \
-            cut -d: -f2 | xargs || echo "qcow2"); \
-        BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ); \
-        printf 'import json\nimport sys\nimport os\n\nkvm_val = os.environ.get("KVM", "false").lower()\nkvm_enabled = kvm_val == "true"\nno_backing_val = os.environ.get("NO_BACKING", "false").lower()\nbacking_file = no_backing_val != "true"\n\nvm_info = {\n    "vm_name": os.environ["FINAL_VM_NAME"],\n    "username": os.environ["FINAL_USERNAME"],\n    "password": os.environ["FINAL_PASSWORD"],\n    "image_path": f"/output/{os.environ[\047FINAL_VM_NAME\047]}.qcow2",\n    "image_format": os.environ["IMAGE_FORMAT"],\n    "image_size_bytes": int(os.environ["IMAGE_SIZE"]),\n    "release": os.environ["FINAL_RELEASE"],\n    "architecture": os.environ["FINAL_ARCH"],\n    "qemu_path": "/opt/qemu/bin/",\n    "kvm_enabled": kvm_enabled,\n    "backing_file": backing_file,\n    "ssh_keys": {\n        "private_key_path": "/output/id_rsa",\n        "public_key_path": "/output/id_rsa.pub"\n    },\n    "build_info": {\n        "qemu_commit": os.environ["QEMU_COMMIT_INFO"],\n        "libvfio_user_commit": os.environ["LIBVFIO_USER_COMMIT_INFO"],\n        "qemu_minimal_commit": os.environ["QEMU_MINIMAL_COMMIT_INFO"],\n        "build_timestamp": os.environ["BUILD_TIMESTAMP"]\n    }\n}\n\njson.dump(vm_info, sys.stdout, indent=2)\n' > /tmp/create_vm_info.py && \
-        FINAL_VM_NAME="${FINAL_VM_NAME}" \
-        FINAL_USERNAME="${FINAL_USERNAME}" \
-        FINAL_PASSWORD="${FINAL_PASSWORD}" \
-        IMAGE_FORMAT="${IMAGE_FORMAT}" \
-        IMAGE_SIZE="${IMAGE_SIZE}" \
-        FINAL_RELEASE="${FINAL_RELEASE}" \
-        FINAL_ARCH="${FINAL_ARCH}" \
-        QEMU_COMMIT_INFO="${QEMU_COMMIT_INFO}" \
-        LIBVFIO_USER_COMMIT_INFO="${LIBVFIO_USER_COMMIT_INFO}" \
-        QEMU_MINIMAL_COMMIT_INFO="${QEMU_MINIMAL_COMMIT_INFO}" \
-        BUILD_TIMESTAMP="${BUILD_TIMESTAMP}" \
-        KVM="${KVM}" \
-        NO_BACKING="${NO_BACKING}" \
-        python3 /tmp/create_vm_info.py \
-            > /output/vm-info.json && \
-        rm -f /tmp/create_vm_info.py && \
-        rm -rf "${QM}"; \
+# Install the qemu-tool CLI (gen-vm/run-vm subcommands)
+# from the qemu-minimal checkout.  It supersedes the
+# deprecated gen-vm/run-vm bash scripts.
+RUN set -eux; \
+    if [ -d /build/qemu-minimal/qemu ]; then \
+        python3 -m venv /opt/qemu-tool; \
+        /opt/qemu-tool/bin/pip install --no-cache-dir \
+            /build/qemu-minimal/qemu; \
+        ln -sf /opt/qemu-tool/bin/qemu-tool \
+            /usr/local/bin/qemu-tool; \
+        qemu-tool --version; \
     fi
+
+# The VM build script is shared by both VM stages below.
+COPY ubuntu-qemu-libvfio-user/build-vm.sh /usr/local/bin/build-vm
+RUN chmod +x /usr/local/bin/build-vm
+
+# Build the VM image with KVM acceleration.  --security=insecure
+# is what lets the step create and open /dev/kvm, so this stage
+# needs "buildx build --allow security.insecure" against a builder
+# started with --allow-insecure-entitlement=security.insecure.
+# The --mount binds common/cloud-image-cache/ from the build
+# context; pre-downloaded images land where gen-vm looks so it
+# can skip the download.
+FROM base AS vm-kvm
+ARG QEMU_MINIMAL_REPO=
+ARG QEMU_MINIMAL_COMMIT=
+ARG USERNAME=batesste
+ARG VM_NAME=
+ARG PASSWORD=changeme
+ARG RELEASE=noble
+ARG ARCH=amd64
+ARG CACHE_BUST=
+ARG KVM=true
+# hadolint ignore=DL3059
+RUN --security=insecure \
+    --mount=type=bind,source=common/cloud-image-cache,target=/tmp/cloud-cache \
+    build-vm
+
+# Same VM build without the insecure entitlement: no /dev/kvm, so
+# gen-vm runs under TCG emulation.  Used when the builder cannot
+# grant security.insecure.
+FROM base AS vm-tcg
+ARG QEMU_MINIMAL_REPO=
+ARG QEMU_MINIMAL_COMMIT=
+ARG USERNAME=batesste
+ARG VM_NAME=
+ARG PASSWORD=changeme
+ARG RELEASE=noble
+ARG ARCH=amd64
+ARG CACHE_BUST=
+ARG KVM=false
+# hadolint ignore=DL3059
+RUN --mount=type=bind,source=common/cloud-image-cache,target=/tmp/cloud-cache \
+    build-vm
+
+# hadolint ignore=DL3006
+FROM ${VM_STAGE} AS final
 
 # Copy scripts
 COPY ubuntu-qemu-libvfio-user/entrypoint.sh /build/entrypoint.sh

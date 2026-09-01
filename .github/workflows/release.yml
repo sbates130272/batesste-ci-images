@@ -66,6 +66,12 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          # The VM build stage needs /dev/kvm, reachable only
+          # from a RUN --security=insecure step.
+          buildkitd-flags: >-
+            --allow-insecure-entitlement security.insecure
+            --allow-insecure-entitlement network.host
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -81,23 +87,20 @@ jobs:
           echo "version=${TAG#v}" >> $GITHUB_OUTPUT
 
       - name: Ensure cloud image cache dir exists
-        run: |
-          mkdir -p \
-            "${{ matrix.image }}/cloud-image-cache"
+        run: mkdir -p common/cloud-image-cache
 
       - name: Cache Ubuntu cloud image
         if: matrix.image == 'ubuntu-qemu-libvfio-user'
         uses: actions/cache@v4
         with:
-          path: >-
-            ${{ matrix.image }}/cloud-image-cache
+          path: common/cloud-image-cache
           key: cloud-image-noble-amd64
           restore-keys: cloud-image-noble-
 
       - name: Pre-download cloud image
         if: matrix.image == 'ubuntu-qemu-libvfio-user'
         run: |
-          DIR="${{ matrix.image }}/cloud-image-cache"
+          DIR="common/cloud-image-cache"
           IMG="${DIR}/noble-server-cloudimg-amd64.img"
           if [ ! -f "$IMG" ]; then
             wget -q -O "$IMG" \
@@ -109,6 +112,7 @@ jobs:
         with:
           context: .
           file: ${{ matrix.image }}/Dockerfile
+          allow: security.insecure
           push: true
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/batesste-ci-images-${{ matrix.image }}${{ matrix.variant }}:${{ steps.version.outputs.tag }}
@@ -130,7 +134,7 @@ jobs:
             QEMU_COMMIT=${{ matrix.qemu_commit || 'v11.1.1' }}
             ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'LIBVFIO_USER_COMMIT=323f4cb6cddc3713fb7aebe44436f28b28b5413a' || '' }}
             ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_REPO=https://github.com/sbates130272/qemu-minimal.git' || '' }}
-            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_COMMIT=30c6d09265db2817f82e495aa5609e03fd0194a9' || '' }}
+            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_COMMIT=f88d4561031b80aec4441352d221c42ede30848b' || '' }}
             ${{ matrix.image == 'ubuntu-rocm-ernic' && format('ROCM_ERNIC_COMMIT={0}', matrix.rocm_ernic_commit) || '' }}
             ${{ matrix.image == 'ubuntu-rocm-rocjitsu' && format('ROCJITSU_BRANCH={0}', matrix.rocjitsu_branch) || '' }}
             ${{ matrix.image == 'ubuntu-rocm-rocjitsu' && format('ROCJITSU_COMMIT={0}', matrix.rocjitsu_commit) || '' }}
