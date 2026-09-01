@@ -27,20 +27,21 @@ from rich.table import Table
 console = Console()
 
 DEFAULT_QEMU_REPO = "https://gitlab.com/qemu-project/qemu.git"
-DEFAULT_QEMU_COMMIT = "v10.2.2"
-DEFAULT_LIBVFIO_USER_COMMIT = "082925c65d98021af5c0f36f60a98e0bb6ddb329"
+DEFAULT_QEMU_COMMIT = "v11.1.1"
+DEFAULT_LIBVFIO_USER_COMMIT = "323f4cb6cddc3713fb7aebe44436f28b28b5413a"
 DEFAULT_REGISTRY = "docker.io"
 DEFAULT_IMAGE_TAG = "latest"
 DEFAULT_USERNAME = "batesste"
 DEFAULT_PASSWORD = "changeme"
 DEFAULT_RELEASE = "noble"
 DEFAULT_ARCH = "amd64"
-DEFAULT_CUDA_VERSION = "latest"
-DEFAULT_ROCM_VERSION = "latest"
-DEFAULT_ROCM_ERNIC_COMMIT = "e65d71539e62403f278c36055c7fe1e97d86202a"
+DEFAULT_CUDA_VERSION = "13-3"
+DEFAULT_ROCM_VERSION = "7.14"
+DEFAULT_ROCM_STREAM = "therock"
+DEFAULT_ROCM_ERNIC_COMMIT = "66512ca117b9e7c7f0fd825c6a7daf8b0d5a2263"
 DEFAULT_ROCM_ROCJITSU_REPO = "https://github.com/ROCm/rocm-systems.git"
-DEFAULT_ROCM_ROCJITSU_BRANCH = "users/agutierr/vfu-pci-device-stage0"
-DEFAULT_ROCM_ROCJITSU_COMMIT = "3429877a85455f446b30684198ec44060938e0ed"
+DEFAULT_ROCM_ROCJITSU_BRANCH = "develop"
+DEFAULT_ROCM_ROCJITSU_COMMIT = "8a43c008e9090f47038ccac33adff130beb853f1"
 
 ENV_SEARCH_PATHS = [
     ".env",
@@ -90,6 +91,7 @@ class Config:
     arch: str = DEFAULT_ARCH
     cuda_version: str = DEFAULT_CUDA_VERSION
     rocm_version: str = DEFAULT_ROCM_VERSION
+    rocm_stream: str = DEFAULT_ROCM_STREAM
     rocm_ernic_commit: str = DEFAULT_ROCM_ERNIC_COMMIT
     rocm_rocjitsu_repo: str = DEFAULT_ROCM_ROCJITSU_REPO
     rocm_rocjitsu_branch: str = DEFAULT_ROCM_ROCJITSU_BRANCH
@@ -181,6 +183,7 @@ def load_config(
         arch=os.environ.get("ARCH", DEFAULT_ARCH),
         cuda_version=os.environ.get("CUDA_VERSION", DEFAULT_CUDA_VERSION),
         rocm_version=os.environ.get("ROCM_VERSION", DEFAULT_ROCM_VERSION),
+        rocm_stream=os.environ.get("ROCM_STREAM", DEFAULT_ROCM_STREAM),
         rocm_ernic_commit=os.environ.get(
             "ROCM_ERNIC_COMMIT",
             DEFAULT_ROCM_ERNIC_COMMIT,
@@ -370,6 +373,7 @@ def cmd_build(args: argparse.Namespace) -> None:
             build_args += [
                 f"CUDA_VERSION={cfg.cuda_version}",
                 f"ROCM_VERSION={cfg.rocm_version}",
+                f"ROCM_STREAM={cfg.rocm_stream}",
             ]
         if image_dir == "ubuntu-rocm-ernic":
             build_args.append(
@@ -436,12 +440,23 @@ def _print_build_summary(
     table.add_column("Value")
     table.add_row("Image", ref)
     table.add_row("Directory", image_dir)
-    table.add_row("QEMU Commit", cfg.qemu_commit)
-    if cfg.libvfio_user_commit:
-        table.add_row(
-            "libvfio-user Commit",
-            cfg.libvfio_user_commit,
-        )
+
+    if image_dir == "ubuntu-cuda-rocm":
+        table.add_row("CUDA Version", cfg.cuda_version)
+        table.add_row("ROCm Version", cfg.rocm_version)
+        table.add_row("ROCm Stream", cfg.rocm_stream)
+    elif image_dir == "ubuntu-rocm-ernic":
+        table.add_row("libvfio-user Commit", cfg.libvfio_user_commit)
+        table.add_row("ROCM_ERNIC Commit", cfg.rocm_ernic_commit)
+    elif image_dir == "ubuntu-rocm-rocjitsu":
+        table.add_row("ROCjitsu Branch", cfg.rocm_rocjitsu_branch)
+        table.add_row("ROCjitsu Commit", cfg.rocm_rocjitsu_commit)
+    elif image_dir == "ubuntu-qemu-libvfio-user":
+        table.add_row("QEMU Commit", cfg.qemu_commit)
+        table.add_row("libvfio-user Commit", cfg.libvfio_user_commit)
+    elif image_dir == "ubuntu-kernel-build":
+        pass
+
     if args.cache_bust:
         table.add_row("Cache Bust", args.cache_bust)
     if args.no_cache:

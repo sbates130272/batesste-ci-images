@@ -66,15 +66,15 @@ jobs:
           - image: ubuntu-rocm-ernic
             variant: ''
             rocm_ernic_commit: >-
-              e65d71539e62403f278c36055c7fe1e97d86202a
+              66512ca117b9e7c7f0fd825c6a7daf8b0d5a2263
           - image: ubuntu-rocm-rocjitsu
             variant: ''
             rocjitsu_repo: >-
               https://github.com/ROCm/rocm-systems.git
             rocjitsu_branch: >-
-              users/agutierr/vfu-pci-device-stage0
+              develop
             rocjitsu_commit: >-
-              3429877a85455f446b30684198ec44060938e0ed
+              8a43c008e9090f47038ccac33adff130beb853f1
     steps:
       - uses: actions/checkout@v7
 
@@ -136,8 +136,8 @@ jobs:
             }}
           build-args: |
             QEMU_REPO=${{ matrix.qemu_repo || 'https://gitlab.com/qemu-project/qemu.git' }}
-            QEMU_COMMIT=${{ matrix.qemu_commit || 'v10.2.2' }}
-            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'LIBVFIO_USER_COMMIT=082925c65d98021af5c0f36f60a98e0bb6ddb329' || '' }}
+            QEMU_COMMIT=${{ matrix.qemu_commit || 'v11.1.1' }}
+            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'LIBVFIO_USER_COMMIT=323f4cb6cddc3713fb7aebe44436f28b28b5413a' || '' }}
             ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_REPO=https://github.com/sbates130272/qemu-minimal.git' || '' }}
             ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_COMMIT=30c6d09265db2817f82e495aa5609e03fd0194a9' || '' }}
             ${{ matrix.image == 'ubuntu-rocm-ernic' && format('ROCM_ERNIC_COMMIT={0}', matrix.rocm_ernic_commit) || '' }}
