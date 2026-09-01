@@ -81,3 +81,11 @@ BuildKit
 kvm
 tcg
 qemu-tool
+CMake
+VMM
+cpp
+gfx
+gpu
+kGfx
+mmap
+vfu

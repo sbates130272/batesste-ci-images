@@ -77,7 +77,7 @@ jobs:
             rocjitsu_branch: >-
               develop
             rocjitsu_commit: >-
-              8a43c008e9090f47038ccac33adff130beb853f1
+              5591761e3865fb92f3b82e2f18106927af77d34a
     steps:
       - uses: actions/checkout@v7
 
@@ -633,7 +633,7 @@ jobs:
             bash -c "
               mkdir -p /tmp/vfio-sockets
               rocjitsu \
-                --config /usr/local/share/rocjitsu-configs/gfx950_mi355x.json \
+                --config \${ROCJITSU_CONFIG_DIR}/gfx1250_mi455x.json \
                 --vfio-socket /tmp/vfio-sockets/rocjitsu.sock &
               SERVER_PID=\$!
               sleep 3
@@ -641,6 +641,7 @@ jobs:
                 echo 'ERROR: rocjitsu exited prematurely'
                 exit 1
               fi
+              test -S /tmp/vfio-sockets/rocjitsu.sock
               echo \"rocjitsu is running (PID \${SERVER_PID})\"
               kill \${SERVER_PID}
             "

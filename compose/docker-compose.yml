@@ -11,8 +11,11 @@ services:
       SSH_PORT: "2222"
       VCPUS: "2"
       VMEM: "4096"
+      VFIO_USER_SOCKET: /tmp/vfio-sockets/rocjitsu.sock
     ports:
       - "2222:2222"
+    depends_on:
+      - rocm-rocjitsu
 
   rocm-ernic:
     image: batesste-ci-images-ubuntu-rocm-ernic:latest
@@ -35,14 +38,14 @@ services:
       - NET_ADMIN
     volumes:
       - vfio-sockets:/tmp/vfio-sockets
+    # gfx1250 is the only target with an IP discovery profile upstream, so it is
+    # the only config rocjitsu can serve over vfio-user; anything else exits 1.
     command:
       - rocjitsu
       - --config
-      - /usr/local/share/rocjitsu-configs/gfx950_mi355x.json
+      - /usr/local/share/rocjitsu/configs/gfx1250_mi455x.json
       - --vfio-socket
       - /tmp/vfio-sockets/rocjitsu.sock
-    depends_on:
-      - qemu
 
 volumes:
   vfio-sockets:

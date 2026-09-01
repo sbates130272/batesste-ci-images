@@ -59,6 +59,42 @@ else
     exit 1
 fi
 
+# Attach a vfio-user device server (e.g. rocjitsu, rocm-ernic) when one is named.
+# The server reaches guest RAM only through an mmap-able descriptor, so plain
+# -m is replaced by a shared memfd backend; without it the device sees no
+# guest memory and every DMA fails.
+MACHINE_SUFFIX=""
+VFIO_USER_ARGS=()
+MEMORY_ARGS=(-m "${VMEM}")
+if [ -n "${VFIO_USER_SOCKET:-}" ]; then
+    if [ "${QARCH}" != "x86_64" ]; then
+        echo "Error: VFIO_USER_SOCKET is only supported for ARCH=amd64 (QEMU here is built --target-list=x86_64-softmmu)"
+        exit 1
+    fi
+    echo "Waiting for vfio-user socket at ${VFIO_USER_SOCKET}..."
+    # if/fi rather than a && list: set -e is on, and a false AND-list would
+    # exit the script instead of looping.
+    for _ in $(seq 1 300); do
+        if [ -S "${VFIO_USER_SOCKET}" ]; then
+            break
+        fi
+        sleep 0.1
+    done
+    if [ ! -S "${VFIO_USER_SOCKET}" ]; then
+        echo "Error: vfio-user socket ${VFIO_USER_SOCKET} never appeared!"
+        exit 1
+    fi
+    echo "vfio-user socket found, attaching vfio-user-pci"
+    MEMORY_ARGS=(
+        -object "memory-backend-memfd,id=mem,size=${VMEM}M,share=on"
+        -m "${VMEM}"
+    )
+    MACHINE_SUFFIX=",memory-backend=mem"
+    VFIO_USER_ARGS=(
+        -device "vfio-user-pci,socket.type=unix,socket.path=${VFIO_USER_SOCKET}"
+    )
+fi
+
 # Check if KVM is available (optional, will use TCG if not)
 KVM_ENABLE=""
 if [ -c /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
@@ -77,11 +113,12 @@ echo "Connect with: ssh -p ${SSH_PORT} ${USERNAME}@localhost"
 # Note: QARCH_ARGS contains multiple space-separated arguments, so we use eval
 # shellcheck disable=SC2086
 exec "${QEMU_PATH}qemu-system-${QARCH}" \
-    ${QARCH_ARGS}${KVM_ENABLE} \
+    ${QARCH_ARGS}${MACHINE_SUFFIX}${KVM_ENABLE} \
     -smp "cpus=${VCPUS}" \
-    -m "${VMEM}" \
+    "${MEMORY_ARGS[@]}" \
     -nographic \
     -drive "if=virtio,format=qcow2,file=${VM_IMAGE}" \
     -netdev "user,id=net0,hostfwd=tcp::${SSH_PORT}-:22" \
-    -device virtio-net-pci,netdev=net0
+    -device virtio-net-pci,netdev=net0 \
+    ${VFIO_USER_ARGS[@]+"${VFIO_USER_ARGS[@]}"}
 

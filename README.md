@@ -34,6 +34,26 @@ and pushing of these images.
   software-emulated AMD GPU vfio-user server for KFD/amdgpu bring-up without
   real hardware. See `ubuntu-rocm-rocjitsu/` for details.
 
+### rocjitsu vfio-user mode
+
+Simulation configs are installed by upstream's own CMake install rule at
+`/usr/local/share/rocjitsu/configs` (also exported as `ROCJITSU_CONFIG_DIR`),
+and build provenance is at `/usr/local/share/rocjitsu-build.json`.
+
+Only `gfx1250_mi455x.json` can be served over vfio-user. Upstream publishes an
+IP discovery table for exactly one target -- `kGfx1250TargetVersion` (120500) in
+`lib/rocjitsu/src/rocjitsu/vm/amdgpu/pci/gpu_pci_device_spec.cpp` -- and a
+config with any other `gfx_target_version` leaves the device unusable, so
+`rocjitsu --vfio-socket` logs `no IP discovery profile` and exits 1. The image
+build runs a smoke test that starts the server and waits for `vfu: serving`, so
+this fails at build time rather than at deploy time.
+
+The VMM must share guest RAM through an mmap-able descriptor or the device
+cannot reach it. With QEMU that means a `memory-backend-memfd` with `share=on`
+plus `-machine memory-backend=mem`; `ubuntu-qemu-libvfio-user`'s entrypoint sets
+this up automatically when `VFIO_USER_SOCKET` is set. `compose/docker-compose.yml`
+wires the two together over the shared `vfio-sockets` volume.
+
 ## Project Structure
 
 ```
