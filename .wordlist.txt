@@ -65,3 +65,7 @@ virt
 virtio
 vm-info
 x86
+BuildKit
+kvm
+tcg
+qemu-tool

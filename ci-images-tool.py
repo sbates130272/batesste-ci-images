@@ -29,6 +29,9 @@ console = Console()
 DEFAULT_QEMU_REPO = "https://gitlab.com/qemu-project/qemu.git"
 DEFAULT_QEMU_COMMIT = "v11.1.1"
 DEFAULT_LIBVFIO_USER_COMMIT = "323f4cb6cddc3713fb7aebe44436f28b28b5413a"
+DEFAULT_QEMU_MINIMAL_REPO = "https://github.com/sbates130272/qemu-minimal.git"
+DEFAULT_QEMU_MINIMAL_COMMIT = "f88d4561031b80aec4441352d221c42ede30848b"
+DEFAULT_KVM = True
 DEFAULT_REGISTRY = "docker.io"
 DEFAULT_IMAGE_TAG = "latest"
 DEFAULT_USERNAME = "batesste"
@@ -42,6 +45,12 @@ DEFAULT_ROCM_ERNIC_COMMIT = "66512ca117b9e7c7f0fd825c6a7daf8b0d5a2263"
 DEFAULT_ROCM_ROCJITSU_REPO = "https://github.com/ROCm/rocm-systems.git"
 DEFAULT_ROCM_ROCJITSU_BRANCH = "develop"
 DEFAULT_ROCM_ROCJITSU_COMMIT = "8a43c008e9090f47038ccac33adff130beb853f1"
+
+BUILDER_NAME = "builder"
+BUILDKITD_FLAGS = (
+    "--allow-insecure-entitlement=security.insecure "
+    "--allow-insecure-entitlement=network.host"
+)
 
 ENV_SEARCH_PATHS = [
     ".env",
@@ -81,8 +90,9 @@ class Config:
     qemu_repo: str = DEFAULT_QEMU_REPO
     qemu_commit: str = DEFAULT_QEMU_COMMIT
     libvfio_user_commit: str = DEFAULT_LIBVFIO_USER_COMMIT
-    qemu_minimal_repo: str = ""
-    qemu_minimal_commit: str = ""
+    qemu_minimal_repo: str = DEFAULT_QEMU_MINIMAL_REPO
+    qemu_minimal_commit: str = DEFAULT_QEMU_MINIMAL_COMMIT
+    kvm: bool = DEFAULT_KVM
 
     username: str = DEFAULT_USERNAME
     vm_name: str = ""
@@ -124,6 +134,25 @@ def _resolve_password(
         return p.read_text().strip()
 
     return cfg.registry_password
+
+
+def _env_or_default(name: str, default: str) -> str:
+    """Env value, falling back to ``default`` when unset or
+    empty.  ``none`` explicitly disables the setting."""
+
+    val = os.environ.get(name, "").strip()
+    if not val:
+        return default
+    if val.lower() == "none":
+        return ""
+    return val
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    val = os.environ.get(name, "").strip().lower()
+    if not val:
+        return default
+    return val in {"1", "true", "yes", "on"}
 
 
 def load_config(
@@ -174,8 +203,15 @@ def load_config(
             "LIBVFIO_USER_COMMIT",
             DEFAULT_LIBVFIO_USER_COMMIT,
         ),
-        qemu_minimal_repo=os.environ.get("QEMU_MINIMAL_REPO", ""),
-        qemu_minimal_commit=os.environ.get("QEMU_MINIMAL_COMMIT", ""),
+        qemu_minimal_repo=_env_or_default(
+            "QEMU_MINIMAL_REPO",
+            DEFAULT_QEMU_MINIMAL_REPO,
+        ),
+        qemu_minimal_commit=_env_or_default(
+            "QEMU_MINIMAL_COMMIT",
+            DEFAULT_QEMU_MINIMAL_COMMIT,
+        ),
+        kvm=_env_bool("KVM", DEFAULT_KVM),
         username=os.environ.get("USERNAME", DEFAULT_USERNAME),
         vm_name=os.environ.get("VM_NAME", ""),
         password=os.environ.get("PASSWORD", DEFAULT_PASSWORD),
@@ -276,8 +312,47 @@ def ensure_buildx() -> None:
         sys.exit(1)
 
 
-def ensure_builder() -> None:
-    """Create or select the buildx builder."""
+def _builder_daemon_flags(name: str) -> str | None:
+    """Return the builder's buildkitd flags, or None if it does
+    not exist."""
+
+    proc = subprocess.run(
+        ["docker", "buildx", "inspect", name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    for line in proc.stdout.splitlines():
+        if line.startswith("BuildKit daemon flags:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def ensure_builder() -> bool:
+    """Create or select the buildx builder.
+
+    Returns True when the builder can grant the
+    security.insecure entitlement (needed for a KVM-accelerated
+    VM build)."""
+
+    flags = _builder_daemon_flags(BUILDER_NAME)
+    if flags is not None and "security.insecure" not in flags:
+        # The VM build stage needs the insecure entitlement for
+        # /dev/kvm; an old builder without it must be replaced.
+        console.print(
+            "[yellow]Warning:[/] recreating buildx builder "
+            f"'{BUILDER_NAME}' to add the security.insecure "
+            "entitlement (its build cache will be discarded)."
+        )
+        subprocess.run(
+            ["docker", "buildx", "rm", BUILDER_NAME],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
     # Allow create to fail (e.g., builder already exists), but
     # capture output so we can report it if selecting the builder fails.
     create_proc = subprocess.run(
@@ -286,7 +361,9 @@ def ensure_builder() -> None:
             "buildx",
             "create",
             "--name",
-            "builder",
+            BUILDER_NAME,
+            "--buildkitd-flags",
+            BUILDKITD_FLAGS,
             "--use",
         ],
         capture_output=True,
@@ -294,14 +371,14 @@ def ensure_builder() -> None:
         check=False,
     )
     use_proc = subprocess.run(
-        ["docker", "buildx", "use", "builder"],
+        ["docker", "buildx", "use", BUILDER_NAME],
         capture_output=True,
         text=True,
         check=False,
     )
     if use_proc.returncode != 0:
         console.print(
-            "[red]Error:[/] failed to select docker buildx builder 'builder'."
+            f"[red]Error:[/] failed to select docker buildx builder '{BUILDER_NAME}'."
         )
         if create_proc.returncode != 0 and create_proc.stderr:
             console.print("[red]docker buildx create stderr:[/]")
@@ -310,6 +387,9 @@ def ensure_builder() -> None:
             console.print("[red]docker buildx use stderr:[/]")
             console.print(use_proc.stderr.strip())
         sys.exit(1)
+
+    flags = _builder_daemon_flags(BUILDER_NAME) or ""
+    return "security.insecure" in flags
 
 
 def docker_login(cfg: Config) -> None:
@@ -348,10 +428,23 @@ def cmd_build(args: argparse.Namespace) -> None:
     image_dirs = resolve_image_dirs(cfg.workdir, args.image)
     dry_run: bool = args.dry_run
 
+    insecure_ok = True
     if not dry_run:
         ensure_buildx()
-        ensure_builder()
+        insecure_ok = ensure_builder()
         docker_login(cfg)
+
+    kvm_build = cfg.kvm and insecure_ok and Path("/dev/kvm").exists()
+    if cfg.kvm and not kvm_build:
+        reason = (
+            "the buildx builder cannot grant the security.insecure entitlement"
+            if not insecure_ok
+            else "this host has no /dev/kvm"
+        )
+        console.print(
+            f"[yellow]Warning:[/] KVM requested but {reason}; the VM "
+            "build will fall back to TCG emulation (much slower)."
+        )
 
     for image_dir in image_dirs:
         ref_tag = tagged_ref(cfg, image_dir)
@@ -375,6 +468,11 @@ def cmd_build(args: argparse.Namespace) -> None:
                 f"ROCM_VERSION={cfg.rocm_version}",
                 f"ROCM_STREAM={cfg.rocm_stream}",
             ]
+        if image_dir == "ubuntu-qemu-libvfio-user":
+            build_args += [
+                f"VM_STAGE={'vm-kvm' if kvm_build else 'vm-tcg'}",
+                f"KVM={'true' if kvm_build else 'false'}",
+            ]
         if image_dir == "ubuntu-rocm-ernic":
             build_args.append(
                 f"ROCM_ERNIC_COMMIT={cfg.rocm_ernic_commit}",
@@ -389,6 +487,11 @@ def cmd_build(args: argparse.Namespace) -> None:
             build_args.append(f"CACHE_BUST={args.cache_bust}")
 
         cmd: list[str] = ["docker", "buildx", "build"]
+        # The vm-kvm stage runs QEMU against /dev/kvm, which only
+        # an insecure-entitlement RUN can reach.  vm-tcg does not
+        # need (and must not request) the entitlement.
+        if image_dir == "ubuntu-qemu-libvfio-user" and kvm_build:
+            cmd += ["--allow", "security.insecure"]
         for ba in build_args:
             cmd += ["--build-arg", ba]
         if args.no_cache:
@@ -403,7 +506,15 @@ def cmd_build(args: argparse.Namespace) -> None:
         cmd.append(str(cfg.workdir))
 
         console.rule(f"[bold]Building {image_dir}[/]")
-        _print_build_summary(cfg, image_dir, args)
+        _print_build_summary(cfg, image_dir, args, kvm_build)
+
+        # The Dockerfile bind-mounts this dir; buildx fails if it
+        # is missing (it holds only gitignored *.img downloads).
+        if image_dir == "ubuntu-qemu-libvfio-user":
+            (cfg.workdir / "common" / "cloud-image-cache").mkdir(
+                parents=True,
+                exist_ok=True,
+            )
 
         if dry_run:
             console.print("[yellow]dry-run:[/] " + " ".join(cmd))
@@ -429,6 +540,7 @@ def _print_build_summary(
     cfg: Config,
     image_dir: str,
     args: argparse.Namespace,
+    kvm_build: bool = False,
 ) -> None:
     """Pretty-print the build configuration."""
     ref = tagged_ref(cfg, image_dir)
@@ -454,6 +566,14 @@ def _print_build_summary(
     elif image_dir == "ubuntu-qemu-libvfio-user":
         table.add_row("QEMU Commit", cfg.qemu_commit)
         table.add_row("libvfio-user Commit", cfg.libvfio_user_commit)
+        table.add_row(
+            "qemu-minimal Commit",
+            cfg.qemu_minimal_commit if cfg.qemu_minimal_repo else "(VM build disabled)",
+        )
+        table.add_row(
+            "KVM",
+            "true" if kvm_build else "false (TCG emulation)",
+        )
     elif image_dir == "ubuntu-kernel-build":
         pass
 

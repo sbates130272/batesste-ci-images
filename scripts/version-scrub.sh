@@ -66,6 +66,19 @@ if check_nonempty "$LIBVFIO_LATEST" "libvfio-user HEAD" && [[ "$LIBVFIO_CURRENT"
         "$REPO_ROOT/ubuntu-qemu-libvfio-user/Dockerfile"
 fi
 
+echo "==> Fetching latest qemu-minimal HEAD..."
+QEMU_MINIMAL_LATEST=$(curl -fsSL \
+    -H "Authorization: Bearer ${GITHUB_TOKEN:-}" \
+    "https://api.github.com/repos/sbates130272/qemu-minimal/commits/main" \
+    | jq -r '.sha')
+QEMU_MINIMAL_CURRENT=$(grep -oP 'DEFAULT_QEMU_MINIMAL_COMMIT\s*=\s*"\K[^"]+' "$TOOL")
+echo "    current: $QEMU_MINIMAL_CURRENT  latest: $QEMU_MINIMAL_LATEST"
+if check_nonempty "$QEMU_MINIMAL_LATEST" "qemu-minimal HEAD" \
+    && [[ "$QEMU_MINIMAL_CURRENT" != "$QEMU_MINIMAL_LATEST" ]]; then
+    replace_in_files "$QEMU_MINIMAL_CURRENT" "$QEMU_MINIMAL_LATEST" \
+        "$TOOL" "$ENV_EXAMPLE" "$WORKFLOW_TEST" "$WORKFLOW_RELEASE"
+fi
+
 echo "==> Fetching latest ROCM_ERNIC HEAD..."
 ERNIC_LATEST=$(curl -fsSL \
     -H "Authorization: Bearer ${GITHUB_TOKEN:-}" \
