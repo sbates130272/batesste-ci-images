@@ -92,6 +92,20 @@ if check_nonempty "$ERNIC_LATEST" "ROCM_ERNIC HEAD" && [[ "$ERNIC_CURRENT" != "$
         "$REPO_ROOT/ubuntu-rocm-ernic/Dockerfile"
 fi
 
+echo "==> Fetching latest fio HEAD..."
+# fio must track master: the libhipfile engine is not in any release tag yet.
+FIO_LATEST=$(curl -fsSL \
+    -H "Authorization: Bearer ${GITHUB_TOKEN:-}" \
+    "https://api.github.com/repos/axboe/fio/commits/HEAD" \
+    | jq -r '.sha')
+FIO_CURRENT=$(grep -oP 'DEFAULT_FIO_COMMIT\s*=\s*"\K[^"]+' "$TOOL")
+echo "    current: $FIO_CURRENT  latest: $FIO_LATEST"
+if check_nonempty "$FIO_LATEST" "fio HEAD" && [[ "$FIO_CURRENT" != "$FIO_LATEST" ]]; then
+    replace_in_files "$FIO_CURRENT" "$FIO_LATEST" \
+        "$TOOL" "$ENV_EXAMPLE" "$WORKFLOW_TEST" "$WORKFLOW_RELEASE" \
+        "$REPO_ROOT/ubuntu-cuda-rocm-fio/Dockerfile"
+fi
+
 echo "==> Fetching latest cuda-keyring deb..."
 KEYRING_PAGE=$(curl -fsSL \
     "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/")

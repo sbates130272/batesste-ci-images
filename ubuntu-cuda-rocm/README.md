@@ -37,6 +37,27 @@ Resolved values are written to:
 
 - `/etc/cuda-version`
 - `/etc/rocm-version`
+- `/etc/rocm-stream`
+
+## Install roots
+
+The two toolkit roots are probed at build time and recorded, because the
+layout differs by ROCm stream:
+
+- `/etc/rocm-path` — `/opt/rocm` on the legacy stream, but
+  `/opt/rocm/core-<version>` on the therock stream, which nests everything
+  one level down and creates no `/opt/rocm/{bin,lib,include}`
+- `/etc/cuda-path` — normally `/usr/local/cuda`, falling back to the
+  highest-versioned `/usr/local/cuda-*`
+
+`/etc/ld.so.conf.d/{rocm,cuda}.conf` and the `/etc/profile.d/` scripts are
+both derived from these files, so downstream images should read them rather
+than hardcoding paths:
+
+```bash
+ROCM_PATH="$(cat /etc/rocm-path)"
+CUDA_PATH="$(cat /etc/cuda-path)"
+```
 
 ## Build arguments
 

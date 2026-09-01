@@ -22,6 +22,10 @@ and pushing of these images.
   details.
 - **ubuntu-cuda-rocm**: Toolkit-only dual-stack environment with CUDA and
   ROCm/HIP tools on Ubuntu 24.04. See `ubuntu-cuda-rocm/` for details.
+- **ubuntu-cuda-rocm-fio**: `ubuntu-cuda-rocm` plus fio built from a pinned
+  upstream commit with both direct-to-GPU storage engines enabled:
+  `libhipfile` (AMD hipFile) and `libcufile` (NVIDIA GPUDirect Storage). See
+  `ubuntu-cuda-rocm-fio/` for details.
 - **ubuntu-rocm-ernic**: Ubuntu 24.04 image with libvfio-user and rocm-ernic
   built from pinned source commits. Designed for RDMA/ERNIC development and
   CI. See `ubuntu-rocm-ernic/` for details.
@@ -45,6 +49,9 @@ batesste-ci-images/
 │   ├── README.md
 │   ├── cuda-latest
 │   └── rocm-latest
+├── ubuntu-cuda-rocm-fio/      # fio with libhipfile + libcufile engines
+│   ├── Dockerfile
+│   └── README.md
 ├── ubuntu-rocm-ernic/         # libvfio-user + rocm-ernic build environment
 │   └── Dockerfile
 ├── ubuntu-rocm-rocjitsu/      # rocjitsu vfio-user emulated GPU image
