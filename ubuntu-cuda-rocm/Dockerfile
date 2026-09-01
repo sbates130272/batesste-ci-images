@@ -3,8 +3,10 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV UBUNTU_CODENAME=noble
 
-ARG CUDA_VERSION=latest
-ARG ROCM_VERSION=latest
+ARG CUDA_VERSION=13-3
+ARG ROCM_VERSION=7.14
+# ROCM_STREAM: 'therock' (repo.amd.com, ROCm 7.13+) or 'legacy' (repo.radeon.com, ROCm ≤7.2)
+ARG ROCM_STREAM=therock
 ARG CACHE_BUST=
 
 # Install base build dependencies
@@ -24,12 +26,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
+# Install AMD root CA if present in build context (ZScaler proxy on AMD network).
+# No-op in CI where the file is absent.
+# hadolint ignore=DL3003
+RUN --mount=type=bind,source=.,target=/ctx \
+    if [ -f /ctx/common/amd-root-ca.crt ]; then \
+        cp /ctx/common/amd-root-ca.crt \
+            /usr/local/share/ca-certificates/amd-root-ca.crt && \
+        update-ca-certificates; \
+    fi
+
 COPY ubuntu-cuda-rocm/cuda-latest ubuntu-cuda-rocm/rocm-latest /usr/local/bin/
 RUN chmod +x /usr/local/bin/cuda-latest /usr/local/bin/rocm-latest
 
 RUN echo "Cache bust: ${CACHE_BUST:-none}" > /tmp/cache_bust.txt
 
-# Resolve toolkit versions for traceability and installs
+# Resolve CUDA version for traceability
 RUN set -eux; \
     if [ "${CUDA_VERSION}" = "latest" ]; then \
         DETECTED_CUDA=$(QUIET=true /usr/local/bin/cuda-latest); \
@@ -37,15 +49,12 @@ RUN set -eux; \
         DETECTED_CUDA="${CUDA_VERSION}"; \
     fi; \
     echo "${DETECTED_CUDA}" > /etc/cuda-version; \
-    if [ "${ROCM_VERSION}" = "latest" ]; then \
-        DETECTED_ROCM=$(QUIET=true ONLY_ONE=ROCM /usr/local/bin/rocm-latest); \
-        ROCM_APT_PATH="latest"; \
-    else \
-        DETECTED_ROCM="${ROCM_VERSION}"; \
-        ROCM_APT_PATH="${ROCM_VERSION}"; \
-    fi; \
-    echo "${DETECTED_ROCM}" > /etc/rocm-version; \
-    echo "${ROCM_APT_PATH}" > /etc/rocm-apt-path
+    echo "${ROCM_VERSION}" > /etc/rocm-version; \
+    echo "${ROCM_STREAM}" > /etc/rocm-stream
+
+# Increase apt retries and timeouts for large package downloads through proxy
+RUN printf 'Acquire::Retries "10";\nAcquire::http::Timeout "600";\nAcquire::https::Timeout "600";\n' \
+    > /etc/apt/apt.conf.d/99-proxy-retries
 
 # NVIDIA CUDA repository (ubuntu2404 / noble)
 RUN wget -q -O /tmp/cuda-keyring.deb \
@@ -54,21 +63,22 @@ RUN wget -q -O /tmp/cuda-keyring.deb \
     && rm -f /tmp/cuda-keyring.deb \
     && apt-get update
 
-# AMD ROCm repository
-RUN curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key | \
-        gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
-
-RUN ROCM_APT_PATH=$(cat /etc/rocm-apt-path) && \
-    cat <<EOF > /etc/apt/sources.list.d/rocm.list
-deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/${ROCM_APT_PATH} ${UBUNTU_CODENAME} main
-deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/amdgpu/${ROCM_APT_PATH}/ubuntu ${UBUNTU_CODENAME} main
-EOF
-
-RUN cat <<EOF > /etc/apt/preferences.d/rocm-pin-600
-Package: *
-Pin: release o=repo.radeon.com
-Pin-Priority: 600
-EOF
+# AMD ROCm repository — therock stream (repo.amd.com) or legacy (repo.radeon.com)
+RUN mkdir -p /etc/apt/keyrings && \
+    if [ "${ROCM_STREAM}" = "therock" ]; then \
+        curl -fsSL https://stable.repo.amd.com/rocm/gpg/packages.gpg \
+            | gpg --dearmor -o /etc/apt/keyrings/amdrocm.gpg && \
+        printf 'Types: deb\nURIs: https://stable.repo.amd.com/rocm/core/packages/ubuntu2404\nSuites: stable\nComponents: main\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/amdrocm.gpg\n' \
+            > /etc/apt/sources.list.d/rocm.sources; \
+    else \
+        curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key \
+            | gpg --dearmor -o /etc/apt/keyrings/rocm.gpg && \
+        printf 'deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/%s %s main\n' \
+            "${ROCM_VERSION}" "${UBUNTU_CODENAME}" \
+            > /etc/apt/sources.list.d/rocm.list && \
+        printf 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600\n' \
+            > /etc/apt/preferences.d/rocm-pin-600; \
+    fi
 
 # CUDA toolkit (dev only; no drivers)
 RUN set -eux; \
@@ -79,16 +89,23 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 # ROCm development stack (dev only; no drivers)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    clang \
-    doxygen \
-    gdb \
-    hip-dev \
-    libboost-program-options-dev \
-    libmount-dev \
-    librocthrust-dev \
-    llvm-dev \
-    rocm-llvm-dev \
+# therock stream meta package is 'amdrocm'; legacy stream is 'rocm' (or versioned variant)
+RUN set -eux; \
+    apt-get update; \
+    ROCM_STREAM=$(cat /etc/rocm-stream); \
+    if [ "${ROCM_STREAM}" = "therock" ]; then \
+        ROCM_META=amdrocm; \
+    else \
+        ROCM_META=rocm; \
+    fi; \
+    apt-get install -y --no-install-recommends \
+        clang \
+        doxygen \
+        gdb \
+        libboost-program-options-dev \
+        libmount-dev \
+        libstdc++-14-dev \
+        "${ROCM_META}" \
     && update-pciids \
     && rm -rf /var/lib/apt/lists/*
 

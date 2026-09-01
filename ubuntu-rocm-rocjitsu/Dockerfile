@@ -16,7 +16,7 @@ RUN apt-get update && \
     ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
-# Install AMD root CA if present in common/ (ZScaler proxy on AMD network).
+# Install AMD root CA if present in build context (ZScaler proxy on AMD network).
 # No-op in CI where the file is absent.
 # hadolint ignore=DL3003
 RUN --mount=type=bind,source=.,target=/ctx \
@@ -27,18 +27,21 @@ RUN --mount=type=bind,source=.,target=/ctx \
     fi
 
 ARG ROCJITSU_REPO=https://github.com/ROCm/rocm-systems.git
-ARG ROCJITSU_BRANCH=users/agutierr/vfu-pci-device-stage0
-ARG ROCJITSU_COMMIT=3429877a85455f446b30684198ec44060938e0ed
+ARG ROCJITSU_BRANCH=develop
+ARG ROCJITSU_COMMIT=8a43c008e9090f47038ccac33adff130beb853f1
 
 WORKDIR /build
 
-RUN git clone --filter=blob:none \
-    --branch "${ROCJITSU_BRANCH}" \
-    "${ROCJITSU_REPO}" \
-    /build/rocm-systems && \
-    cd /build/rocm-systems && \
-    git checkout "${ROCJITSU_COMMIT}" && \
-    git rev-parse HEAD \
+# Increase git HTTP buffer and disable low-speed cutoff for large clones through proxy
+RUN git config --global http.postBuffer 524288000 && \
+    git config --global http.lowSpeedLimit 0 && \
+    git config --global http.lowSpeedTime 0
+
+RUN git init /build/rocm-systems && \
+    git -C /build/rocm-systems remote add origin "${ROCJITSU_REPO}" && \
+    git -C /build/rocm-systems fetch --depth 1 origin "${ROCJITSU_COMMIT}" && \
+    git -C /build/rocm-systems checkout FETCH_HEAD && \
+    git -C /build/rocm-systems rev-parse HEAD \
         > /build/rocjitsu-commit.txt
 
 RUN cmake \

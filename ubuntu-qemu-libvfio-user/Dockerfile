@@ -21,10 +21,20 @@ RUN apt-get update && \
     libcmocka-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Install AMD root CA if present in build context (ZScaler proxy on AMD network).
+# No-op in CI where the file is absent.
+# hadolint ignore=DL3003
+RUN --mount=type=bind,source=.,target=/ctx \
+    if [ -f /ctx/common/amd-root-ca.crt ]; then \
+        cp /ctx/common/amd-root-ca.crt \
+            /usr/local/share/ca-certificates/amd-root-ca.crt && \
+        update-ca-certificates; \
+    fi
+
 # Accept QEMU and libvfio-user tags or commit SHAs
 ARG QEMU_REPO=https://gitlab.com/qemu-project/qemu.git
-ARG QEMU_COMMIT=v10.2.2
-ARG LIBVFIO_USER_COMMIT=082925c65d98021af5c0f36f60a98e0bb6ddb329
+ARG QEMU_COMMIT=v11.1.1
+ARG LIBVFIO_USER_COMMIT=323f4cb6cddc3713fb7aebe44436f28b28b5413a
 
 # Accept qemu-minimal configuration as build arguments
 ARG QEMU_MINIMAL_REPO=
