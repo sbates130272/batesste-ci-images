@@ -80,12 +80,28 @@ RUN mkdir -p /etc/apt/keyrings && \
             > /etc/apt/preferences.d/rocm-pin-600; \
     fi
 
-# CUDA toolkit (dev only; no drivers)
+# CUDA toolkit (dev only; no kernel driver)
+#
+# cuda-compat is NVIDIA's CUDA Forward Compatibility package. The toolkit
+# itself ships only a link-time stub for libcuda, so anything linking -lcuda
+# cannot even start without the host driver. cuda-compat provides a real
+# libcuda.so.1 under ${CUDA_PATH}/compat, which lets such binaries run on a
+# host with no NVIDIA driver at all (AMD-only machines, CI runners) while
+# still deferring to the host driver when one is injected -- see the
+# lowest-precedence ld.so.conf entry further down.
 RUN set -eux; \
     CUDA_PKG_VER=$(cat /etc/cuda-version); \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         "cuda-toolkit-${CUDA_PKG_VER}"; \
+    if apt-get install -y --no-install-recommends \
+            "cuda-compat-${CUDA_PKG_VER}"; then \
+        echo "yes" > /etc/cuda-compat-installed; \
+    else \
+        echo "no" > /etc/cuda-compat-installed; \
+        echo "WARNING: cuda-compat-${CUDA_PKG_VER} unavailable; binaries" \
+             "linking -lcuda will require a host NVIDIA driver." >&2; \
+    fi; \
     rm -rf /var/lib/apt/lists/*
 
 # ROCm development stack (dev only; no drivers)
@@ -132,13 +148,23 @@ RUN set -eux; \
     test -n "${CUDA_ROOT}"; \
     echo "${CUDA_ROOT}" > /etc/cuda-path
 
-# Linker configuration
+# Linker configuration.
+#
+# The compat directory is deliberately a separate 'zz-' file: ld.so.conf.d is
+# processed in glob (alphabetical) order, so it sorts after
+# x86_64-linux-gnu.conf and the compat libcuda loses to a host driver that
+# nvidia-container-toolkit mounts into /usr/lib/x86_64-linux-gnu. With no
+# host driver, compat is the only libcuda.so.1 and wins by default.
 RUN set -eux; \
     ROCM_ROOT=$(cat /etc/rocm-path); \
     CUDA_ROOT=$(cat /etc/cuda-path); \
     printf '%s/lib\n%s/lib64\n' "${ROCM_ROOT}" "${ROCM_ROOT}" \
         > /etc/ld.so.conf.d/rocm.conf; \
     printf '%s/lib64\n' "${CUDA_ROOT}" > /etc/ld.so.conf.d/cuda.conf; \
+    if [ -d "${CUDA_ROOT}/compat" ]; then \
+        printf '%s/compat\n' "${CUDA_ROOT}" \
+            > /etc/ld.so.conf.d/zz-cuda-compat.conf; \
+    fi; \
     ldconfig
 
 # Per-stack environment (avoid mixing LD_LIBRARY_PATH in Dockerfile ENV)

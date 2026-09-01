@@ -67,40 +67,40 @@ docker build -f ubuntu-cuda-rocm-fio/Dockerfile \
   .
 ```
 
-## The NVIDIA driver stub
+## Why fio runs without an NVIDIA driver
 
 fio's `configure` appends a bare `-lcuda` to the global link line once CUDA
-support is enabled, so the resulting binary carries
-`DT_NEEDED libcuda.so.1` and will not start at all — not even `fio
---version` — on a host with no NVIDIA driver.
+support is enabled, so the binary carries `DT_NEEDED libcuda.so.1` and
+cannot start unless that library is present — not even `fio --version`.
+That would make the image unusable for `libhipfile` work on AMD-only hosts.
 
-The image therefore ships a driver stub at
-`/opt/fio/cuda-stubs/libcuda.so.1`, deliberately **off** the default linker
-path. On a machine with no NVIDIA GPU (CI runners, AMD-only hosts), opt in:
+It works anyway because the base image installs NVIDIA's `cuda-compat`,
+providing a real `libcuda.so.1` at the lowest linker precedence. On a host
+with an NVIDIA driver the driver wins; with no driver, compat is used and
+fio still starts. See [CUDA driver
+resolution](../ubuntu-cuda-rocm/README.md#cuda-driver-resolution).
 
-```bash
-export LD_LIBRARY_PATH=/opt/fio/cuda-stubs
-```
-
-On a host with real NVIDIA drivers, do **not** set this — the
-driver-injected `libcuda.so.1` is found normally, and the stub would shadow
-it.
+This only lets fio *load*. `--ioengine=libcufile` still needs a real NVIDIA
+GPU and driver, and fails at `cuInit()` without one.
 
 ## Verify (no GPU required)
 
 ```bash
-docker run --rm -e LD_LIBRARY_PATH=/opt/fio/cuda-stubs \
+docker run --rm \
   batesste-ci-images-ubuntu-cuda-rocm-fio:latest \
   bash -lc '
     fio --version
     cat /usr/local/share/fio-commit.txt
     fio --enghelp | grep -E "libhipfile|libcufile"
+    ldd "$(command -v fio)" | grep -E "libcuda|libhipfile"
   '
 ```
 
-Expected: both engine names are listed. The compiled-in engine list is also
-snapshotted at `/usr/local/share/fio-engines.txt`, and the exact fio commit
-at `/usr/local/share/fio-commit.txt`.
+Expected: both engine names are listed, `libhipfile.so.0` resolves under
+`/opt/rocm/lib`, and `libcuda.so.1` resolves under `.../compat/` on a
+driverless host. The compiled-in engine list is also snapshotted at
+`/usr/local/share/fio-engines.txt` and the exact fio commit at
+`/usr/local/share/fio-commit.txt`.
 
 ## Runtime notes (GPU drivers are host-provided)
 

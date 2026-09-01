@@ -10,8 +10,15 @@ toolchains available in one container:
 - CUDA toolkit (`nvcc`, libraries under `/usr/local/cuda`)
 - ROCm/HIP development stack (compiler tools under `/opt/rocm`)
 
-It is **toolkit-only**: GPU driver packages are not installed in the
-container. You typically provide drivers from the host.
+It is **toolkit-only**: no GPU kernel drivers are installed in the
+container. You provide those from the host.
+
+One exception on the NVIDIA side: the CUDA toolkit ships only a *link-time*
+stub for `libcuda`, so any binary linking `-lcuda` cannot even start
+without the host driver. The image therefore installs NVIDIA's
+`cuda-compat` package, which provides a real `libcuda.so.1` under
+`$(cat /etc/cuda-path)/compat`. See [CUDA driver
+resolution](#cuda-driver-resolution) below.
 
 The image also avoids embedding a single mixed `LD_LIBRARY_PATH` in
 `Dockerfile` `ENV`. Instead, it provides per-stack environment scripts
@@ -58,6 +65,39 @@ than hardcoding paths:
 ROCM_PATH="$(cat /etc/rocm-path)"
 CUDA_PATH="$(cat /etc/cuda-path)"
 ```
+
+## CUDA driver resolution
+
+`libcuda.so.1` is the userspace half of the NVIDIA kernel driver and is not
+part of the CUDA toolkit — the toolkit ships only a 74 KB link-time stub at
+`${CUDA_PATH}/lib64/stubs/libcuda.so`, whose functions are error-returning
+trampolines. Anything linking `-lcuda` therefore fails to start with:
+
+```
+error while loading shared libraries: libcuda.so.1: cannot open shared
+object file: No such file or directory
+```
+
+To make such binaries usable on machines without an NVIDIA driver — AMD-only
+hosts and CI runners — the image installs `cuda-compat-${CUDA_VERSION}`
+(NVIDIA's CUDA Forward Compatibility package) and registers it at the
+**lowest** linker precedence:
+
+| Path | Source | Wins when |
+| --- | --- | --- |
+| `/usr/lib/x86_64-linux-gnu/libcuda.so.1` | host driver, injected by nvidia-container-toolkit | running under `--gpus` |
+| `${CUDA_PATH}/compat/libcuda.so.1` | `cuda-compat` in this image | no host driver present |
+
+`ld.so.conf.d` is processed in glob order, so `zz-cuda-compat.conf` sorts
+after `x86_64-linux-gnu.conf` and a host-injected driver always takes
+precedence. Nothing needs `LD_LIBRARY_PATH` in either case.
+
+`/etc/cuda-compat-installed` records `yes`/`no`. If a pinned `CUDA_VERSION`
+has no matching `cuda-compat` package the build warns and continues, and
+binaries linking `-lcuda` then require a host driver as before.
+
+Note that compat only lets such a binary *load*. Actual CUDA calls still
+need a real GPU and driver; without one they fail at `cuInit()`.
 
 ## Build arguments
 

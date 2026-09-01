@@ -61,18 +61,13 @@ RUN set -eux; \
     make install prefix=/usr/local
 
 # fio links -lcuda unconditionally once CUDA support is enabled, so the binary
-# carries DT_NEEDED libcuda.so.1 and will not start without a driver. Keep a
-# stub off the default linker path so driverless smoke tests can opt in via
-# LD_LIBRARY_PATH without shadowing a real driver on GPU hosts.
-RUN set -eux; \
-    CUDA_PATH="$(cat /etc/cuda-path)"; \
-    mkdir -p /opt/fio/cuda-stubs; \
-    ln -sf "${CUDA_PATH}/lib64/stubs/libcuda.so" /opt/fio/cuda-stubs/libcuda.so.1
-
+# carries DT_NEEDED libcuda.so.1. It runs here with no NVIDIA driver only
+# because the base image installs cuda-compat, so simply invoking fio doubles
+# as a check that compat is present and on the linker path.
 RUN set -eux; \
     cp /build/fio-commit.txt /usr/local/share/fio-commit.txt; \
-    LD_LIBRARY_PATH=/opt/fio/cuda-stubs fio --enghelp \
-        > /usr/local/share/fio-engines.txt; \
+    ldd "$(command -v fio)" | grep -q 'libcuda\.so\.1 => /'; \
+    fio --enghelp > /usr/local/share/fio-engines.txt; \
     grep -qE '^[[:space:]]*libhipfile$' /usr/local/share/fio-engines.txt; \
     grep -qE '^[[:space:]]*libcufile$' /usr/local/share/fio-engines.txt; \
     rm -rf /build/fio

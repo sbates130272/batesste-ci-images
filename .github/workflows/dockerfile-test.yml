@@ -418,6 +418,11 @@ jobs:
               test -x "$(cat /etc/rocm-path)/bin/hipcc"
               test -f "$(cat /etc/rocm-path)/include/hip/hip_runtime.h"
               test -d "$(cat /etc/cuda-path)/lib64"
+
+              echo "cuda-compat:"; cat /etc/cuda-compat-installed
+              test "$(cat /etc/cuda-compat-installed)" = "yes"
+              test -e "$(cat /etc/cuda-path)/compat/libcuda.so.1"
+              ldconfig -p | grep "libcuda.so.1"
             '
 
   build-derived:
@@ -478,12 +483,11 @@ jobs:
         run: |
           gunzip -c ubuntu-cuda-rocm-fio.tar.gz | docker load
 
-      # Runners have no NVIDIA driver, so the bundled libcuda stub is
-      # required for the fio binary to start at all.
+      # Runners have no NVIDIA driver. fio starts anyway because the base
+      # image ships cuda-compat, so no LD_LIBRARY_PATH juggling is needed.
       - name: Verify both GPU engines are compiled in
         run: |
           docker run --rm \
-            -e LD_LIBRARY_PATH=/opt/fio/cuda-stubs \
             "batesste-ci-images-ubuntu-cuda-rocm-fio:test" \
             bash -lc '
               set -e
@@ -492,6 +496,26 @@ jobs:
               fio --enghelp | grep -qE "^[[:space:]]*libhipfile$"
               fio --enghelp | grep -qE "^[[:space:]]*libcufile$"
               echo "libhipfile and libcufile both present"
+            '
+
+      - name: Verify libcuda resolves to cuda-compat, not a stub
+        run: |
+          docker run --rm \
+            "batesste-ci-images-ubuntu-cuda-rocm-fio:test" \
+            bash -lc '
+              set -e
+              # compat must be last in ld.so.conf.d so a host-injected
+              # driver takes precedence over it
+              test -f /etc/ld.so.conf.d/zz-cuda-compat.conf
+              RESOLVED=$(ldd "$(command -v fio)" \
+                | awk "/libcuda\.so\.1/ {print \$3}")
+              echo "libcuda.so.1 -> ${RESOLVED}"
+              case "${RESOLVED}" in
+                */compat/*) echo "resolves to cuda-compat, as expected" ;;
+                *) echo "ERROR: unexpected libcuda source"; exit 1 ;;
+              esac
+              # the hand-rolled stub directory must never come back
+              test ! -e /opt/fio/cuda-stubs
             '
 
       - name: Verify pinned fio commit
@@ -508,7 +532,6 @@ jobs:
       - name: Run fio smoke job
         run: |
           docker run --rm \
-            -e LD_LIBRARY_PATH=/opt/fio/cuda-stubs \
             "batesste-ci-images-ubuntu-cuda-rocm-fio:test" \
             fio --name=smoke --ioengine=psync --rw=write \
                 --bs=64k --size=4m --directory=/tmp --minimal
