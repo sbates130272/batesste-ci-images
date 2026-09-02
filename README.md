@@ -158,6 +158,14 @@ Check what tags exist on the remote registry:
 ./ci-images-tool.py status
 ```
 
+Show the tags and labels an image would be published under, without
+building it:
+
+```bash
+./ci-images-tool.py tags ubuntu-cuda-rocm --tag 1.1.0
+./ci-images-tool.py labels ubuntu-cuda-rocm --tag 1.1.0
+```
+
 ### 1b. Push Images Separately
 
 Build first, then push as a separate step:
@@ -221,8 +229,9 @@ Common configuration variables:
 - `REGISTRY_PASSWORD`: Registry password or token for authentication
   - Can be a direct password or a path to a file containing the password
 - `REGISTRY_PASSWORD_FILE`: Alternative way to specify password file path
-- `IMAGE_TAG`: Image tag to use (`auto` = today's date, e.g.
-  `may-26-2026`; set `latest` to pin that tag)
+- `IMAGE_TAG`: Base tag to publish under (`auto` = today's UTC date in ISO
+  basic form, e.g. `20260526`; a semver such as `1.1.0` also publishes the
+  rolling `1.1` and `latest` aliases). See [Image Tags](#image-tags).
 - `WORKDIR`: Working directory for builds (defaults to script directory)
 
 The `ci-images-tool.py` CLI also supports:
@@ -234,6 +243,54 @@ The `ci-images-tool.py` CLI also supports:
 Image-specific variables are documented in each image's directory. For
 example, the `ubuntu-qemu-libvfio-user` image may use variables like
 `QEMU_COMMIT`, `VM_NAME`, `USERNAME`, etc.
+
+### Image Tags
+
+An image's tag carries both the repository release and the payload that
+distinguishes the build, so two releases with different ROCm or fio versions
+are told apart without pulling them. The payload half is the *variant*:
+
+| Image | Variant |
+| --- | --- |
+| `ubuntu-cuda-rocm` | `rocm7.14-cuda13.3` |
+| `ubuntu-cuda-rocm-fio` | `rocm7.14-cuda13.3-fio.<sha>` |
+| `ubuntu-rocm-ernic` | `ernic.<sha>` |
+| `ubuntu-rocm-rocjitsu` | `rocjitsu.<sha>` |
+| `ubuntu-qemu-libvfio-user` | `qemu11.1.1` |
+| `ubuntu-kernel-build` | none |
+
+`<sha>` is the pinned upstream commit abbreviated to seven characters.
+
+Releasing git tag `v1.1.0` publishes `ubuntu-cuda-rocm` as:
+
+```text
+1.1.0-rocm7.14-cuda13.3   immutable, fully specified -- pin this in CI
+1.1-rocm7.14-cuda13.3     rolling patch within this variant
+rocm7.14-cuda13.3         rolling latest of this variant
+1.1.0                     release alias
+1.1                       rolling minor alias
+latest                    rolling
+sha-<short>               provenance, traceable to a commit
+```
+
+The git tag keeps its `v` prefix; the image tag drops it, per OCI convention.
+A local `ci-images-tool.py build` uses the same scheme with `IMAGE_TAG` as the
+base, so `IMAGE_TAG=auto` yields `20260526-rocm7.14-cuda13.3`.
+
+The same facts are recorded as OCI labels, so they can be read without parsing
+a tag:
+
+```bash
+docker image inspect --format '{{json .Config.Labels}}' <image> | jq
+```
+
+`ci-images-tool.py` owns the scheme; release CI calls it rather than
+duplicating the logic:
+
+```bash
+./ci-images-tool.py tags ubuntu-cuda-rocm --tag 1.1.0
+./ci-images-tool.py labels ubuntu-cuda-rocm --tag 1.1.0
+```
 
 ### Immutable Builds
 
@@ -274,11 +331,9 @@ REGISTRY_PASSWORD=your-password-or-token
 IMAGE_TAG=latest
 ```
 
-Note: When using `ci-images-tool.py`, images are tagged as
-`{REGISTRY}/{REGISTRY_IMAGE}-{image-directory}:{IMAGE_TAG}`. For example,
-with `REGISTRY_IMAGE=batesste-ci-images` and `IMAGE_TAG=latest`, the
-ubuntu-qemu-libvfio-user image will be tagged as
-`docker.io/batesste-ci-images-ubuntu-qemu-libvfio-user:latest`.
+Note: When using `ci-images-tool.py`, images are named
+`{REGISTRY}/{REGISTRY_IMAGE}-{image-directory}` and published under the tag
+set described in [Image Tags](#image-tags).
 
 **Security Note**: For production, consider using Docker credential helpers or
 storing the password in a secure location with restricted permissions (e.g.,

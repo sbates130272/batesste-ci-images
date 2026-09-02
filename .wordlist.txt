@@ -89,3 +89,7 @@ gpu
 kGfx
 mmap
 vfu
+jq
+semver
+sha
+Config

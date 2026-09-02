@@ -89,6 +89,43 @@ jobs:
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "version=${TAG#v}" >> $GITHUB_OUTPUT
 
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install tool dependencies
+        run: pip install -r requirements.txt
+
+      # ci-images-tool.py owns the tag scheme so a release and a local
+      # build cannot drift; the pinned versions reach it through the same
+      # env vars that drive the build args below.
+      - name: Compute image tags and labels
+        id: tags
+        env:
+          REGISTRY: docker.io
+          REGISTRY_IMAGE: batesste-ci-images
+          REGISTRY_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          QEMU_COMMIT: ${{ matrix.qemu_commit }}
+          ROCM_ERNIC_COMMIT: ${{ matrix.rocm_ernic_commit }}
+          ROCM_ROCJITSU_COMMIT: ${{ matrix.rocjitsu_commit }}
+          ROCM_ROCJITSU_BRANCH: ${{ matrix.rocjitsu_branch }}
+        run: |
+          {
+            echo 'refs<<TAGS_EOF'
+            ./ci-images-tool.py tags "${{ matrix.image }}" \
+              --tag "${{ steps.version.outputs.version }}" \
+              --suffix="${{ matrix.variant }}" \
+              --extra-tag "sha-${GITHUB_SHA:0:7}" \
+              --extra-tag "${{ steps.version.outputs.tag }}"
+            echo TAGS_EOF
+            echo 'labels<<LABELS_EOF'
+            ./ci-images-tool.py labels "${{ matrix.image }}" \
+              --tag "${{ steps.version.outputs.version }}"
+            echo LABELS_EOF
+          } >> "$GITHUB_OUTPUT"
+
       - name: Ensure cloud image cache dir exists
         run: mkdir -p common/cloud-image-cache
 
@@ -117,9 +154,7 @@ jobs:
           file: ${{ matrix.image }}/Dockerfile
           allow: security.insecure
           push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/batesste-ci-images-${{ matrix.image }}${{ matrix.variant }}:${{ steps.version.outputs.tag }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/batesste-ci-images-${{ matrix.image }}${{ matrix.variant }}:latest
+          tags: ${{ steps.tags.outputs.refs }}
           cache-from: >-
             type=gha,scope=${{
               matrix.image
@@ -142,14 +177,22 @@ jobs:
             ${{ matrix.image == 'ubuntu-rocm-rocjitsu' && format('ROCJITSU_BRANCH={0}', matrix.rocjitsu_branch) || '' }}
             ${{ matrix.image == 'ubuntu-rocm-rocjitsu' && format('ROCJITSU_COMMIT={0}', matrix.rocjitsu_commit) || '' }}
           labels: |
-            org.opencontainers.image.version=${{ steps.version.outputs.tag }}
+            ${{ steps.tags.outputs.labels }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
 
   build-and-push-derived:
     name: Build and Push Derived
     runs-on: ubuntu-latest
     needs: build-and-push
+    env:
+      REGISTRY: docker.io
+      REGISTRY_IMAGE: batesste-ci-images
+      REGISTRY_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      FIO_REPO: https://github.com/axboe/fio.git
+      FIO_COMMIT: ae35a58399b28edf857f7ebc43b3eb40d86ac29b
     steps:
       - uses: actions/checkout@v7
 
@@ -169,25 +212,55 @@ jobs:
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "version=${TAG#v}" >> $GITHUB_OUTPUT
 
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install tool dependencies
+        run: pip install -r requirements.txt
+
+      # The base ref is the first line of the base image's tag set: the
+      # immutable, fully specified tag build-and-push just published.
+      - name: Compute image tags and labels
+        id: tags
+        run: |
+          BASE=$(./ci-images-tool.py tags ubuntu-cuda-rocm \
+            --tag "${{ steps.version.outputs.version }}" | head -1)
+          echo "base=${BASE}" >> "$GITHUB_OUTPUT"
+          {
+            echo 'refs<<TAGS_EOF'
+            ./ci-images-tool.py tags ubuntu-cuda-rocm-fio \
+              --tag "${{ steps.version.outputs.version }}" \
+              --extra-tag "sha-${GITHUB_SHA:0:7}" \
+              --extra-tag "${{ steps.version.outputs.tag }}"
+            echo TAGS_EOF
+            echo 'labels<<LABELS_EOF'
+            ./ci-images-tool.py labels ubuntu-cuda-rocm-fio \
+              --tag "${{ steps.version.outputs.version }}"
+            echo LABELS_EOF
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push ubuntu-cuda-rocm-fio
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ubuntu-cuda-rocm-fio/Dockerfile
           push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/batesste-ci-images-ubuntu-cuda-rocm-fio:${{ steps.version.outputs.tag }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/batesste-ci-images-ubuntu-cuda-rocm-fio:latest
+          tags: ${{ steps.tags.outputs.refs }}
           cache-from: type=gha,scope=ubuntu-cuda-rocm-fio
           cache-to: type=gha,mode=max,scope=ubuntu-cuda-rocm-fio
           build-args: |
-            BASE_IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/batesste-ci-images-ubuntu-cuda-rocm:${{ steps.version.outputs.tag }}
-            FIO_REPO=https://github.com/axboe/fio.git
-            FIO_COMMIT=ae35a58399b28edf857f7ebc43b3eb40d86ac29b
+            BASE_IMAGE=${{ steps.tags.outputs.base }}
+            FIO_REPO=${{ env.FIO_REPO }}
+            FIO_COMMIT=${{ env.FIO_COMMIT }}
           labels: |
-            org.opencontainers.image.version=${{ steps.version.outputs.tag }}
+            ${{ steps.tags.outputs.labels }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
 
   github-release:
     name: Create GitHub Release
