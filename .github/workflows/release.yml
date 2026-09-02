@@ -63,7 +63,7 @@ jobs:
             rocjitsu_branch: >-
               develop
             rocjitsu_commit: >-
-              8a43c008e9090f47038ccac33adff130beb853f1
+              5591761e3865fb92f3b82e2f18106927af77d34a
     steps:
       - uses: actions/checkout@v7
 
