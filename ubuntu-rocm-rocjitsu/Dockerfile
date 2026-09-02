@@ -19,7 +19,10 @@ RUN apt-get update && \
 # Install AMD root CA if present in build context (ZScaler proxy on AMD network).
 # No-op in CI where the file is absent.
 # hadolint ignore=DL3003
-RUN --mount=type=bind,source=.,target=/ctx \
+# Mount only common/, not the whole context: BuildKit folds the mounted
+# content digest into this step's cache key, so a repo-wide mount makes any
+# unrelated edit rebuild every layer below -- including the CUDA/ROCm installs.
+RUN --mount=type=bind,source=common,target=/ctx/common \
     if [ -f /ctx/common/amd-root-ca.crt ]; then \
         cp /ctx/common/amd-root-ca.crt \
             /usr/local/share/ca-certificates/amd-root-ca.crt && \
@@ -28,7 +31,7 @@ RUN --mount=type=bind,source=.,target=/ctx \
 
 ARG ROCJITSU_REPO=https://github.com/ROCm/rocm-systems.git
 ARG ROCJITSU_BRANCH=develop
-ARG ROCJITSU_COMMIT=5591761e3865fb92f3b82e2f18106927af77d34a
+ARG ROCJITSU_COMMIT=5e9cc7c57d372c0198fd8decb1fe5ceb07038a2b
 
 WORKDIR /build
 

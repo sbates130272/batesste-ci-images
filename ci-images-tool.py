@@ -31,7 +31,7 @@ DEFAULT_QEMU_REPO = "https://gitlab.com/qemu-project/qemu.git"
 DEFAULT_QEMU_COMMIT = "v11.1.1"
 DEFAULT_LIBVFIO_USER_COMMIT = "323f4cb6cddc3713fb7aebe44436f28b28b5413a"
 DEFAULT_QEMU_MINIMAL_REPO = "https://github.com/sbates130272/qemu-minimal.git"
-DEFAULT_QEMU_MINIMAL_COMMIT = "f88d4561031b80aec4441352d221c42ede30848b"
+DEFAULT_QEMU_MINIMAL_COMMIT = "225a81766b87ad2adb4e93d71bb8ed5e4e996466"
 DEFAULT_KVM = True
 DEFAULT_REGISTRY = "docker.io"
 DEFAULT_IMAGE_TAG = "latest"
@@ -42,12 +42,12 @@ DEFAULT_ARCH = "amd64"
 DEFAULT_CUDA_VERSION = "13-3"
 DEFAULT_ROCM_VERSION = "7.14"
 DEFAULT_ROCM_STREAM = "therock"
-DEFAULT_ROCM_ERNIC_COMMIT = "66512ca117b9e7c7f0fd825c6a7daf8b0d5a2263"
+DEFAULT_ROCM_ERNIC_COMMIT = "e3ef00c2a0c1ba1df95e6cbbe9362c2a1ad1d2fb"
 DEFAULT_ROCM_ROCJITSU_REPO = "https://github.com/ROCm/rocm-systems.git"
 DEFAULT_ROCM_ROCJITSU_BRANCH = "develop"
-DEFAULT_ROCM_ROCJITSU_COMMIT = "5591761e3865fb92f3b82e2f18106927af77d34a"
+DEFAULT_ROCM_ROCJITSU_COMMIT = "5e9cc7c57d372c0198fd8decb1fe5ceb07038a2b"
 DEFAULT_FIO_REPO = "https://github.com/axboe/fio.git"
-DEFAULT_FIO_COMMIT = "ae35a58399b28edf857f7ebc43b3eb40d86ac29b"
+DEFAULT_FIO_COMMIT = "975ea1856fee9f4c0f01f6f19ba3c61ce24f9bc8"
 FIO_IMAGE_DIR = "ubuntu-cuda-rocm-fio"
 FIO_BASE_IMAGE_DIR = "ubuntu-cuda-rocm"
 
@@ -353,16 +353,19 @@ def image_variant(cfg: Config, image_dir: str) -> str:
         if image_dir == FIO_IMAGE_DIR:
             variant += f"-fio.{_short(cfg.fio_commit)}"
         return variant
+    # Both images below link against libvfio-user, so it belongs in the tag:
+    # without it two builds differing only in that pin would collide.
+    vfu = f"-vfu.{_short(cfg.libvfio_user_commit)}"
     if image_dir == "ubuntu-rocm-ernic":
-        return f"ernic.{_short(cfg.rocm_ernic_commit)}"
+        return f"ernic.{_short(cfg.rocm_ernic_commit)}{vfu}"
     if image_dir == "ubuntu-rocm-rocjitsu":
         return f"rocjitsu.{_short(cfg.rocm_rocjitsu_commit)}"
     if image_dir == "ubuntu-qemu-libvfio-user":
         ref = cfg.qemu_commit.strip().lower()
         if _VERSION_RE.match(ref.removeprefix("v")):
-            return f"qemu{_ver(ref)}"
+            return f"qemu{_ver(ref)}{vfu}"
         # A fork branch or SHA: name it rather than dress it up as a version.
-        return f"qemu.{_short(ref)}"
+        return f"qemu.{_short(ref)}{vfu}"
     return ""
 
 
@@ -631,6 +634,8 @@ def cmd_build(args: argparse.Namespace) -> None:
             cmd.append("--no-cache")
         for ref in refs:
             cmd += ["--tag", ref]
+        for key, value in image_labels(cfg, image_dir).items():
+            cmd += ["--label", f"{key}={value}"]
         cmd += ["--load"]
         cmd += [
             "-f",

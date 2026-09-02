@@ -254,12 +254,13 @@ are told apart without pulling them. The payload half is the *variant*:
 | --- | --- |
 | `ubuntu-cuda-rocm` | `rocm7.14-cuda13.3` |
 | `ubuntu-cuda-rocm-fio` | `rocm7.14-cuda13.3-fio.<sha>` |
-| `ubuntu-rocm-ernic` | `ernic.<sha>` |
+| `ubuntu-rocm-ernic` | `ernic.<sha>-vfu.<sha>` |
 | `ubuntu-rocm-rocjitsu` | `rocjitsu.<sha>` |
-| `ubuntu-qemu-libvfio-user` | `qemu11.1.1` |
+| `ubuntu-qemu-libvfio-user` | `qemu11.1.1-vfu.<sha>` |
 | `ubuntu-kernel-build` | none |
 
-`<sha>` is the pinned upstream commit abbreviated to seven characters.
+`<sha>` is the pinned upstream commit abbreviated to seven characters;
+`vfu` is libvfio-user, which both of those images link against.
 
 Releasing git tag `v1.1.0` publishes `ubuntu-cuda-rocm` as:
 

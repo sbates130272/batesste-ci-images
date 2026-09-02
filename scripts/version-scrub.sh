@@ -5,8 +5,6 @@
 # Intended to be called by .github/workflows/version-scrub.yml and locally.
 #
 # Requirements: curl, jq, git (for QEMU_MINIMAL HEAD lookup)
-# ROCJITSU_COMMIT is intentionally excluded — it tracks a user feature branch and
-# requires a human decision before advancing.
 
 set -euo pipefail
 
@@ -37,6 +35,12 @@ replace_in_files() {
             sed -i "s|${old}|${new}|g" "$f"
             echo "  updated $(basename "$f"): $old -> $new"
             changed=1
+        else
+            # A listed file that lacks the current value has drifted off the
+            # scrub: the literal replace will never match it again. Silence
+            # here is how ernic's Dockerfile and env.example went stale.
+            echo "  WARNING: $(basename "$f") does not contain $old" \
+                 "— it is pinned to something else and is no longer tracked."
         fi
     done
 }
@@ -88,8 +92,24 @@ ERNIC_CURRENT=$(grep -oP 'DEFAULT_ROCM_ERNIC_COMMIT\s*=\s*"\K[^"]+' "$TOOL")
 echo "    current: $ERNIC_CURRENT  latest: $ERNIC_LATEST"
 if check_nonempty "$ERNIC_LATEST" "ROCM_ERNIC HEAD" && [[ "$ERNIC_CURRENT" != "$ERNIC_LATEST" ]]; then
     replace_in_files "$ERNIC_CURRENT" "$ERNIC_LATEST" \
-        "$TOOL" "$WORKFLOW_TEST" "$WORKFLOW_RELEASE" \
+        "$TOOL" "$ENV_EXAMPLE" "$WORKFLOW_TEST" "$WORKFLOW_RELEASE" \
         "$REPO_ROOT/ubuntu-rocm-ernic/Dockerfile"
+fi
+
+echo "==> Fetching latest ROCJITSU HEAD..."
+# Track whichever branch the tool is pinned to rather than hardcoding it here.
+ROCJITSU_BRANCH=$(grep -oP 'DEFAULT_ROCM_ROCJITSU_BRANCH\s*=\s*"\K[^"]+' "$TOOL")
+ROCJITSU_LATEST=$(curl -fsSL \
+    -H "Authorization: Bearer ${GITHUB_TOKEN:-}" \
+    "https://api.github.com/repos/ROCm/rocm-systems/commits/${ROCJITSU_BRANCH}" \
+    | jq -r '.sha')
+ROCJITSU_CURRENT=$(grep -oP 'DEFAULT_ROCM_ROCJITSU_COMMIT\s*=\s*"\K[^"]+' "$TOOL")
+echo "    current: $ROCJITSU_CURRENT  latest: $ROCJITSU_LATEST  (branch: $ROCJITSU_BRANCH)"
+if check_nonempty "$ROCJITSU_LATEST" "ROCJITSU HEAD" \
+    && [[ "$ROCJITSU_CURRENT" != "$ROCJITSU_LATEST" ]]; then
+    replace_in_files "$ROCJITSU_CURRENT" "$ROCJITSU_LATEST" \
+        "$TOOL" "$ENV_EXAMPLE" "$WORKFLOW_TEST" "$WORKFLOW_RELEASE" \
+        "$REPO_ROOT/ubuntu-rocm-rocjitsu/Dockerfile"
 fi
 
 echo "==> Fetching latest fio HEAD..."

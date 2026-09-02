@@ -55,7 +55,7 @@ jobs:
           - image: ubuntu-rocm-ernic
             variant: ''
             rocm_ernic_commit: >-
-              66512ca117b9e7c7f0fd825c6a7daf8b0d5a2263
+              e3ef00c2a0c1ba1df95e6cbbe9362c2a1ad1d2fb
           - image: ubuntu-rocm-rocjitsu
             variant: ''
             rocjitsu_repo: >-
@@ -63,7 +63,7 @@ jobs:
             rocjitsu_branch: >-
               develop
             rocjitsu_commit: >-
-              5591761e3865fb92f3b82e2f18106927af77d34a
+              5e9cc7c57d372c0198fd8decb1fe5ceb07038a2b
     steps:
       - uses: actions/checkout@v7
 
@@ -143,7 +143,8 @@ jobs:
           DIR="common/cloud-image-cache"
           IMG="${DIR}/noble-server-cloudimg-amd64.img"
           if [ ! -f "$IMG" ]; then
-            wget -q -O "$IMG" \
+            wget --progress=dot:giga --timeout=30 --tries=5 \
+              --retry-connrefused -O "$IMG" \
               "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
           fi
 
@@ -170,9 +171,9 @@ jobs:
           build-args: |
             QEMU_REPO=${{ matrix.qemu_repo || 'https://gitlab.com/qemu-project/qemu.git' }}
             QEMU_COMMIT=${{ matrix.qemu_commit || 'v11.1.1' }}
-            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'LIBVFIO_USER_COMMIT=323f4cb6cddc3713fb7aebe44436f28b28b5413a' || '' }}
+            ${{ (matrix.image == 'ubuntu-qemu-libvfio-user' || matrix.image == 'ubuntu-rocm-ernic') && 'LIBVFIO_USER_COMMIT=323f4cb6cddc3713fb7aebe44436f28b28b5413a' || '' }}
             ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_REPO=https://github.com/sbates130272/qemu-minimal.git' || '' }}
-            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_COMMIT=f88d4561031b80aec4441352d221c42ede30848b' || '' }}
+            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_COMMIT=225a81766b87ad2adb4e93d71bb8ed5e4e996466' || '' }}
             ${{ matrix.image == 'ubuntu-rocm-ernic' && format('ROCM_ERNIC_COMMIT={0}', matrix.rocm_ernic_commit) || '' }}
             ${{ matrix.image == 'ubuntu-rocm-rocjitsu' && format('ROCJITSU_BRANCH={0}', matrix.rocjitsu_branch) || '' }}
             ${{ matrix.image == 'ubuntu-rocm-rocjitsu' && format('ROCJITSU_COMMIT={0}', matrix.rocjitsu_commit) || '' }}
@@ -192,7 +193,7 @@ jobs:
       REGISTRY_IMAGE: batesste-ci-images
       REGISTRY_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       FIO_REPO: https://github.com/axboe/fio.git
-      FIO_COMMIT: ae35a58399b28edf857f7ebc43b3eb40d86ac29b
+      FIO_COMMIT: 975ea1856fee9f4c0f01f6f19ba3c61ce24f9bc8
     steps:
       - uses: actions/checkout@v7
 
