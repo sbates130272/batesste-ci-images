@@ -88,7 +88,7 @@ jobs:
         if: >-
           matrix.image ==
           'ubuntu-qemu-libvfio-user'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: common/cloud-image-cache
           key: cloud-image-noble-amd64
