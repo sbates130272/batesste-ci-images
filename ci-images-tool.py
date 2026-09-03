@@ -255,7 +255,10 @@ def load_config(
         registry_password=os.environ.get("REGISTRY_PASSWORD", ""),
         workdir=workdir,
         ubuntu_version=_ubuntu_version_from_base(workdir),
-        qemu_repo=os.environ.get("QEMU_REPO", DEFAULT_QEMU_REPO),
+        # _env_or_default, not os.environ.get: the CI matrix sets QEMU_REPO for
+        # every job and leaves it empty for all but the fork variant, and
+        # env.example ships it blank. An empty value has to mean "unset".
+        qemu_repo=_env_or_default("QEMU_REPO", DEFAULT_QEMU_REPO),
         qemu_commit=_env_or_default("QEMU_COMMIT", DEFAULT_QEMU_COMMIT),
         libvfio_user_commit=os.environ.get(
             "LIBVFIO_USER_COMMIT",
