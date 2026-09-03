@@ -412,12 +412,23 @@ jobs:
               kill \${SERVER_PID}
             "
 
+      # cuda-rocm's only consumer is build-derived, and what it wants is a
+      # registry ref, not a local image -- it used to load the artifact purely
+      # to push it straight back out again. Pushing here skips a ~13 GB
+      # tarball in each direction, and skips writing it to a disk that the
+      # image and its retained debs have already largely filled.
+      - name: Push cuda-rocm to GHCR for build-derived
+        if: matrix.image == 'ubuntu-cuda-rocm'
+        run: |
+          REF="${BASE_REGISTRY}:ubuntu-cuda-rocm-${GITHUB_SHA}"
+          docker tag batesste-ci-images-ubuntu-cuda-rocm:test "$REF"
+          docker push "$REF"
+
       # Only the jobs that genuinely need an image built by a *different*
-      # job still pay the artifact round-trip. zstd rather than gzip: the
-      # CUDA image is multi-GB and gzip is the slowest part of the hop.
+      # job still pay the artifact round-trip. zstd rather than gzip: these
+      # images are multi-GB and gzip is the slowest part of the hop.
       - name: Export Docker image
         if: >-
-          matrix.image == 'ubuntu-cuda-rocm' ||
           matrix.image == 'ubuntu-qemu-libvfio-user' ||
           matrix.image == 'ubuntu-rocm-ernic' ||
           matrix.image == 'ubuntu-rocm-rocjitsu'
@@ -429,7 +440,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         if: >-
-          matrix.image == 'ubuntu-cuda-rocm' ||
           matrix.image == 'ubuntu-qemu-libvfio-user' ||
           matrix.image == 'ubuntu-rocm-ernic' ||
           matrix.image == 'ubuntu-rocm-rocjitsu'
@@ -607,21 +617,13 @@ jobs:
 
       # The base used to be loaded from an artifact into the local daemon,
       # which forced this build onto the plain docker driver and cost it the
-      # layer cache entirely. Republishing it to GHCR keeps the
-      # docker-container driver and the registry cache.
-      - name: Download cuda-rocm image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: docker-image-ubuntu-cuda-rocm
-
-      - name: Republish base to GHCR
+      # layer cache entirely. The build job now pushes it to GHCR directly,
+      # so there is nothing to fetch: buildx pulls what it needs from the ref.
+      - name: Resolve base ref
         id: base
         run: |
-          zstd -dc ubuntu-cuda-rocm.tar.zst | docker load
-          REF="${BASE_REGISTRY}:ubuntu-cuda-rocm-${GITHUB_SHA}"
-          docker tag batesste-ci-images-ubuntu-cuda-rocm:test "$REF"
-          docker push "$REF"
-          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+          echo "ref=${BASE_REGISTRY}:ubuntu-cuda-rocm-${GITHUB_SHA}" \
+            >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         uses: actions/setup-python@v7
