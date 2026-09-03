@@ -165,7 +165,8 @@ ubuntu-base ─┬─ ubuntu-cuda-rocm ── ubuntu-cuda-rocm-fio
 `ci-images-tool.py build` orders the images so every base is built before its
 dependants. Each Dockerfile takes a `BASE_IMAGE` build arg that defaults to the
 *published* base on Docker Hub, so building one leaf image on its own never
-rebuilds the chain above it. When a base *is* built in the same run, the
+rebuilds the chain above it. That default only resolves for someone who has not
+run `docker login` if the base repositories are public, so all of them are. When a base *is* built in the same run, the
 dependant falls back to the `default` builder, which cannot grant
 `security.insecure` — `ubuntu-qemu-libvfio-user` then builds its VM under TCG
 instead of KVM. Pass `--base-from-registry` to keep every image on the buildx

@@ -27,6 +27,7 @@ from rich.table import Table
 
 console = Console()
 
+DEFAULT_UBUNTU_VERSION = "24.04"
 DEFAULT_QEMU_REPO = "https://gitlab.com/qemu-project/qemu.git"
 DEFAULT_QEMU_COMMIT = "v11.1.1"
 DEFAULT_LIBVFIO_USER_COMMIT = "323f4cb6cddc3713fb7aebe44436f28b28b5413a"
@@ -114,6 +115,11 @@ class Config:
     registry_password: str = ""
     workdir: Path = field(default_factory=Path.cwd)
 
+    # The Ubuntu release ubuntu-base is built FROM, read off its Dockerfile.
+    # Distinct from ``release``, which names the cloud image the QEMU VM guest
+    # is built from.
+    ubuntu_version: str = DEFAULT_UBUNTU_VERSION
+
     qemu_repo: str = DEFAULT_QEMU_REPO
     qemu_commit: str = DEFAULT_QEMU_COMMIT
     libvfio_user_commit: str = DEFAULT_LIBVFIO_USER_COMMIT
@@ -164,6 +170,27 @@ def _resolve_password(
         return p.read_text().strip()
 
     return cfg.registry_password
+
+
+_FROM_UBUNTU_RE = re.compile(r"^FROM\s+ubuntu:(\S+)", re.IGNORECASE | re.MULTILINE)
+
+
+def _ubuntu_version_from_base(workdir: Path) -> str:
+    """The Ubuntu release ``ubuntu-base`` is built FROM.
+
+    Parsed out of the Dockerfile rather than pushed in as a build arg. The
+    FROM line is what actually decides it, so reading it keeps one source of
+    truth without making the first instruction of the base image depend on a
+    variable -- which would invalidate every layer below it, in every image,
+    on every build.
+    """
+
+    try:
+        text = (workdir / BASE_IMAGE_DIR / "Dockerfile").read_text()
+    except OSError:
+        return DEFAULT_UBUNTU_VERSION
+    match = _FROM_UBUNTU_RE.search(text)
+    return match.group(1) if match else DEFAULT_UBUNTU_VERSION
 
 
 def _env_or_default(name: str, default: str) -> str:
@@ -227,6 +254,7 @@ def load_config(
         registry_username=os.environ.get("REGISTRY_USERNAME", ""),
         registry_password=os.environ.get("REGISTRY_PASSWORD", ""),
         workdir=workdir,
+        ubuntu_version=_ubuntu_version_from_base(workdir),
         qemu_repo=os.environ.get("QEMU_REPO", DEFAULT_QEMU_REPO),
         qemu_commit=_env_or_default("QEMU_COMMIT", DEFAULT_QEMU_COMMIT),
         libvfio_user_commit=os.environ.get(
@@ -389,10 +417,16 @@ def image_variant(cfg: Config, image_dir: str) -> str:
     """Tag fragment naming the payload that differentiates this build.
 
     Derived from the same Config fields that feed the build args, so the tag
-    cannot drift from what was actually built.  Empty for images whose only
-    input is the Ubuntu base.
+    cannot drift from what was actually built.
+
+    Images that add no pinned payload of their own are differentiated by the
+    Ubuntu release instead, which is otherwise the only thing that can change
+    between two of their builds.  The rest leave it out: it is implied by the
+    base they layer on, and the tags are long enough already.
     """
 
+    if image_dir in {BASE_IMAGE_DIR, "ubuntu-kernel-build"}:
+        return f"ubuntu{_ver(cfg.ubuntu_version)}"
     if image_dir in {"ubuntu-cuda-rocm", FIO_IMAGE_DIR}:
         # CUDA_VERSION carries the apt package form (13-3); publish it the way
         # NVIDIA versions it (13.3).
@@ -809,6 +843,8 @@ def _print_build_summary(
     if base:
         table.add_row("Base Image", base)
 
+    if image_dir == BASE_IMAGE_DIR:
+        table.add_row("Ubuntu Version", cfg.ubuntu_version)
     if image_dir == "ubuntu-cuda-rocm":
         table.add_row("CUDA Version", cfg.cuda_version)
         table.add_row("ROCm Version", cfg.rocm_version)
@@ -941,6 +977,11 @@ def image_labels(cfg: Config, image_dir: str) -> dict[str, str]:
         "org.opencontainers.image.title": f"batesste-ci-images-{image_dir}",
         f"{ns}.variant": image_variant(cfg, image_dir),
     }
+    if image_dir == BASE_IMAGE_DIR:
+        labels["org.opencontainers.image.base.name"] = (
+            f"docker.io/library/ubuntu:{cfg.ubuntu_version}"
+        )
+        labels[f"{ns}.ubuntu.version"] = cfg.ubuntu_version
     if image_dir in {"ubuntu-cuda-rocm", FIO_IMAGE_DIR}:
         labels[f"{ns}.rocm.version"] = cfg.rocm_version
         # Publish CUDA the way NVIDIA versions it, not in its apt form (13-3).

@@ -1,3 +1,6 @@
+# ci-images-tool.py parses this line for the tag variant, so keep it a
+# literal: turning it into an ARG would change the first instruction of the
+# image and invalidate every layer below it on every build.
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
