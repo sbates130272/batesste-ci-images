@@ -23,7 +23,10 @@ RUN apt-get update && \
 # Install AMD root CA if present in build context (ZScaler proxy on AMD network).
 # No-op in CI where the file is absent.
 # hadolint ignore=DL3003
-RUN --mount=type=bind,source=.,target=/ctx \
+# Mount only common/, not the whole context: BuildKit folds the mounted
+# content digest into this step's cache key, so a repo-wide mount makes any
+# unrelated edit rebuild every layer below -- including the CUDA/ROCm installs.
+RUN --mount=type=bind,source=common,target=/ctx/common \
     if [ -f /ctx/common/amd-root-ca.crt ]; then \
         cp /ctx/common/amd-root-ca.crt \
             /usr/local/share/ca-certificates/amd-root-ca.crt && \
@@ -32,9 +35,9 @@ RUN --mount=type=bind,source=.,target=/ctx \
 
 # Accept libvfio-user and rocm-ernic commit SHAs as build arguments
 ARG LIBVFIO_USER_REPO=https://gitlab.com/qemu-project/libvfio-user.git
-ARG LIBVFIO_USER_COMMIT=082925c65d98021af5c0f36f60a98e0bb6ddb329
+ARG LIBVFIO_USER_COMMIT=323f4cb6cddc3713fb7aebe44436f28b28b5413a
 ARG ROCM_ERNIC_REPO=https://github.com/ROCm/rocm-ernic.git
-ARG ROCM_ERNIC_COMMIT=e65d71539e62403f278c36055c7fe1e97d86202a
+ARG ROCM_ERNIC_COMMIT=e3ef00c2a0c1ba1df95e6cbbe9362c2a1ad1d2fb
 
 WORKDIR /build
 

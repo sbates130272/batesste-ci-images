@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -30,7 +31,7 @@ DEFAULT_QEMU_REPO = "https://gitlab.com/qemu-project/qemu.git"
 DEFAULT_QEMU_COMMIT = "v11.1.1"
 DEFAULT_LIBVFIO_USER_COMMIT = "323f4cb6cddc3713fb7aebe44436f28b28b5413a"
 DEFAULT_QEMU_MINIMAL_REPO = "https://github.com/sbates130272/qemu-minimal.git"
-DEFAULT_QEMU_MINIMAL_COMMIT = "f88d4561031b80aec4441352d221c42ede30848b"
+DEFAULT_QEMU_MINIMAL_COMMIT = "225a81766b87ad2adb4e93d71bb8ed5e4e996466"
 DEFAULT_KVM = True
 DEFAULT_REGISTRY = "docker.io"
 DEFAULT_IMAGE_TAG = "latest"
@@ -41,13 +42,18 @@ DEFAULT_ARCH = "amd64"
 DEFAULT_CUDA_VERSION = "13-3"
 DEFAULT_ROCM_VERSION = "7.14"
 DEFAULT_ROCM_STREAM = "therock"
-DEFAULT_ROCM_ERNIC_COMMIT = "66512ca117b9e7c7f0fd825c6a7daf8b0d5a2263"
+DEFAULT_ROCM_ERNIC_COMMIT = "e3ef00c2a0c1ba1df95e6cbbe9362c2a1ad1d2fb"
 DEFAULT_ROCM_ROCJITSU_REPO = "https://github.com/ROCm/rocm-systems.git"
 DEFAULT_ROCM_ROCJITSU_BRANCH = "develop"
-DEFAULT_ROCM_ROCJITSU_COMMIT = "5591761e3865fb92f3b82e2f18106927af77d34a"
+DEFAULT_ROCM_ROCJITSU_COMMIT = "5e9cc7c57d372c0198fd8decb1fe5ceb07038a2b"
 DEFAULT_FIO_REPO = "https://github.com/axboe/fio.git"
-DEFAULT_FIO_COMMIT = "ae35a58399b28edf857f7ebc43b3eb40d86ac29b"
+DEFAULT_FIO_COMMIT = "975ea1856fee9f4c0f01f6f19ba3c61ce24f9bc8"
+FIO_IMAGE_DIR = "ubuntu-cuda-rocm-fio"
 FIO_BASE_IMAGE_DIR = "ubuntu-cuda-rocm"
+
+_SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+_VERSION_RE = re.compile(r"^\d+(\.\d+)*$")
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 BUILDER_NAME = "builder"
 BUILDKITD_FLAGS = (
@@ -64,15 +70,16 @@ ENV_SEARCH_PATHS = [
 def resolve_image_tag(raw: str | None = None) -> str:
     """Return the effective OCI image tag.
 
-    When unset, empty, or set to ``auto``/``date``, use today's date in the
-    form ``may-26-2026``. Otherwise return the provided tag (e.g. ``latest``).
+    When unset, empty, or set to ``auto``/``date``, use today's UTC date in ISO
+    basic form ``20260526`` -- it sorts lexically and is unambiguous next to a
+    semver.  Otherwise return the provided tag (e.g. ``latest``, ``1.1.0``).
     """
 
     if raw is None:
         raw = os.environ.get("IMAGE_TAG", "")
     tag = (raw or "").strip()
     if not tag or tag.lower() in {"auto", "date"}:
-        return datetime.now(tz=timezone.utc).strftime("%B-%d-%Y").lower()
+        return datetime.now(tz=timezone.utc).strftime("%Y%m%d")
     return tag
 
 
@@ -204,7 +211,7 @@ def load_config(
         registry_password=os.environ.get("REGISTRY_PASSWORD", ""),
         workdir=workdir,
         qemu_repo=os.environ.get("QEMU_REPO", DEFAULT_QEMU_REPO),
-        qemu_commit=os.environ.get("QEMU_COMMIT", DEFAULT_QEMU_COMMIT),
+        qemu_commit=_env_or_default("QEMU_COMMIT", DEFAULT_QEMU_COMMIT),
         libvfio_user_commit=os.environ.get(
             "LIBVFIO_USER_COMMIT",
             DEFAULT_LIBVFIO_USER_COMMIT,
@@ -223,10 +230,10 @@ def load_config(
         password=os.environ.get("PASSWORD", DEFAULT_PASSWORD),
         release=os.environ.get("RELEASE", DEFAULT_RELEASE),
         arch=os.environ.get("ARCH", DEFAULT_ARCH),
-        cuda_version=os.environ.get("CUDA_VERSION", DEFAULT_CUDA_VERSION),
-        rocm_version=os.environ.get("ROCM_VERSION", DEFAULT_ROCM_VERSION),
+        cuda_version=_env_or_default("CUDA_VERSION", DEFAULT_CUDA_VERSION),
+        rocm_version=_env_or_default("ROCM_VERSION", DEFAULT_ROCM_VERSION),
         rocm_stream=os.environ.get("ROCM_STREAM", DEFAULT_ROCM_STREAM),
-        rocm_ernic_commit=os.environ.get(
+        rocm_ernic_commit=_env_or_default(
             "ROCM_ERNIC_COMMIT",
             DEFAULT_ROCM_ERNIC_COMMIT,
         ),
@@ -238,12 +245,12 @@ def load_config(
             "ROCM_ROCJITSU_BRANCH",
             DEFAULT_ROCM_ROCJITSU_BRANCH,
         ),
-        rocm_rocjitsu_commit=os.environ.get(
+        rocm_rocjitsu_commit=_env_or_default(
             "ROCM_ROCJITSU_COMMIT",
             DEFAULT_ROCM_ROCJITSU_COMMIT,
         ),
         fio_repo=os.environ.get("FIO_REPO", DEFAULT_FIO_REPO),
-        fio_commit=os.environ.get("FIO_COMMIT", DEFAULT_FIO_COMMIT),
+        fio_commit=_env_or_default("FIO_COMMIT", DEFAULT_FIO_COMMIT),
         fio_base_image=os.environ.get("FIO_BASE_IMAGE", ""),
     )
 
@@ -305,6 +312,103 @@ def tagged_ref(cfg: Config, image_dir: str, tag: str | None = None) -> str:
     return f"{cfg.registry}/{name}:{t}"
 
 
+def _sanitise(value: str) -> str:
+    """Reduce *value* to the OCI tag charset."""
+    return re.sub(r"[^a-z0-9._]+", "-", value.strip().lower()).strip("-._")
+
+
+def _ver(value: str) -> str:
+    """Normalise an upstream version into a tag fragment.
+
+    Strips the git-tag ``v`` prefix: ``v11.1.1`` -> ``11.1.1``.
+    """
+    return _sanitise(value.strip().lower().removeprefix("v"))
+
+
+def _short(commit: str) -> str:
+    """Abbreviate a pinned ref.
+
+    Full SHAs shrink to 7 chars; a branch keeps only its last path segment, so
+    ``dev/stephen/pci-mmio-bridge-submit`` becomes ``pci-mmio-bridge-submit``.
+    """
+    c = commit.strip().lower()
+    if _SHA_RE.match(c):
+        return c[:7]
+    return _sanitise(c.rsplit("/", 1)[-1])
+
+
+def image_variant(cfg: Config, image_dir: str) -> str:
+    """Tag fragment naming the payload that differentiates this build.
+
+    Derived from the same Config fields that feed the build args, so the tag
+    cannot drift from what was actually built.  Empty for images whose only
+    input is the Ubuntu base.
+    """
+
+    if image_dir in {"ubuntu-cuda-rocm", FIO_IMAGE_DIR}:
+        # CUDA_VERSION carries the apt package form (13-3); publish it the way
+        # NVIDIA versions it (13.3).
+        cuda = _ver(cfg.cuda_version.replace("-", "."))
+        variant = f"rocm{_ver(cfg.rocm_version)}-cuda{cuda}"
+        if image_dir == FIO_IMAGE_DIR:
+            variant += f"-fio.{_short(cfg.fio_commit)}"
+        return variant
+    # Both images below link against libvfio-user, so it belongs in the tag:
+    # without it two builds differing only in that pin would collide.
+    vfu = f"-vfu.{_short(cfg.libvfio_user_commit)}"
+    if image_dir == "ubuntu-rocm-ernic":
+        return f"ernic.{_short(cfg.rocm_ernic_commit)}{vfu}"
+    if image_dir == "ubuntu-rocm-rocjitsu":
+        return f"rocjitsu.{_short(cfg.rocm_rocjitsu_commit)}"
+    if image_dir == "ubuntu-qemu-libvfio-user":
+        ref = cfg.qemu_commit.strip().lower()
+        if _VERSION_RE.match(ref.removeprefix("v")):
+            return f"qemu{_ver(ref)}{vfu}"
+        # A fork branch or SHA: name it rather than dress it up as a version.
+        return f"qemu.{_short(ref)}{vfu}"
+    return ""
+
+
+def tag_set(cfg: Config, image_dir: str, base_tag: str | None = None) -> list[str]:
+    """Every tag this image should be published under, primary first.
+
+    For ``1.1.0`` and variant ``rocm7.14-cuda13.3`` that is::
+
+        1.1.0-rocm7.14-cuda13.3   immutable, fully specified
+        1.1-rocm7.14-cuda13.3     rolling patch within the variant
+        rocm7.14-cuda13.3         rolling latest of the variant
+        1.1.0                     release alias
+        1.1                       rolling minor alias
+        latest
+    """
+
+    base = (base_tag or cfg.image_tag).strip()
+    variant = image_variant(cfg, image_dir)
+    semver = _SEMVER_RE.match(base)
+    minor = f"{semver.group(1)}.{semver.group(2)}" if semver else ""
+
+    tags: list[str] = []
+
+    def add(tag: str) -> None:
+        if tag and tag not in tags:
+            tags.append(tag)
+
+    if base != "latest":
+        add(f"{base}-{variant}" if variant else base)
+    if minor:
+        add(f"{minor}-{variant}" if variant else minor)
+    add(variant)
+    add(base if semver else "")
+    add(minor)
+    add("latest")
+    return tags
+
+
+def primary_ref(cfg: Config, image_dir: str) -> str:
+    """The most specific published ref -- what CI should pin."""
+    return tagged_ref(cfg, image_dir, tag=tag_set(cfg, image_dir)[0])
+
+
 def fio_base_image(cfg: Config) -> str:
     """Base image for ubuntu-cuda-rocm-fio.
 
@@ -314,7 +418,7 @@ def fio_base_image(cfg: Config) -> str:
     """
     if cfg.fio_base_image:
         return cfg.fio_base_image
-    return tagged_ref(cfg, FIO_BASE_IMAGE_DIR)
+    return primary_ref(cfg, FIO_BASE_IMAGE_DIR)
 
 
 # ── docker helpers ─────────────────────────────────────
@@ -468,8 +572,7 @@ def cmd_build(args: argparse.Namespace) -> None:
         )
 
     for image_dir in image_dirs:
-        ref_tag = tagged_ref(cfg, image_dir)
-        ref_latest = tagged_ref(cfg, image_dir, tag="latest")
+        refs = [tagged_ref(cfg, image_dir, tag=t) for t in tag_set(cfg, image_dir)]
 
         build_args: list[str] = [
             f"QEMU_REPO={cfg.qemu_repo}",
@@ -529,8 +632,10 @@ def cmd_build(args: argparse.Namespace) -> None:
             cmd += ["--build-arg", ba]
         if args.no_cache:
             cmd.append("--no-cache")
-        cmd += ["--tag", ref_tag]
-        cmd += ["--tag", ref_latest]
+        for ref in refs:
+            cmd += ["--tag", ref]
+        for key, value in image_labels(cfg, image_dir).items():
+            cmd += ["--label", f"{key}={value}"]
         cmd += ["--load"]
         cmd += [
             "-f",
@@ -557,12 +662,9 @@ def cmd_build(args: argparse.Namespace) -> None:
 
         if has_credentials(cfg):
             console.rule("[bold]Pushing to registry[/]")
-            subprocess.run(["docker", "push", ref_tag], check=True)
-            subprocess.run(
-                ["docker", "push", ref_latest],
-                check=True,
-            )
-            console.print(f"[green]Pushed[/] {ref_tag}")
+            for ref in refs:
+                subprocess.run(["docker", "push", ref], check=True)
+                console.print(f"[green]Pushed[/] {ref}")
         else:
             console.print("[dim]Registry credentials not provided, skipping push[/]")
 
@@ -576,14 +678,15 @@ def _print_build_summary(
     kvm_build: bool = False,
 ) -> None:
     """Pretty-print the build configuration."""
-    ref = tagged_ref(cfg, image_dir)
+    tags = tag_set(cfg, image_dir)
     table = Table(
         title="Build Configuration",
         show_header=False,
     )
     table.add_column("Key", style="bold")
     table.add_column("Value")
-    table.add_row("Image", ref)
+    table.add_row("Image", tagged_ref(cfg, image_dir, tag=tags[0]))
+    table.add_row("Aliases", ", ".join(tags[1:]) or "-")
     table.add_row("Directory", image_dir)
 
     if image_dir == "ubuntu-cuda-rocm":
@@ -635,12 +738,11 @@ def cmd_push(args: argparse.Namespace) -> None:
     image_dirs = resolve_image_dirs(cfg.workdir, args.image)
 
     for image_dir in image_dirs:
-        ref_tag = tagged_ref(cfg, image_dir)
-        ref_latest = tagged_ref(cfg, image_dir, tag="latest")
         console.rule(f"[bold]Pushing {image_dir}[/]")
-        subprocess.run(["docker", "push", ref_tag], check=True)
-        subprocess.run(["docker", "push", ref_latest], check=True)
-        console.print(f"[green]Pushed[/] {ref_tag}")
+        for tag in tag_set(cfg, image_dir):
+            ref = tagged_ref(cfg, image_dir, tag=tag)
+            subprocess.run(["docker", "push", ref], check=True)
+            console.print(f"[green]Pushed[/] {ref}")
 
 
 def cmd_list(args: argparse.Namespace) -> None:
@@ -652,12 +754,79 @@ def cmd_list(args: argparse.Namespace) -> None:
     table = Table(title="Discoverable Images")
     table.add_column("#", style="dim")
     table.add_column("Directory")
+    table.add_column("Variant")
     table.add_column("Full Reference")
 
     for idx, d in enumerate(dirs, 1):
-        table.add_row(str(idx), d, tagged_ref(cfg, d))
+        table.add_row(str(idx), d, image_variant(cfg, d) or "-", primary_ref(cfg, d))
 
     console.print(table)
+
+
+def cmd_tags(args: argparse.Namespace) -> None:
+    """Print an image's tag set, one per line, on plain stdout.
+
+    Release CI consumes this so the workflow and a local build derive the tags
+    from one implementation; the pinned versions reach it through the same env
+    vars that drive the build args.
+    """
+
+    cfg = load_config(env_file=args.env_file)
+    if args.tag:
+        cfg.image_tag = resolve_image_tag(args.tag)
+
+    tags = tag_set(cfg, args.image) + list(args.extra_tag)
+    if args.names_only:
+        print("\n".join(dict.fromkeys(tags)))
+        return
+
+    name = full_image_ref(cfg, args.image) + args.suffix
+    seen = dict.fromkeys(f"{cfg.registry}/{name}:{t}" for t in tags)
+    print("\n".join(seen))
+
+
+def image_labels(cfg: Config, image_dir: str) -> dict[str, str]:
+    """OCI labels describing what went into *image_dir*.
+
+    The variant tag is a summary for humans; these are the same facts in a
+    form a scanner can read without parsing a tag.
+    """
+
+    ns = "io.batesste.ci-images"
+    labels = {
+        "org.opencontainers.image.title": f"batesste-ci-images-{image_dir}",
+        f"{ns}.variant": image_variant(cfg, image_dir),
+    }
+    if image_dir in {"ubuntu-cuda-rocm", FIO_IMAGE_DIR}:
+        labels[f"{ns}.rocm.version"] = cfg.rocm_version
+        # Publish CUDA the way NVIDIA versions it, not in its apt form (13-3).
+        labels[f"{ns}.cuda.version"] = cfg.cuda_version.replace("-", ".")
+        labels[f"{ns}.rocm.stream"] = cfg.rocm_stream
+    if image_dir == FIO_IMAGE_DIR:
+        labels[f"{ns}.fio.commit"] = cfg.fio_commit
+        labels["org.opencontainers.image.base.name"] = fio_base_image(cfg)
+    if image_dir == "ubuntu-rocm-ernic":
+        labels[f"{ns}.ernic.commit"] = cfg.rocm_ernic_commit
+        labels[f"{ns}.libvfio-user.commit"] = cfg.libvfio_user_commit
+    if image_dir == "ubuntu-rocm-rocjitsu":
+        labels[f"{ns}.rocjitsu.branch"] = cfg.rocm_rocjitsu_branch
+        labels[f"{ns}.rocjitsu.commit"] = cfg.rocm_rocjitsu_commit
+    if image_dir == "ubuntu-qemu-libvfio-user":
+        labels[f"{ns}.qemu.repo"] = cfg.qemu_repo
+        labels[f"{ns}.qemu.commit"] = cfg.qemu_commit
+        labels[f"{ns}.libvfio-user.commit"] = cfg.libvfio_user_commit
+    return {k: v for k, v in labels.items() if v}
+
+
+def cmd_labels(args: argparse.Namespace) -> None:
+    """Print an image's OCI labels as ``key=value`` lines on plain stdout."""
+
+    cfg = load_config(env_file=args.env_file)
+    if args.tag:
+        cfg.image_tag = resolve_image_tag(args.tag)
+
+    labels = image_labels(cfg, args.image)
+    print("\n".join(f"{k}={v}" for k, v in labels.items()))
 
 
 def cmd_inspect(args: argparse.Namespace) -> None:
@@ -676,7 +845,7 @@ def cmd_inspect(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     for image_dir in image_dirs:
-        ref = tagged_ref(cfg, image_dir)
+        ref = primary_ref(cfg, image_dir)
         console.rule(f"[bold]{image_dir}[/]")
 
         try:
@@ -919,6 +1088,62 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common_args(p_list)
 
+    # ── tags ──
+    p_tags = sub.add_parser(
+        "tags",
+        help="Print the tags an image should be published under",
+    )
+    p_tags.add_argument(
+        "image",
+        help="Image directory name",
+    )
+    p_tags.add_argument(
+        "--tag",
+        metavar="TAG",
+        help=(
+            "Base tag to expand (defaults to IMAGE_TAG); a semver such as "
+            "1.1.0 also yields the rolling minor and bare aliases"
+        ),
+    )
+    p_tags.add_argument(
+        "--suffix",
+        default="",
+        metavar="TEXT",
+        help=("Appended to the repository name, not the tag (e.g. -sbates-fork)"),
+    )
+    p_tags.add_argument(
+        "--extra-tag",
+        action="append",
+        default=[],
+        metavar="TAG",
+        help="Additional tag to emit verbatim (repeatable)",
+    )
+    p_tags.add_argument(
+        "--names-only",
+        action="store_true",
+        help="Print bare tags instead of full registry refs",
+    )
+    _add_common_args(p_tags)
+
+    # ── labels ──
+    p_labels = sub.add_parser(
+        "labels",
+        help="Print an image's OCI labels as key=value lines",
+    )
+    p_labels.add_argument(
+        "image",
+        help="Image directory name",
+    )
+    p_labels.add_argument(
+        "--tag",
+        metavar="TAG",
+        help=(
+            "Base tag being published; sets the base image reference "
+            "recorded for derived images"
+        ),
+    )
+    _add_common_args(p_labels)
+
     # ── inspect ──
     p_inspect = sub.add_parser(
         "inspect",
@@ -965,6 +1190,8 @@ DISPATCH = {
     "build": cmd_build,
     "push": cmd_push,
     "list": cmd_list,
+    "tags": cmd_tags,
+    "labels": cmd_labels,
     "inspect": cmd_inspect,
     "status": cmd_status,
 }

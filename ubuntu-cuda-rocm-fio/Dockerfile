@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ARG FIO_REPO=https://github.com/axboe/fio.git
 # libhipfile landed on fio master (67256d4e, 2026-05-08) and is not in any
 # release tag yet, so this must be a master commit rather than fio-3.x.
-ARG FIO_COMMIT=ae35a58399b28edf857f7ebc43b3eb40d86ac29b
+ARG FIO_COMMIT=975ea1856fee9f4c0f01f6f19ba3c61ce24f9bc8
 ARG CACHE_BUST=
 
 RUN echo "Cache bust: ${CACHE_BUST:-none}" > /tmp/fio_cache_bust.txt
