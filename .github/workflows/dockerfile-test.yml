@@ -160,7 +160,7 @@ jobs:
             | gzip \
             > "/tmp/${{ matrix.image }}${{ matrix.variant }}.tar.gz"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: >-
             docker-image-${{
@@ -462,7 +462,7 @@ jobs:
             "batesste-ci-images-ubuntu-cuda-rocm-fio:test" \
             | gzip > /tmp/ubuntu-cuda-rocm-fio.tar.gz
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: docker-image-ubuntu-cuda-rocm-fio
           path: /tmp/ubuntu-cuda-rocm-fio.tar.gz
