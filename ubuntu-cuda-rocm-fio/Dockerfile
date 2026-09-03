@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=docker.io/batesste/batesste-ci-images-ubuntu-cuda-rocm:latest
+ARG BASE_IMAGE=docker.io/sbates130272/batesste-ci-images-ubuntu-cuda-rocm:latest
 # hadolint ignore=DL3006
 FROM ${BASE_IMAGE}
 

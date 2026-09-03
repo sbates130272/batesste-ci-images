@@ -21,7 +21,7 @@ As with the base, this is **toolkit-only** — GPU drivers are host-provided.
 ## Base image
 
 - `${BASE_IMAGE}`, default
-  `docker.io/batesste/batesste-ci-images-ubuntu-cuda-rocm:latest`
+  `docker.io/sbates130272/batesste-ci-images-ubuntu-cuda-rocm:latest`
 
 The base must be built with `ROCM_STREAM=therock`. The legacy
 `repo.radeon.com` stream does not publish `amdrocm-hipfile-dev`, and the

@@ -7,7 +7,7 @@ ARG VM_STAGE=vm-kvm
 
 # libvfio-user is already built and installed under /usr/local by the base
 # image, which pins the same SHA this image used to build for itself.
-ARG BASE_IMAGE=docker.io/batesste/batesste-ci-images-ubuntu-libvfio-user:latest
+ARG BASE_IMAGE=docker.io/sbates130272/batesste-ci-images-ubuntu-libvfio-user:latest
 # hadolint ignore=DL3006
 FROM ${BASE_IMAGE} AS base
 
