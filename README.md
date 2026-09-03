@@ -469,6 +469,13 @@ Building the Dockerfile directly (without `ci-images-tool.py`) defaults to the
 `vm-kvm` stage, so pass `--allow security.insecure`, or
 `--build-arg VM_STAGE=vm-tcg` to opt out.
 
+CI uses KVM too. x86 GitHub-hosted runners do expose `/dev/kvm`, but as
+`root:kvm 0660`, which the BuildKit `RUN` step cannot open; the workflows
+install a udev rule widening it to `0666` before creating the builder, then
+pass `--kvm` only when `/dev/kvm` is writable. Runners that have no `/dev/kvm`
+at all — ARM Linux, macOS, Windows, `ubuntu-slim` — fall back to `vm-tcg`
+rather than failing.
+
 #### vm-info.json Format
 
 The `vm-info.json` file contains the following information:
