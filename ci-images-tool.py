@@ -747,13 +747,26 @@ def cmd_build(args: argparse.Namespace) -> None:
         for d in image_dirs
         if IMAGE_BASES.get(d) in image_dirs and not args.base_from_registry
     }
+
+    # ubuntu-qemu-libvfio-user is the only image needing an entitlement the
+    # 'default' builder cannot grant, so it is the only one for which being
+    # pushed off the buildx builder actually costs anything. Images are built
+    # in dependency order and each is pushed as soon as it is built, so when
+    # we have credentials its base is already published by the time we get
+    # here: point at that and keep the builder, rather than trading KVM for a
+    # local image reference. Only worth it for this one image -- routing
+    # ubuntu-cuda-rocm-fio the same way would re-pull a 28 GB base for no gain.
+    if has_credentials(cfg) and kvm_build:
+        local_bases.discard("ubuntu-qemu-libvfio-user")
+
     if "ubuntu-qemu-libvfio-user" in local_bases and kvm_build:
         console.print(
             "[yellow]Warning:[/] ubuntu-libvfio-user is being built in this "
-            "run, so ubuntu-qemu-libvfio-user must build on the 'default' "
-            "builder, which cannot grant security.insecure; its VM stage "
-            "falls back to TCG emulation. Pass --base-from-registry to build "
-            "against the published base and keep KVM."
+            "run and no registry credentials are set, so "
+            "ubuntu-qemu-libvfio-user must build on the 'default' builder, "
+            "which cannot grant security.insecure; its VM stage falls back to "
+            "TCG emulation. Pass --base-from-registry to build against the "
+            "published base and keep KVM."
         )
 
     for image_dir in image_dirs:
