@@ -193,6 +193,26 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # ubuntu-cuda-rocm downloads ~10 GB of .deb files, which ubuntu-base's
+      # apt cache mounts now keep for the whole build instead of letting
+      # docker-clean discard them. On top of a 28 GB image that overruns the
+      # runner. CI gets nothing from those mounts anyway -- BuildKit never
+      # exports them -- so buy the headroom back off the preinstalled
+      # toolchains we never use rather than give up the local-rebuild win.
+      - name: Free up disk space
+        if: matrix.image == 'ubuntu-cuda-rocm'
+        run: |
+          df -h /
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /usr/local/share/powershell \
+            /usr/share/swift
+          df -h /
+
       # x86 GitHub-hosted runners do expose /dev/kvm, but as root:kvm 0660,
       # and BuildKit's RUN step is not in the kvm group. Widen it rather than
       # fall back to TCG, which turns a minutes-long VM boot into an hour.
@@ -339,6 +359,22 @@ jobs:
       REGISTRY_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     steps:
       - uses: actions/checkout@v7
+
+      # This job builds fio on top of the 28 GB cuda-rocm image, so it is
+      # tighter for space than the job that produced the base. See the
+      # matching step in the build-and-push job above.
+      - name: Free up disk space
+        run: |
+          df -h /
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /usr/local/share/powershell \
+            /usr/share/swift
+          df -h /
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

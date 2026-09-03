@@ -163,6 +163,26 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # ubuntu-cuda-rocm downloads ~10 GB of .deb files, which ubuntu-base's
+      # apt cache mounts now keep for the whole build instead of letting
+      # docker-clean discard them. On top of a 28 GB image that overruns the
+      # runner. CI gets nothing from those mounts anyway -- BuildKit never
+      # exports them -- so buy the headroom back off the preinstalled
+      # toolchains we never use rather than give up the local-rebuild win.
+      - name: Free up disk space
+        if: matrix.image == 'ubuntu-cuda-rocm'
+        run: |
+          df -h /
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /usr/local/share/powershell \
+            /usr/share/swift
+          df -h /
+
       - name: Ensure cloud image cache dir exists
         run: mkdir -p common/cloud-image-cache
 
@@ -558,6 +578,22 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v7
+
+      # This job loads the 28 GB cuda-rocm image into the daemon and then
+      # builds fio on top of it, so it is tighter for space than the job that
+      # produced the base. See the matching step in the build job above.
+      - name: Free up disk space
+        run: |
+          df -h /
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /usr/local/share/powershell \
+            /usr/share/swift
+          df -h /
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
