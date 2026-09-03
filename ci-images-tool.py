@@ -51,6 +51,23 @@ DEFAULT_FIO_COMMIT = "975ea1856fee9f4c0f01f6f19ba3c61ce24f9bc8"
 FIO_IMAGE_DIR = "ubuntu-cuda-rocm-fio"
 FIO_BASE_IMAGE_DIR = "ubuntu-cuda-rocm"
 
+BASE_IMAGE_DIR = "ubuntu-base"
+VFU_IMAGE_DIR = "ubuntu-libvfio-user"
+
+# Which image each image is layered on. Everything not listed here builds
+# straight from a public upstream tag. Ordering used to fall out of the
+# alphabetical sort in discover_images(); state it instead, so adding an
+# image cannot silently reorder a base after its dependant.
+IMAGE_BASES = {
+    "ubuntu-cuda-rocm": BASE_IMAGE_DIR,
+    "ubuntu-kernel-build": BASE_IMAGE_DIR,
+    "ubuntu-rocm-rocjitsu": BASE_IMAGE_DIR,
+    VFU_IMAGE_DIR: BASE_IMAGE_DIR,
+    "ubuntu-qemu-libvfio-user": VFU_IMAGE_DIR,
+    "ubuntu-rocm-ernic": VFU_IMAGE_DIR,
+    FIO_IMAGE_DIR: FIO_BASE_IMAGE_DIR,
+}
+
 _SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 _VERSION_RE = re.compile(r"^\d+(\.\d+)*$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -271,16 +288,47 @@ def discover_images(workdir: Path) -> list[str]:
     return dirs
 
 
+def order_images(image_dirs: list[str]) -> list[str]:
+    """Sort so every image follows the image it is layered on.
+
+    Stable within a dependency level: the input order (alphabetical, from
+    discover_images) is preserved for images that do not depend on each other.
+    """
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    known = set(image_dirs)
+
+    def visit(name: str, stack: tuple[str, ...] = ()) -> None:
+        if name in seen:
+            return
+        if name in stack:
+            cycle = " -> ".join((*stack, name))
+            console.print(f"[red]Error:[/] circular image dependency: {cycle}")
+            sys.exit(1)
+        base = IMAGE_BASES.get(name)
+        # A base outside the requested set is pulled from the registry
+        # instead of being built, so it imposes no ordering.
+        if base and base in known:
+            visit(base, (*stack, name))
+        seen.add(name)
+        ordered.append(name)
+
+    for name in image_dirs:
+        visit(name)
+    return ordered
+
+
 def resolve_image_dirs(workdir: Path, image_arg: str | None) -> list[str]:
     """If the caller specified a single image name, return
-    it; otherwise discover all."""
+    it; otherwise discover all, base images first."""
     if image_arg:
         dockerfile = workdir / image_arg / "Dockerfile"
         if not dockerfile.is_file():
             console.print(f"[red]Error:[/] Dockerfile not found in {image_arg}")
             sys.exit(1)
         return [image_arg]
-    return discover_images(workdir)
+    return order_images(discover_images(workdir))
 
 
 # ── image naming ───────────────────────────────────────
@@ -356,6 +404,8 @@ def image_variant(cfg: Config, image_dir: str) -> str:
     # Both images below link against libvfio-user, so it belongs in the tag:
     # without it two builds differing only in that pin would collide.
     vfu = f"-vfu.{_short(cfg.libvfio_user_commit)}"
+    if image_dir == VFU_IMAGE_DIR:
+        return f"vfu.{_short(cfg.libvfio_user_commit)}"
     if image_dir == "ubuntu-rocm-ernic":
         return f"ernic.{_short(cfg.rocm_ernic_commit)}{vfu}"
     if image_dir == "ubuntu-rocm-rocjitsu":
@@ -409,16 +459,101 @@ def primary_ref(cfg: Config, image_dir: str) -> str:
     return tagged_ref(cfg, image_dir, tag=tag_set(cfg, image_dir)[0])
 
 
-def fio_base_image(cfg: Config) -> str:
-    """Base image for ubuntu-cuda-rocm-fio.
+def base_image_for(cfg: Config, image_dir: str) -> str:
+    """The BASE_IMAGE build arg for a layered image, or "" if it has no base.
 
-    Defaults to this run's own ubuntu-cuda-rocm tag: ``discover_images``
-    returns sorted names, so a full build produces and ``--load``s the base
-    before the derived image needs it.
+    Defaults to this run's own tag for the base: ``resolve_image_dirs``
+    orders bases first, so a full build produces and ``--load``s the base
+    before the dependant needs it.
     """
-    if cfg.fio_base_image:
-        return cfg.fio_base_image
-    return primary_ref(cfg, FIO_BASE_IMAGE_DIR)
+    base_dir = IMAGE_BASES.get(image_dir)
+    if not base_dir:
+        return ""
+    # Two override forms: one keyed by the dependant, one keyed by the base.
+    # CI uses the latter to point every dependant at a scratch registry copy
+    # of a base built earlier in the same run, with a single env var.
+    override = os.environ.get(f"BASE_IMAGE_{_env_key(image_dir)}", "")
+    if not override:
+        override = os.environ.get(f"BASE_IMAGE_FOR_{_env_key(base_dir)}", "")
+    if not override and image_dir == FIO_IMAGE_DIR:
+        # Retained for compatibility: FIO_BASE_IMAGE predates the generic form.
+        override = cfg.fio_base_image
+    if override:
+        return override
+    return primary_ref(cfg, base_dir)
+
+
+def _env_key(image_dir: str) -> str:
+    """ubuntu-rocm-ernic -> UBUNTU_ROCM_ERNIC"""
+    return image_dir.replace("-", "_").upper()
+
+
+def build_args_for(
+    cfg: Config,
+    image_dir: str,
+    kvm_build: bool = False,
+    include_secrets: bool = True,
+) -> list[str]:
+    """Every ``--build-arg`` this image needs, as ``KEY=value`` strings.
+
+    Single source of truth for the pins: both the local build and the CI
+    workflows read them from here, so a version cannot be bumped in one
+    place and missed in the other.
+
+    ``include_secrets`` is False for anything that gets printed: the VM
+    PASSWORD would otherwise land in a CI log or a ``$GITHUB_OUTPUT`` file.
+    """
+
+    args: list[str] = []
+    base = base_image_for(cfg, image_dir)
+    if base:
+        args.append(f"BASE_IMAGE={base}")
+
+    if image_dir == BASE_IMAGE_DIR:
+        return args
+    if image_dir == VFU_IMAGE_DIR:
+        args.append(f"LIBVFIO_USER_COMMIT={cfg.libvfio_user_commit}")
+        return args
+    if image_dir == "ubuntu-cuda-rocm":
+        args += [
+            f"CUDA_VERSION={cfg.cuda_version}",
+            f"ROCM_VERSION={cfg.rocm_version}",
+            f"ROCM_STREAM={cfg.rocm_stream}",
+        ]
+        return args
+    if image_dir == "ubuntu-qemu-libvfio-user":
+        args += [
+            f"QEMU_REPO={cfg.qemu_repo}",
+            f"QEMU_COMMIT={cfg.qemu_commit}",
+            f"QEMU_MINIMAL_REPO={cfg.qemu_minimal_repo}",
+            f"QEMU_MINIMAL_COMMIT={cfg.qemu_minimal_commit}",
+            f"VM_STAGE={'vm-kvm' if kvm_build else 'vm-tcg'}",
+            f"KVM={'true' if kvm_build else 'false'}",
+            f"USERNAME={cfg.username}",
+            f"VM_NAME={cfg.vm_name}",
+            f"RELEASE={cfg.release}",
+            f"ARCH={cfg.arch}",
+        ]
+        if include_secrets:
+            args.append(f"PASSWORD={cfg.password}")
+        return args
+    if image_dir == "ubuntu-rocm-ernic":
+        args.append(f"ROCM_ERNIC_COMMIT={cfg.rocm_ernic_commit}")
+        return args
+    if image_dir == "ubuntu-rocm-rocjitsu":
+        args += [
+            f"ROCJITSU_REPO={cfg.rocm_rocjitsu_repo}",
+            f"ROCJITSU_BRANCH={cfg.rocm_rocjitsu_branch}",
+            f"ROCJITSU_COMMIT={cfg.rocm_rocjitsu_commit}",
+        ]
+        return args
+    if image_dir == FIO_IMAGE_DIR:
+        args += [
+            f"FIO_REPO={cfg.fio_repo}",
+            f"FIO_COMMIT={cfg.fio_commit}",
+        ]
+        return args
+    return args
 
 
 # ── docker helpers ─────────────────────────────────────
@@ -571,62 +706,44 @@ def cmd_build(args: argparse.Namespace) -> None:
             "build will fall back to TCG emulation (much slower)."
         )
 
+    # A base built earlier in this same run only exists in the local daemon,
+    # which the docker-container builder cannot see.
+    local_bases = {
+        d
+        for d in image_dirs
+        if IMAGE_BASES.get(d) in image_dirs and not args.base_from_registry
+    }
+    if "ubuntu-qemu-libvfio-user" in local_bases and kvm_build:
+        console.print(
+            "[yellow]Warning:[/] ubuntu-libvfio-user is being built in this "
+            "run, so ubuntu-qemu-libvfio-user must build on the 'default' "
+            "builder, which cannot grant security.insecure; its VM stage "
+            "falls back to TCG emulation. Pass --base-from-registry to build "
+            "against the published base and keep KVM."
+        )
+
     for image_dir in image_dirs:
         refs = [tagged_ref(cfg, image_dir, tag=t) for t in tag_set(cfg, image_dir)]
+        local_base = image_dir in local_bases
+        image_kvm = kvm_build and not (
+            image_dir == "ubuntu-qemu-libvfio-user" and local_base
+        )
 
-        build_args: list[str] = [
-            f"QEMU_REPO={cfg.qemu_repo}",
-            f"QEMU_COMMIT={cfg.qemu_commit}",
-            f"LIBVFIO_USER_COMMIT={cfg.libvfio_user_commit}",
-            f"QEMU_MINIMAL_REPO={cfg.qemu_minimal_repo}",
-            f"QEMU_MINIMAL_COMMIT={cfg.qemu_minimal_commit}",
-            f"USERNAME={cfg.username}",
-            f"VM_NAME={cfg.vm_name}",
-            f"PASSWORD={cfg.password}",
-            f"RELEASE={cfg.release}",
-            f"ARCH={cfg.arch}",
-        ]
-        if image_dir == "ubuntu-cuda-rocm":
-            build_args += [
-                f"CUDA_VERSION={cfg.cuda_version}",
-                f"ROCM_VERSION={cfg.rocm_version}",
-                f"ROCM_STREAM={cfg.rocm_stream}",
-            ]
-        if image_dir == "ubuntu-qemu-libvfio-user":
-            build_args += [
-                f"VM_STAGE={'vm-kvm' if kvm_build else 'vm-tcg'}",
-                f"KVM={'true' if kvm_build else 'false'}",
-            ]
-        if image_dir == "ubuntu-rocm-ernic":
-            build_args.append(
-                f"ROCM_ERNIC_COMMIT={cfg.rocm_ernic_commit}",
-            )
-        if image_dir == "ubuntu-rocm-rocjitsu":
-            build_args += [
-                f"ROCJITSU_REPO={cfg.rocm_rocjitsu_repo}",
-                f"ROCJITSU_BRANCH={cfg.rocm_rocjitsu_branch}",
-                f"ROCJITSU_COMMIT={cfg.rocm_rocjitsu_commit}",
-            ]
-        if image_dir == "ubuntu-cuda-rocm-fio":
-            build_args += [
-                f"BASE_IMAGE={fio_base_image(cfg)}",
-                f"FIO_REPO={cfg.fio_repo}",
-                f"FIO_COMMIT={cfg.fio_commit}",
-            ]
+        build_args = build_args_for(cfg, image_dir, kvm_build=image_kvm)
         if args.cache_bust:
             build_args.append(f"CACHE_BUST={args.cache_bust}")
 
         cmd: list[str] = ["docker", "buildx", "build"]
         # The named builder uses the docker-container driver, which has its
         # own image store and cannot resolve a base image that only exists
-        # in the local daemon.  Derived images therefore build on the
-        # 'default' (docker driver) builder.
-        if image_dir == "ubuntu-cuda-rocm-fio" and not cfg.fio_base_image:
+        # in the local daemon.  Such images build on the 'default' (docker
+        # driver) builder instead, which still has a full local layer cache.
+        if local_base:
             cmd += ["--builder", "default"]
         # The vm-kvm stage runs QEMU against /dev/kvm, which only
         # an insecure-entitlement RUN can reach.  vm-tcg does not
         # need (and must not request) the entitlement.
-        if image_dir == "ubuntu-qemu-libvfio-user" and kvm_build:
+        if image_dir == "ubuntu-qemu-libvfio-user" and image_kvm:
             cmd += ["--allow", "security.insecure"]
         for ba in build_args:
             cmd += ["--build-arg", ba]
@@ -688,6 +805,9 @@ def _print_build_summary(
     table.add_row("Image", tagged_ref(cfg, image_dir, tag=tags[0]))
     table.add_row("Aliases", ", ".join(tags[1:]) or "-")
     table.add_row("Directory", image_dir)
+    base = base_image_for(cfg, image_dir)
+    if base:
+        table.add_row("Base Image", base)
 
     if image_dir == "ubuntu-cuda-rocm":
         table.add_row("CUDA Version", cfg.cuda_version)
@@ -700,8 +820,9 @@ def _print_build_summary(
         table.add_row("ROCjitsu Branch", cfg.rocm_rocjitsu_branch)
         table.add_row("ROCjitsu Commit", cfg.rocm_rocjitsu_commit)
     elif image_dir == "ubuntu-cuda-rocm-fio":
-        table.add_row("Base Image", fio_base_image(cfg))
         table.add_row("fio Commit", cfg.fio_commit)
+    elif image_dir == VFU_IMAGE_DIR:
+        table.add_row("libvfio-user Commit", cfg.libvfio_user_commit)
     elif image_dir == "ubuntu-qemu-libvfio-user":
         table.add_row("QEMU Commit", cfg.qemu_commit)
         table.add_row("libvfio-user Commit", cfg.libvfio_user_commit)
@@ -785,6 +906,29 @@ def cmd_tags(args: argparse.Namespace) -> None:
     print("\n".join(seen))
 
 
+def cmd_build_args(args: argparse.Namespace) -> None:
+    """Print an image's build args, one ``KEY=value`` per line, on plain stdout.
+
+    CI feeds this straight into ``docker/build-push-action``'s ``build-args``
+    so the pins live in exactly one place.
+    """
+
+    cfg = load_config(env_file=args.env_file)
+    if args.tag:
+        cfg.image_tag = resolve_image_tag(args.tag)
+
+    print(
+        "\n".join(
+            build_args_for(
+                cfg,
+                args.image,
+                kvm_build=args.kvm,
+                include_secrets=False,
+            )
+        )
+    )
+
+
 def image_labels(cfg: Config, image_dir: str) -> dict[str, str]:
     """OCI labels describing what went into *image_dir*.
 
@@ -804,7 +948,14 @@ def image_labels(cfg: Config, image_dir: str) -> dict[str, str]:
         labels[f"{ns}.rocm.stream"] = cfg.rocm_stream
     if image_dir == FIO_IMAGE_DIR:
         labels[f"{ns}.fio.commit"] = cfg.fio_commit
-        labels["org.opencontainers.image.base.name"] = fio_base_image(cfg)
+    # The canonical published base, not whatever scratch ref this particular
+    # build layered on: CI points BASE_IMAGE at a per-run GHCR tag that will
+    # not exist by the time anyone reads the label.
+    base_dir = IMAGE_BASES.get(image_dir)
+    if base_dir:
+        labels["org.opencontainers.image.base.name"] = primary_ref(cfg, base_dir)
+    if image_dir == VFU_IMAGE_DIR:
+        labels[f"{ns}.libvfio-user.commit"] = cfg.libvfio_user_commit
     if image_dir == "ubuntu-rocm-ernic":
         labels[f"{ns}.ernic.commit"] = cfg.rocm_ernic_commit
         labels[f"{ns}.libvfio-user.commit"] = cfg.libvfio_user_commit
@@ -1057,6 +1208,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="File containing registry password",
     )
     p_build.add_argument(
+        "--base-from-registry",
+        action="store_true",
+        help=(
+            "Layer on the published base images rather than ones built in "
+            "this run; keeps every image on the buildx builder, so the VM "
+            "stage can still use KVM"
+        ),
+    )
+    p_build.add_argument(
         "--dry-run",
         action="store_true",
         help="Print commands without executing",
@@ -1125,6 +1285,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common_args(p_tags)
 
+    # ── build-args ──
+    p_build_args = sub.add_parser(
+        "build-args",
+        help="Print an image's docker build args as KEY=value lines",
+    )
+    p_build_args.add_argument(
+        "image",
+        help="Image directory name",
+    )
+    p_build_args.add_argument(
+        "--tag",
+        metavar="TAG",
+        help=("Base tag being published; sets the BASE_IMAGE reference emitted"),
+    )
+    p_build_args.add_argument(
+        "--kvm",
+        action="store_true",
+        help="Select the vm-kvm stage for ubuntu-qemu-libvfio-user",
+    )
+    _add_common_args(p_build_args)
+
     # ── labels ──
     p_labels = sub.add_parser(
         "labels",
@@ -1191,6 +1372,7 @@ DISPATCH = {
     "push": cmd_push,
     "list": cmd_list,
     "tags": cmd_tags,
+    "build-args": cmd_build_args,
     "labels": cmd_labels,
     "inspect": cmd_inspect,
     "status": cmd_status,

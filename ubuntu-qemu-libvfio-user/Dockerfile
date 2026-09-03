@@ -5,46 +5,29 @@
 # does not.  ci-images-tool.py picks one; see README.md.
 ARG VM_STAGE=vm-kvm
 
-FROM ubuntu:24.04 AS base
+# libvfio-user is already built and installed under /usr/local by the base
+# image, which pins the same SHA this image used to build for itself.
+ARG BASE_IMAGE=docker.io/batesste/batesste-ci-images-ubuntu-libvfio-user:latest
+# hadolint ignore=DL3006
+FROM ${BASE_IMAGE} AS base
 
 # Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install build dependencies for QEMU and libvfio-user
-RUN apt-get update && \
+# Install build dependencies for QEMU beyond those in the base image
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
-    build-essential \
-    git \
     jq \
     python3 \
     python3-venv \
-    ninja-build \
-    pkg-config \
-    libglib2.0-dev \
     libpixman-1-dev \
-    libslirp-dev \
-    meson \
-    libjson-c-dev \
-    libcmocka-dev \
-    && rm -rf /var/lib/apt/lists/*
+    libslirp-dev
 
-# Install AMD root CA if present in build context (ZScaler proxy on AMD network).
-# No-op in CI where the file is absent.
-# hadolint ignore=DL3003
-# Mount only common/, not the whole context: BuildKit folds the mounted
-# content digest into this step's cache key, so a repo-wide mount makes any
-# unrelated edit rebuild every layer below -- including the CUDA/ROCm installs.
-RUN --mount=type=bind,source=common,target=/ctx/common \
-    if [ -f /ctx/common/amd-root-ca.crt ]; then \
-        cp /ctx/common/amd-root-ca.crt \
-            /usr/local/share/ca-certificates/amd-root-ca.crt && \
-        update-ca-certificates; \
-    fi
-
-# Accept QEMU and libvfio-user tags or commit SHAs
+# Accept QEMU tags or commit SHAs
 ARG QEMU_REPO=https://gitlab.com/qemu-project/qemu.git
 ARG QEMU_COMMIT=v11.1.1
-ARG LIBVFIO_USER_COMMIT=323f4cb6cddc3713fb7aebe44436f28b28b5413a
 
 # Accept qemu-minimal configuration as build arguments
 ARG QEMU_MINIMAL_REPO=
@@ -58,19 +41,6 @@ ARG ARCH=amd64
 ARG CACHE_BUST=
 
 WORKDIR /build
-
-# Clone and build libvfio-user (treeless clone for speed)
-RUN git clone --filter=blob:none \
-    https://gitlab.com/qemu-project/libvfio-user.git \
-    /build/libvfio-user && \
-    cd /build/libvfio-user && \
-    git checkout "${LIBVFIO_USER_COMMIT}" && \
-    git rev-parse HEAD \
-        > /build/libvfio-user-commit.txt && \
-    meson setup build && \
-    ninja -C build && \
-    ninja -C build install && \
-    rm -rf /build/libvfio-user
 
 # Clone QEMU: shallow clone for tags, treeless for SHAs
 RUN if echo "${QEMU_COMMIT}" | \
@@ -91,29 +61,37 @@ RUN if echo "${QEMU_COMMIT}" | \
 
 # Build QEMU with slirp networking support
 WORKDIR /build/qemu
-RUN ./configure --target-list=x86_64-softmmu \
+# --cc/--cxx rather than PATH=/usr/lib/ccache: QEMU's configure records the
+# compiler it was handed into the generated ninja files, and a bare "gcc" there
+# resolves without ccache when the build re-execs.
+RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
+    ./configure --target-list=x86_64-softmmu \
                 --enable-slirp \
+                --cc="ccache gcc" \
+                --cxx="ccache g++" \
                 --prefix=/opt/qemu && \
-    make -j$(nproc) && \
+    make -j"$(nproc)" && \
     make install && \
     rm -rf /build/qemu
 
 # Install cloud-init utilities for VM creation
-RUN apt-get update && \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
     cloud-image-utils \
     qemu-utils \
     wget \
-    openssh-client \
-    && rm -rf /var/lib/apt/lists/*
+    openssh-client
 
 # Python packaging tooling. setuptools is no longer implicit on 3.12, and pipx
 # installs CLI tools without hand-rolling a venv for each one.
-RUN apt-get update -qq && \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update -qq && \
     apt-get install -y -qq \
     pipx \
-    python3-setuptools \
-    && rm -rf /var/lib/apt/lists/*
+    python3-setuptools
 
 # Create output directory and copy packages file
 RUN mkdir -p /output
@@ -216,7 +194,9 @@ ENV VMEM=4096
 # Disable unattended-upgrades to prevent apt lock conflicts.
 # Must run after all other apt-get install steps so nothing
 # pulls the package back in as a dependency.
-RUN apt-get update && \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
     apt-get remove -y --purge \
       unattended-upgrades || true && \
     echo 'APT::Periodic::Update-Package-Lists "0";' \
@@ -226,7 +206,6 @@ RUN apt-get update && \
     echo 'APT::Periodic::AutocleanInterval "0";' \
       >> /etc/apt/apt.conf.d/20auto-upgrades && \
     echo 'APT::Periodic::Unattended-Upgrade "0";' \
-      >> /etc/apt/apt.conf.d/20auto-upgrades && \
-    rm -rf /var/lib/apt/lists/*
+      >> /etc/apt/apt.conf.d/20auto-upgrades
 
 ENTRYPOINT ["/build/entrypoint.sh"]

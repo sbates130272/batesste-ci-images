@@ -1,4 +1,6 @@
-FROM ubuntu:24.04
+ARG BASE_IMAGE=docker.io/batesste/batesste-ci-images-ubuntu-base:latest
+# hadolint ignore=DL3006
+FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV UBUNTU_CODENAME=noble
@@ -9,35 +11,17 @@ ARG ROCM_VERSION=7.14
 ARG ROCM_STREAM=therock
 ARG CACHE_BUST=
 
-# Install base build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    ca-certificates \
-    cmake \
-    curl \
-    git \
+# Install base build dependencies beyond those in ubuntu-base
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     libssl-dev \
     libstdc++-14-dev \
     lsb-release \
     pciutils \
     python3-setuptools \
-    python3-wheel \
-    wget \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install AMD root CA if present in build context (ZScaler proxy on AMD network).
-# No-op in CI where the file is absent.
-# hadolint ignore=DL3003
-# Mount only common/, not the whole context: BuildKit folds the mounted
-# content digest into this step's cache key, so a repo-wide mount makes any
-# unrelated edit rebuild every layer below -- including the CUDA/ROCm installs.
-RUN --mount=type=bind,source=common,target=/ctx/common \
-    if [ -f /ctx/common/amd-root-ca.crt ]; then \
-        cp /ctx/common/amd-root-ca.crt \
-            /usr/local/share/ca-certificates/amd-root-ca.crt && \
-        update-ca-certificates; \
-    fi
+    python3-wheel
 
 COPY ubuntu-cuda-rocm/cuda-latest ubuntu-cuda-rocm/rocm-latest /usr/local/bin/
 RUN chmod +x /usr/local/bin/cuda-latest /usr/local/bin/rocm-latest
@@ -55,15 +39,13 @@ RUN set -eux; \
     echo "${ROCM_VERSION}" > /etc/rocm-version; \
     echo "${ROCM_STREAM}" > /etc/rocm-stream
 
-# Increase apt retries and timeouts for large package downloads through proxy
-RUN printf 'Acquire::Retries "10";\nAcquire::http::Timeout "600";\nAcquire::https::Timeout "600";\n' \
-    > /etc/apt/apt.conf.d/99-proxy-retries
-
 # NVIDIA CUDA repository (ubuntu2404 / noble)
 # The apt retry settings above do not cover wget, and its defaults are a 900s
 # read timeout over 20 tries: a stalled Akamai edge hangs the build for hours
 # instead of failing. Bound it and let it pick a different edge on retry.
-RUN wget --progress=dot:giga --timeout=30 --tries=5 --retry-connrefused \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    wget --progress=dot:giga --timeout=30 --tries=5 --retry-connrefused \
         -O /tmp/cuda-keyring.deb \
         https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb \
     && dpkg -i /tmp/cuda-keyring.deb \
@@ -98,7 +80,9 @@ RUN mkdir -p /etc/apt/keyrings && \
 # host with no NVIDIA driver at all (AMD-only machines, CI runners) while
 # still deferring to the host driver when one is injected -- see the
 # lowest-precedence ld.so.conf entry further down.
-RUN set -eux; \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    set -eux; \
     CUDA_PKG_VER=$(cat /etc/cuda-version); \
     apt-get update; \
     apt-get install -y --no-install-recommends \
@@ -110,12 +94,13 @@ RUN set -eux; \
         echo "no" > /etc/cuda-compat-installed; \
         echo "WARNING: cuda-compat-${CUDA_PKG_VER} unavailable; binaries" \
              "linking -lcuda will require a host NVIDIA driver." >&2; \
-    fi; \
-    rm -rf /var/lib/apt/lists/*
+    fi
 
 # ROCm development stack (dev only; no drivers)
 # therock stream meta package is 'amdrocm'; legacy stream is 'rocm' (or versioned variant)
-RUN set -eux; \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    set -eux; \
     apt-get update; \
     ROCM_STREAM=$(cat /etc/rocm-stream); \
     if [ "${ROCM_STREAM}" = "therock" ]; then \
@@ -132,9 +117,8 @@ RUN set -eux; \
         libboost-program-options-dev \
         libmount-dev \
         libstdc++-14-dev \
-        "$@" \
-    && update-pciids \
-    && rm -rf /var/lib/apt/lists/*
+        "$@"; \
+    update-pciids
 
 # Resolve the installed toolkit roots. The therock stream nests everything
 # under /opt/rocm/core-<ver> rather than /opt/rocm, so the root must be probed

@@ -15,6 +15,14 @@ and pushing of these images.
 
 ## Available Images
 
+- **ubuntu-base**: Ubuntu 24.04 plus the apt tuning, shared toolchain packages
+  and AMD root CA that every other image needs. Every image below is layered
+  on it, so that work happens once instead of six times. See `ubuntu-base/`
+  for details.
+- **ubuntu-libvfio-user**: `ubuntu-base` plus libvfio-user built from the
+  pinned commit. Shared by `ubuntu-qemu-libvfio-user` and `ubuntu-rocm-ernic`,
+  which each used to build it separately from the same SHA. See
+  `ubuntu-libvfio-user/` for details.
 - **ubuntu-qemu-libvfio-user**: QEMU build with libvfio-user support for VM images
   using qemu-minimal. See `ubuntu-qemu-libvfio-user/` for details.
 - **ubuntu-kernel-build**: Ubuntu-based image with tools for building Linux
@@ -58,6 +66,10 @@ wires the two together over the shared `vfio-sockets` volume.
 
 ```
 batesste-ci-images/
+├── ubuntu-base/               # Shared apt preamble + AMD root CA
+│   └── Dockerfile
+├── ubuntu-libvfio-user/       # ubuntu-base + libvfio-user at the pinned SHA
+│   └── Dockerfile
 ├── ubuntu-qemu-libvfio-user/  # QEMU libvfio-user image
 │   ├── Dockerfile
 │   └── entrypoint.sh
@@ -137,6 +149,40 @@ Specify a password file for registry authentication:
   ubuntu-qemu-libvfio-user \
   --password-file /path/to/password.txt
 ```
+
+#### Image Layering and Build Caches
+
+The images form a chain rather than eight independent builds:
+
+```text
+ubuntu-base ─┬─ ubuntu-cuda-rocm ── ubuntu-cuda-rocm-fio
+             ├─ ubuntu-kernel-build
+             ├─ ubuntu-rocm-rocjitsu
+             └─ ubuntu-libvfio-user ─┬─ ubuntu-qemu-libvfio-user
+                                     └─ ubuntu-rocm-ernic
+```
+
+`ci-images-tool.py build` orders the images so every base is built before its
+dependants. Each Dockerfile takes a `BASE_IMAGE` build arg that defaults to the
+*published* base on Docker Hub, so building one leaf image on its own never
+rebuilds the chain above it. When a base *is* built in the same run, the
+dependant falls back to the `default` builder, which cannot grant
+`security.insecure` — `ubuntu-qemu-libvfio-user` then builds its VM under TCG
+instead of KVM. Pass `--base-from-registry` to keep every image on the buildx
+builder and retain KVM.
+
+Two caches are in play:
+
+- **Layer cache.** CI exports to a registry cache on GHCR
+  (`ghcr.io/<repo>/buildcache`) rather than `type=gha`, because the GitHub
+  Actions cache is capped at 10 GB per repository and these images evicted each
+  other out of it faster than they could be reused. This means the test
+  workflow needs `packages: write`, which pull requests from forks do not get;
+  those runs still build correctly, just without cache reuse.
+- **Cache mounts.** Every `apt-get` step mounts `/var/cache/apt` and
+  `/var/lib/apt/lists`, and the QEMU, fio, rocm-ernic and rocjitsu compile steps
+  mount a ccache directory. BuildKit does not export cache mounts, so these help
+  repeated local builds, not CI.
 
 ### 1a. List and Inspect Images
 
