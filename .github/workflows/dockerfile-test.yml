@@ -438,11 +438,15 @@ jobs:
             | zstd -T0 -3 \
             > "/tmp/${{ matrix.image }}${{ matrix.variant }}.tar.zst"
 
+<<<<<<< HEAD
+      - uses: actions/upload-artifact@v7
+=======
       - uses: actions/upload-artifact@v4
         if: >-
           matrix.image == 'ubuntu-qemu-libvfio-user' ||
           matrix.image == 'ubuntu-rocm-ernic' ||
           matrix.image == 'ubuntu-rocm-rocjitsu'
+>>>>>>> origin/main
         with:
           name: >-
             docker-image-${{
@@ -646,7 +650,26 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build ubuntu-cuda-rocm-fio
+<<<<<<< HEAD
+        run: |
+          docker build \
+            -f ubuntu-cuda-rocm-fio/Dockerfile \
+            --build-arg BASE_IMAGE=batesste-ci-images-ubuntu-cuda-rocm:test \
+            --build-arg FIO_REPO=https://github.com/axboe/fio.git \
+            --build-arg FIO_COMMIT=975ea1856fee9f4c0f01f6f19ba3c61ce24f9bc8 \
+            -t batesste-ci-images-ubuntu-cuda-rocm-fio:test \
+            .
+
+      - name: Export Docker image
+        run: |
+          docker save \
+            "batesste-ci-images-ubuntu-cuda-rocm-fio:test" \
+            | gzip > /tmp/ubuntu-cuda-rocm-fio.tar.gz
+
+      - uses: actions/upload-artifact@v7
+=======
         uses: docker/build-push-action@v7
+>>>>>>> origin/main
         with:
           context: .
           file: ubuntu-cuda-rocm-fio/Dockerfile
