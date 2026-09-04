@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=docker.io/batesste/batesste-ci-images-ubuntu-cuda-rocm:latest
+ARG BASE_IMAGE=docker.io/sbates130272/batesste-ci-images-ubuntu-cuda-rocm:latest
 # hadolint ignore=DL3006
 FROM ${BASE_IMAGE}
 
@@ -14,7 +14,9 @@ RUN echo "Cache bust: ${CACHE_BUST:-none}" > /tmp/fio_cache_bust.txt
 
 # hipFile ships only in the therock ROCm stream; fail early and clearly when
 # the base image was built with ROCM_STREAM=legacy.
-RUN set -eux; \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    set -eux; \
     apt-get update; \
     if ! apt-cache show amdrocm-hipfile-dev > /dev/null 2>&1; then \
         echo "ERROR: amdrocm-hipfile-dev is unavailable. This image requires a" \
@@ -27,15 +29,9 @@ RUN set -eux; \
         libnuma-dev \
         pkg-config \
         zlib1g-dev; \
-    ldconfig; \
-    rm -rf /var/lib/apt/lists/*
+    ldconfig
 
 WORKDIR /build
-
-# Increase git HTTP buffer and disable low-speed cutoff for large clones through proxy
-RUN git config --global http.postBuffer 524288000 && \
-    git config --global http.lowSpeedLimit 0 && \
-    git config --global http.lowSpeedTime 0
 
 RUN git init /build/fio && \
     git -C /build/fio remote add origin "${FIO_REPO}" && \
@@ -47,9 +43,11 @@ RUN git init /build/fio && \
 # fio's own libhipfile probe adds -rpath ${ROCM_PATH}/lib; the CUDA side needs
 # explicit paths because configure hardcodes bare -lcuda -lcudart -lcufile.
 # hadolint ignore=DL3003
-RUN set -eux; \
+RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
+    set -eux; \
     ROCM_PATH="$(cat /etc/rocm-path)"; export ROCM_PATH; \
     CUDA_PATH="$(cat /etc/cuda-path)"; \
+    PATH="/usr/lib/ccache:${PATH}"; export PATH; \
     cd /build/fio; \
     ./configure \
         --extra-cflags="-I${CUDA_PATH}/include" \

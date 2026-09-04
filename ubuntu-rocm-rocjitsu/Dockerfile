@@ -1,44 +1,24 @@
-FROM ubuntu:24.04
+ARG BASE_IMAGE=docker.io/sbates130272/batesste-ci-images-ubuntu-base:latest
+# hadolint ignore=DL3006
+FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
-    build-essential \
-    ca-certificates \
     clang \
-    cmake \
     g++-14 \
     gcc-14 \
-    git \
     libclang-rt-dev \
-    libdrm-dev \
-    ninja-build \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install AMD root CA if present in build context (ZScaler proxy on AMD network).
-# No-op in CI where the file is absent.
-# hadolint ignore=DL3003
-# Mount only common/, not the whole context: BuildKit folds the mounted
-# content digest into this step's cache key, so a repo-wide mount makes any
-# unrelated edit rebuild every layer below -- including the CUDA/ROCm installs.
-RUN --mount=type=bind,source=common,target=/ctx/common \
-    if [ -f /ctx/common/amd-root-ca.crt ]; then \
-        cp /ctx/common/amd-root-ca.crt \
-            /usr/local/share/ca-certificates/amd-root-ca.crt && \
-        update-ca-certificates; \
-    fi
+    libdrm-dev
 
 ARG ROCJITSU_REPO=https://github.com/ROCm/rocm-systems.git
 ARG ROCJITSU_BRANCH=develop
 ARG ROCJITSU_COMMIT=5e9cc7c57d372c0198fd8decb1fe5ceb07038a2b
 
 WORKDIR /build
-
-# Increase git HTTP buffer and disable low-speed cutoff for large clones through proxy
-RUN git config --global http.postBuffer 524288000 && \
-    git config --global http.lowSpeedLimit 0 && \
-    git config --global http.lowSpeedTime 0
 
 RUN git init /build/rocm-systems && \
     git -C /build/rocm-systems remote add origin "${ROCJITSU_REPO}" && \
@@ -51,12 +31,15 @@ RUN git init /build/rocm-systems && \
 # pci_caps/{common,msix}.h use it; rocjitsu includes those from C++ in
 # lib/rocjitsu/src/rocjitsu/vmm/vfu/vfio_device_host.cpp, so the VFIO build does
 # not compile without this define.
-RUN cmake \
+RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
+    cmake \
     -B /build/rocm-systems/build \
     -G Ninja \
     -S /build/rocm-systems/emulation/rocjitsu \
     -DCMAKE_C_COMPILER=gcc-14 \
     -DCMAKE_CXX_COMPILER=g++-14 \
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
     "-DCMAKE_CXX_FLAGS=-D_Static_assert=static_assert" \

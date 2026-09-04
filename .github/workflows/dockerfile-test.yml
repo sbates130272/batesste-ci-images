@@ -11,6 +11,7 @@ on:
       - '**/Dockerfile'
       - '**/entrypoint.sh'
       - '**/packages.txt'
+      - 'ci-images-tool.py'
       - 'compose/**'
       - 'common/**'
       - '.github/workflows/dockerfile-test.yml'
@@ -20,9 +21,19 @@ on:
       - '**/Dockerfile'
       - '**/entrypoint.sh'
       - '**/packages.txt'
+      - 'ci-images-tool.py'
       - 'compose/**'
       - 'common/**'
       - '.github/workflows/dockerfile-test.yml'
+
+# Layer cache and the intermediate base images both live in GHCR. The GitHub
+# Actions cache is capped at 10 GB per repository with LRU eviction, and
+# mode=max on ubuntu-cuda-rocm alone exceeds a large fraction of that, so the
+# per-image scopes used to evict each other and every "warm" build was cold.
+# A registry cache has no such cap.
+env:
+  CACHE_REGISTRY: ghcr.io/${{ github.repository }}/buildcache
+  BASE_REGISTRY: ghcr.io/${{ github.repository }}/ci-base
 
 jobs:
   discover-images:
@@ -35,22 +46,98 @@ jobs:
       - name: Find all Dockerfiles
         id: find-images
         run: |
-          # ubuntu-cuda-rocm-fio layers on ubuntu-cuda-rocm, so it cannot
-          # run in the flat parallel matrix -- see the build-derived job.
+          # ubuntu-base and ubuntu-libvfio-user are built by build-bases, and
+          # ubuntu-cuda-rocm-fio layers on ubuntu-cuda-rocm, so none of the
+          # three belongs in the flat parallel matrix.
           IMAGES=$(find . -maxdepth 2 \
             -name "Dockerfile" -type f | \
             sed 's|^\./||' | \
             sed 's|/Dockerfile$||' | sort | \
             jq -R -s -c 'split("\n")[:-1]
-              | map(select(. != "ubuntu-cuda-rocm-fio"))')
+              | map(select(. != "ubuntu-cuda-rocm-fio"
+                        and . != "ubuntu-base"
+                        and . != "ubuntu-libvfio-user"))')
           echo "images=$IMAGES" >> $GITHUB_OUTPUT
           echo "Found images: $IMAGES"
+
+  # ubuntu-base holds the apt preamble and root CA every image shares;
+  # ubuntu-libvfio-user adds the libvfio-user build that qemu and rocm-ernic
+  # used to do twice. Pushing them to a scratch GHCR repo is what lets the
+  # matrix keep the docker-container driver (and therefore the layer cache)
+  # while still resolving a base built in this same run.
+  build-bases:
+    name: Build Base Images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      base: ${{ steps.refs.outputs.base }}
+      vfu: ${{ steps.refs.outputs.vfu }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Compute base refs
+        id: refs
+        run: |
+          echo "base=${BASE_REGISTRY}:ubuntu-base-${GITHUB_SHA}" \
+            >> "$GITHUB_OUTPUT"
+          echo "vfu=${BASE_REGISTRY}:ubuntu-libvfio-user-${GITHUB_SHA}" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Build and push ubuntu-base
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ubuntu-base/Dockerfile
+          push: true
+          tags: ${{ steps.refs.outputs.base }}
+          cache-from: type=registry,ref=${{ env.CACHE_REGISTRY }}:ubuntu-base
+          cache-to: >-
+            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
+              env.CACHE_REGISTRY
+            }}:ubuntu-base
+
+      - name: Build and push ubuntu-libvfio-user
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ubuntu-libvfio-user/Dockerfile
+          push: true
+          tags: ${{ steps.refs.outputs.vfu }}
+          build-args: |
+            BASE_IMAGE=${{ steps.refs.outputs.base }}
+          cache-from: >-
+            type=registry,ref=${{ env.CACHE_REGISTRY }}:ubuntu-libvfio-user
+          cache-to: >-
+            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
+              env.CACHE_REGISTRY
+            }}:ubuntu-libvfio-user
+
+      - name: Verify libvfio-user commit
+        run: |
+          docker run --rm "${{ steps.refs.outputs.vfu }}" \
+            cat /usr/local/share/libvfio-user-commit.txt
 
   build:
     name: Build Docker Images
     runs-on: ubuntu-latest
-    needs: discover-images
+    needs: [discover-images, build-bases]
+    permissions:
+      contents: read
+      packages: write
     strategy:
+      fail-fast: false
       matrix:
         image: >-
           ${{
@@ -66,20 +153,35 @@ jobs:
               https://github.com/sbates130272/qemu.git
             qemu_commit: >-
               dev/stephen/pci-mmio-bridge-submit
-          - image: ubuntu-rocm-ernic
-            variant: ''
-            rocm_ernic_commit: >-
-              e3ef00c2a0c1ba1df95e6cbbe9362c2a1ad1d2fb
-          - image: ubuntu-rocm-rocjitsu
-            variant: ''
-            rocjitsu_repo: >-
-              https://github.com/ROCm/rocm-systems.git
-            rocjitsu_branch: >-
-              develop
-            rocjitsu_commit: >-
-              5e9cc7c57d372c0198fd8decb1fe5ceb07038a2b
+    env:
+      # ci-images-tool.py owns the pins; these point its BASE_IMAGE
+      # resolution at the images build-bases just published.
+      BASE_IMAGE_FOR_UBUNTU_BASE: ${{ needs.build-bases.outputs.base }}
+      BASE_IMAGE_FOR_UBUNTU_LIBVFIO_USER: ${{ needs.build-bases.outputs.vfu }}
+      QEMU_REPO: ${{ matrix.qemu_repo }}
+      QEMU_COMMIT: ${{ matrix.qemu_commit }}
     steps:
       - uses: actions/checkout@v7
+
+      # ubuntu-cuda-rocm downloads ~10 GB of .deb files, which ubuntu-base's
+      # apt cache mounts now keep for the whole build instead of letting
+      # docker-clean discard them. On top of a 28 GB image that overruns the
+      # runner. CI gets nothing from those mounts anyway -- BuildKit never
+      # exports them -- so buy the headroom back off the preinstalled
+      # toolchains we never use rather than give up the local-rebuild win.
+      - name: Free up disk space
+        if: matrix.image == 'ubuntu-cuda-rocm'
+        run: |
+          df -h /
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /usr/local/share/powershell \
+            /usr/share/swift
+          df -h /
 
       - name: Ensure cloud image cache dir exists
         run: mkdir -p common/cloud-image-cache
@@ -107,6 +209,24 @@ jobs:
               "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
           fi
 
+      # x86 GitHub-hosted runners do expose /dev/kvm, but as root:kvm 0660,
+      # and BuildKit's RUN step is not in the kvm group. Widen it rather than
+      # fall back to TCG, which turns a minutes-long VM boot into an hour.
+      # ARM Linux, macOS, Windows and ubuntu-slim runners have no /dev/kvm at
+      # all; the build-args step below detects that and selects vm-tcg.
+      - name: Enable KVM for the VM build
+        if: >-
+          matrix.image ==
+          'ubuntu-qemu-libvfio-user'
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+          ls -l /dev/kvm || echo "no /dev/kvm on this runner"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
@@ -115,6 +235,37 @@ jobs:
           buildkitd-flags: >-
             --allow-insecure-entitlement security.insecure
             --allow-insecure-entitlement network.host
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install tool dependencies
+        run: pip install -r requirements.txt
+
+      # Pins live only in ci-images-tool.py; the workflow asks for them
+      # rather than repeating them, so the two cannot drift.
+      - name: Compute build args
+        id: buildargs
+        run: |
+          # --kvm only means anything to ubuntu-qemu-libvfio-user, so gate it
+          # on the device rather than on the image name.
+          KVM_FLAG=
+          [ -w /dev/kvm ] && KVM_FLAG=--kvm
+          {
+            echo 'args<<ARGS_EOF'
+            ./ci-images-tool.py build-args "${{ matrix.image }}" ${KVM_FLAG}
+            echo ARGS_EOF
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build Docker image
         uses: docker/build-push-action@v7
@@ -131,36 +282,167 @@ jobs:
               matrix.variant
             }}:test
           cache-from: >-
-            type=gha,scope=${{
+            type=registry,ref=${{ env.CACHE_REGISTRY }}:${{
               matrix.image
             }}${{
               matrix.variant
             }}
           cache-to: >-
-            type=gha,mode=max,scope=${{
+            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
+              env.CACHE_REGISTRY
+            }}:${{
               matrix.image
             }}${{
               matrix.variant
             }}
-          build-args: |
-            QEMU_REPO=${{ matrix.qemu_repo || 'https://gitlab.com/qemu-project/qemu.git' }}
-            QEMU_COMMIT=${{ matrix.qemu_commit || 'v11.1.1' }}
-            ${{ (matrix.image == 'ubuntu-qemu-libvfio-user' || matrix.image == 'ubuntu-rocm-ernic') && 'LIBVFIO_USER_COMMIT=323f4cb6cddc3713fb7aebe44436f28b28b5413a' || '' }}
-            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_REPO=https://github.com/sbates130272/qemu-minimal.git' || '' }}
-            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_COMMIT=225a81766b87ad2adb4e93d71bb8ed5e4e996466' || '' }}
-            ${{ matrix.image == 'ubuntu-rocm-ernic' && format('ROCM_ERNIC_COMMIT={0}', matrix.rocm_ernic_commit) || '' }}
-            ${{ matrix.image == 'ubuntu-rocm-rocjitsu' && format('ROCJITSU_REPO={0}', matrix.rocjitsu_repo) || '' }}
-            ${{ matrix.image == 'ubuntu-rocm-rocjitsu' && format('ROCJITSU_BRANCH={0}', matrix.rocjitsu_branch) || '' }}
-            ${{ matrix.image == 'ubuntu-rocm-rocjitsu' && format('ROCJITSU_COMMIT={0}', matrix.rocjitsu_commit) || '' }}
+          build-args: ${{ steps.buildargs.outputs.args }}
 
+      # ── per-image checks, run here rather than in a downstream job:
+      # the image is already in the daemon, so a save/upload/download
+      # round-trip of a multi-GB image is pure overhead.
+
+      - name: Test entrypoint script syntax
+        if: hashFiles(format('{0}/entrypoint.sh', matrix.image)) != ''
+        run: |
+          docker run --rm --entrypoint /bin/bash \
+            "batesste-ci-images-${{ matrix.image }}${{ matrix.variant }}:test" \
+            -c "bash -n /build/entrypoint.sh && \
+                echo 'Entrypoint syntax OK'"
+
+      - name: Test entrypoint help
+        if: hashFiles(format('{0}/entrypoint.sh', matrix.image)) != ''
+        run: |
+          timeout 10 docker run --rm \
+            --cap-add NET_ADMIN \
+            -e USERNAME=testuser \
+            -e VM_NAME=test-vm \
+            -e SSH_PORT=2222 \
+            "batesste-ci-images-${{ matrix.image }}${{ matrix.variant }}:test" \
+            || true
+
+      - name: Verify toolkit binaries and install paths
+        if: matrix.image == 'ubuntu-cuda-rocm'
+        run: |
+          docker run --rm \
+            "batesste-ci-images-ubuntu-cuda-rocm:test" \
+            bash -lc '
+              set -e
+              echo "CUDA version file:"; cat /etc/cuda-version
+              echo "ROCm version file:"; cat /etc/rocm-version
+              echo "CUDA path file:"; cat /etc/cuda-path
+              echo "ROCm path file:"; cat /etc/rocm-path
+
+              echo "CUDA nvcc:"; which nvcc; nvcc --version
+              echo "ROCm hipcc:"; which hipcc; hipcc --version
+
+              test -x "$(cat /etc/rocm-path)/bin/hipcc"
+              test -f "$(cat /etc/rocm-path)/include/hip/hip_runtime.h"
+              test -d "$(cat /etc/cuda-path)/lib64"
+
+              echo "cuda-compat:"; cat /etc/cuda-compat-installed
+              test "$(cat /etc/cuda-compat-installed)" = "yes"
+              test -e "$(cat /etc/cuda-path)/compat/libcuda.so.1"
+              ldconfig -p | grep "libcuda.so.1"
+            '
+
+      - name: Verify rocm-ernic binary and commit metadata
+        if: matrix.image == 'ubuntu-rocm-ernic'
+        run: |
+          docker run --rm \
+            "batesste-ci-images-ubuntu-rocm-ernic:test" \
+            bash -lc '
+              set -e
+              which rocm-ernic
+              cat /usr/local/share/rocm-ernic-commit.txt
+              cat /usr/local/share/libvfio-user-commit.txt
+            '
+
+      - name: Run rocm-ernic loopback smoke test
+        if: matrix.image == 'ubuntu-rocm-ernic'
+        run: |
+          docker run --rm --name rocm-ernic-test \
+            --cap-add NET_ADMIN \
+            "batesste-ci-images-ubuntu-rocm-ernic:test" \
+            bash -c "
+              mkdir -p /tmp/vfio-sockets
+              rocm-ernic \
+                --socket /tmp/vfio-sockets/rocm-ernic.sock \
+                --backend loopback \
+                --verbose &
+              SERVER_PID=\$!
+              sleep 3
+              if ! kill -0 \${SERVER_PID} 2>/dev/null; then
+                echo 'ERROR: rocm-ernic exited prematurely'
+                exit 1
+              fi
+              echo \"rocm-ernic is running (PID \${SERVER_PID})\"
+              kill \${SERVER_PID}
+            "
+
+      - name: Verify rocjitsu binary and commit metadata
+        if: matrix.image == 'ubuntu-rocm-rocjitsu'
+        run: |
+          docker run --rm \
+            "batesste-ci-images-ubuntu-rocm-rocjitsu:test" \
+            bash -lc '
+              set -e
+              which rocjitsu
+              cat /usr/local/share/rocjitsu-commit.txt
+            '
+
+      - name: Run rocjitsu vfio-socket smoke test
+        if: matrix.image == 'ubuntu-rocm-rocjitsu'
+        run: |
+          docker run --rm --name rocjitsu-test \
+            --cap-add NET_ADMIN \
+            "batesste-ci-images-ubuntu-rocm-rocjitsu:test" \
+            bash -c "
+              mkdir -p /tmp/vfio-sockets
+              rocjitsu \
+                --config \${ROCJITSU_CONFIG_DIR}/gfx1250_mi455x.json \
+                --vfio-socket /tmp/vfio-sockets/rocjitsu.sock &
+              SERVER_PID=\$!
+              sleep 3
+              if ! kill -0 \${SERVER_PID} 2>/dev/null; then
+                echo 'ERROR: rocjitsu exited prematurely'
+                exit 1
+              fi
+              test -S /tmp/vfio-sockets/rocjitsu.sock
+              echo \"rocjitsu is running (PID \${SERVER_PID})\"
+              kill \${SERVER_PID}
+            "
+
+      # cuda-rocm's only consumer is build-derived, and what it wants is a
+      # registry ref, not a local image -- it used to load the artifact purely
+      # to push it straight back out again. Pushing here skips a ~13 GB
+      # tarball in each direction, and skips writing it to a disk that the
+      # image and its retained debs have already largely filled.
+      - name: Push cuda-rocm to GHCR for build-derived
+        if: matrix.image == 'ubuntu-cuda-rocm'
+        run: |
+          REF="${BASE_REGISTRY}:ubuntu-cuda-rocm-${GITHUB_SHA}"
+          docker tag batesste-ci-images-ubuntu-cuda-rocm:test "$REF"
+          docker push "$REF"
+
+      # Only the jobs that genuinely need an image built by a *different*
+      # job still pay the artifact round-trip. zstd rather than gzip: these
+      # images are multi-GB and gzip is the slowest part of the hop.
       - name: Export Docker image
+        if: >-
+          matrix.image == 'ubuntu-qemu-libvfio-user' ||
+          matrix.image == 'ubuntu-rocm-ernic' ||
+          matrix.image == 'ubuntu-rocm-rocjitsu'
         run: |
           docker save \
             "batesste-ci-images-${{ matrix.image }}${{ matrix.variant }}:test" \
-            | gzip \
-            > "/tmp/${{ matrix.image }}${{ matrix.variant }}.tar.gz"
+            | zstd -T0 -3 \
+            > "/tmp/${{ matrix.image }}${{ matrix.variant }}.tar.zst"
 
       - uses: actions/upload-artifact@v4
+        if: >-
+          matrix.image == 'ubuntu-qemu-libvfio-user' ||
+          matrix.image == 'ubuntu-rocm-ernic' ||
+          matrix.image == 'ubuntu-rocm-rocjitsu'
         with:
           name: >-
             docker-image-${{
@@ -173,92 +455,9 @@ jobs:
               matrix.image
             }}${{
               matrix.variant
-            }}.tar.gz
+            }}.tar.zst
+          compression-level: 0
           retention-days: 1
-
-  test-entrypoint:
-    name: Test Container Entrypoint
-    runs-on: ubuntu-latest
-    needs: [discover-images, build]
-    strategy:
-      matrix:
-        image: >-
-          ${{
-            fromJson(
-              needs.discover-images.outputs.images
-            )
-          }}
-        variant: ['']
-        include:
-          - image: ubuntu-qemu-libvfio-user
-            variant: '-sbates-fork'
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Check if entrypoint.sh exists
-        id: check-entrypoint
-        run: |
-          if [ -f \
-            "${{ matrix.image }}/entrypoint.sh" \
-          ]; then
-            echo "exists=true" \
-              >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" \
-              >> $GITHUB_OUTPUT
-          fi
-
-      - name: Download Docker image artifact
-        if: >-
-          steps.check-entrypoint.outputs.exists
-          == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          name: >-
-            docker-image-${{
-              matrix.image
-            }}${{
-              matrix.variant
-            }}
-
-      - name: Load Docker image
-        if: >-
-          steps.check-entrypoint.outputs.exists
-          == 'true'
-        run: |
-          gunzip -c \
-            "${{ matrix.image }}${{ matrix.variant }}.tar.gz" \
-            | docker load
-
-      - name: Test entrypoint script syntax
-        if: >-
-          steps.check-entrypoint.outputs.exists
-          == 'true'
-        run: |
-          docker run --rm --entrypoint /bin/bash \
-            "batesste-ci-images-${{ matrix.image }}${{ matrix.variant }}:test" \
-            -c "bash -n /build/entrypoint.sh && \
-                echo 'Entrypoint syntax OK'"
-
-      - name: Test entrypoint help
-        if: >-
-          steps.check-entrypoint.outputs.exists
-          == 'true'
-        run: |
-          timeout 10 docker run --rm \
-            --cap-add NET_ADMIN \
-            -e USERNAME=testuser \
-            -e VM_NAME=test-vm \
-            -e SSH_PORT=2222 \
-            "batesste-ci-images-${{ matrix.image }}${{ matrix.variant }}:test" \
-            || true
-
-      - name: Skip entrypoint test
-        if: >-
-          steps.check-entrypoint.outputs.exists
-          == 'false'
-        run: |
-          echo "No entrypoint.sh found, skipping"
 
   test-vm-packages:
     name: Test VM Packages
@@ -279,7 +478,7 @@ jobs:
 
       - name: Load Docker image
         run: |
-          gunzip -c ubuntu-qemu-libvfio-user.tar.gz \
+          zstd -dc ubuntu-qemu-libvfio-user.tar.zst \
             | docker load
 
       - name: Check packages.txt exists
@@ -380,109 +579,87 @@ jobs:
           docker rm test-vm-packages 2>/dev/null \
             || true
 
-  test-gpu-toolchains:
-    name: Test GPU Toolchains (CUDA + ROCm)
-    runs-on: ubuntu-latest
-    needs: [discover-images, build]
-    if: >-
-      contains(
-        fromJson(needs.discover-images.outputs.images),
-        'ubuntu-cuda-rocm'
-      )
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Download Docker image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: docker-image-ubuntu-cuda-rocm
-
-      - name: Load Docker image
-        run: |
-          gunzip -c ubuntu-cuda-rocm.tar.gz \
-            | docker load
-
-      - name: Verify toolkit binaries and install paths
-        run: |
-          docker run --rm \
-            "batesste-ci-images-ubuntu-cuda-rocm:test" \
-            bash -lc '
-              set -e
-              echo "CUDA version file:"; cat /etc/cuda-version
-              echo "ROCm version file:"; cat /etc/rocm-version
-              echo "CUDA path file:"; cat /etc/cuda-path
-              echo "ROCm path file:"; cat /etc/rocm-path
-
-              echo "CUDA nvcc:"; which nvcc; nvcc --version
-              echo "ROCm hipcc:"; which hipcc; hipcc --version
-
-              test -x "$(cat /etc/rocm-path)/bin/hipcc"
-              test -f "$(cat /etc/rocm-path)/include/hip/hip_runtime.h"
-              test -d "$(cat /etc/cuda-path)/lib64"
-
-              echo "cuda-compat:"; cat /etc/cuda-compat-installed
-              test "$(cat /etc/cuda-compat-installed)" = "yes"
-              test -e "$(cat /etc/cuda-path)/compat/libcuda.so.1"
-              ldconfig -p | grep "libcuda.so.1"
-            '
-
   build-derived:
     name: Build Derived Images
     runs-on: ubuntu-latest
-    needs: [discover-images, build]
+    needs: [build-bases, build]
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v7
 
-      - name: Download cuda-rocm image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: docker-image-ubuntu-cuda-rocm
-
-      - name: Load base image
+      # This job loads the 28 GB cuda-rocm image into the daemon and then
+      # builds fio on top of it, so it is tighter for space than the job that
+      # produced the base. See the matching step in the build job above.
+      - name: Free up disk space
         run: |
-          gunzip -c ubuntu-cuda-rocm.tar.gz | docker load
+          df -h /
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /usr/local/share/powershell \
+            /usr/share/swift
+          df -h /
 
-      # Built on the default docker driver rather than via
-      # setup-buildx-action: the docker-container driver keeps its own image
-      # store and cannot resolve a BASE_IMAGE that only exists in the local
-      # daemon.  That rules out the gha layer cache for this job.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # The base used to be loaded from an artifact into the local daemon,
+      # which forced this build onto the plain docker driver and cost it the
+      # layer cache entirely. The build job now pushes it to GHCR directly,
+      # so there is nothing to fetch: buildx pulls what it needs from the ref.
+      - name: Resolve base ref
+        id: base
+        run: |
+          echo "ref=${BASE_REGISTRY}:ubuntu-cuda-rocm-${GITHUB_SHA}" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install tool dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compute build args
+        id: buildargs
+        env:
+          BASE_IMAGE_FOR_UBUNTU_CUDA_ROCM: ${{ steps.base.outputs.ref }}
+        run: |
+          {
+            echo 'args<<ARGS_EOF'
+            ./ci-images-tool.py build-args ubuntu-cuda-rocm-fio
+            echo ARGS_EOF
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build ubuntu-cuda-rocm-fio
-        run: |
-          docker build \
-            -f ubuntu-cuda-rocm-fio/Dockerfile \
-            --build-arg BASE_IMAGE=batesste-ci-images-ubuntu-cuda-rocm:test \
-            --build-arg FIO_REPO=https://github.com/axboe/fio.git \
-            --build-arg FIO_COMMIT=975ea1856fee9f4c0f01f6f19ba3c61ce24f9bc8 \
-            -t batesste-ci-images-ubuntu-cuda-rocm-fio:test \
-            .
-
-      - name: Export Docker image
-        run: |
-          docker save \
-            "batesste-ci-images-ubuntu-cuda-rocm-fio:test" \
-            | gzip > /tmp/ubuntu-cuda-rocm-fio.tar.gz
-
-      - uses: actions/upload-artifact@v4
+        uses: docker/build-push-action@v7
         with:
-          name: docker-image-ubuntu-cuda-rocm-fio
-          path: /tmp/ubuntu-cuda-rocm-fio.tar.gz
-          retention-days: 1
-
-  test-fio:
-    name: Test fio GPU Engines
-    runs-on: ubuntu-latest
-    needs: build-derived
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Download fio image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: docker-image-ubuntu-cuda-rocm-fio
-
-      - name: Load Docker image
-        run: |
-          gunzip -c ubuntu-cuda-rocm-fio.tar.gz | docker load
+          context: .
+          file: ubuntu-cuda-rocm-fio/Dockerfile
+          push: false
+          load: true
+          tags: batesste-ci-images-ubuntu-cuda-rocm-fio:test
+          build-args: ${{ steps.buildargs.outputs.args }}
+          cache-from: >-
+            type=registry,ref=${{ env.CACHE_REGISTRY }}:ubuntu-cuda-rocm-fio
+          cache-to: >-
+            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
+              env.CACHE_REGISTRY
+            }}:ubuntu-cuda-rocm-fio
 
       # Runners have no NVIDIA driver. fio starts anyway because the base
       # image ships cuda-compat, so no LD_LIBRARY_PATH juggling is needed.
@@ -524,7 +701,8 @@ jobs:
           ACTUAL=$(docker run --rm \
             "batesste-ci-images-ubuntu-cuda-rocm-fio:test" \
             cat /usr/local/share/fio-commit.txt)
-          EXPECTED=975ea1856fee9f4c0f01f6f19ba3c61ce24f9bc8
+          EXPECTED=$(./ci-images-tool.py build-args ubuntu-cuda-rocm-fio \
+            | sed -n 's/^FIO_COMMIT=//p')
           if [ "$ACTUAL" != "$EXPECTED" ]; then
             echo "ERROR: fio commit $ACTUAL != $EXPECTED"
             exit 1
@@ -536,116 +714,6 @@ jobs:
             "batesste-ci-images-ubuntu-cuda-rocm-fio:test" \
             fio --name=smoke --ioengine=psync --rw=write \
                 --bs=64k --size=4m --directory=/tmp --minimal
-
-  test-rocm-ernic:
-    name: Test rocm-ernic Binary
-    runs-on: ubuntu-latest
-    needs: [discover-images, build]
-    if: >-
-      contains(
-        fromJson(needs.discover-images.outputs.images),
-        'ubuntu-rocm-ernic'
-      )
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Download Docker image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: docker-image-ubuntu-rocm-ernic
-
-      - name: Load Docker image
-        run: |
-          gunzip -c ubuntu-rocm-ernic.tar.gz \
-            | docker load
-
-      - name: Verify rocm-ernic binary exists
-        run: |
-          docker run --rm \
-            "batesste-ci-images-ubuntu-rocm-ernic:test" \
-            which rocm-ernic
-
-      - name: Verify rocm-ernic commit metadata
-        run: |
-          docker run --rm \
-            "batesste-ci-images-ubuntu-rocm-ernic:test" \
-            cat /usr/local/share/rocm-ernic-commit.txt
-
-      - name: Run rocm-ernic loopback smoke test
-        run: |
-          docker run --rm --name rocm-ernic-test \
-            --cap-add NET_ADMIN \
-            "batesste-ci-images-ubuntu-rocm-ernic:test" \
-            bash -c "
-              mkdir -p /tmp/vfio-sockets
-              rocm-ernic \
-                --socket /tmp/vfio-sockets/rocm-ernic.sock \
-                --backend loopback \
-                --verbose &
-              SERVER_PID=\$!
-              sleep 3
-              if ! kill -0 \${SERVER_PID} 2>/dev/null; then
-                echo 'ERROR: rocm-ernic exited prematurely'
-                exit 1
-              fi
-              echo \"rocm-ernic is running (PID \${SERVER_PID})\"
-              kill \${SERVER_PID}
-            "
-
-  test-rocm-rocjitsu:
-    name: Test rocm-rocjitsu Binary
-    runs-on: ubuntu-latest
-    needs: [discover-images, build]
-    if: >-
-      contains(
-        fromJson(needs.discover-images.outputs.images),
-        'ubuntu-rocm-rocjitsu'
-      )
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Download Docker image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: docker-image-ubuntu-rocm-rocjitsu
-
-      - name: Load Docker image
-        run: |
-          gunzip -c ubuntu-rocm-rocjitsu.tar.gz \
-            | docker load
-
-      - name: Verify rocjitsu binary exists
-        run: |
-          docker run --rm \
-            "batesste-ci-images-ubuntu-rocm-rocjitsu:test" \
-            which rocjitsu
-
-      - name: Verify rocjitsu commit metadata
-        run: |
-          docker run --rm \
-            "batesste-ci-images-ubuntu-rocm-rocjitsu:test" \
-            cat /usr/local/share/rocjitsu-commit.txt
-
-      - name: Run rocjitsu vfio-socket smoke test
-        run: |
-          docker run --rm --name rocjitsu-test \
-            --cap-add NET_ADMIN \
-            "batesste-ci-images-ubuntu-rocm-rocjitsu:test" \
-            bash -c "
-              mkdir -p /tmp/vfio-sockets
-              rocjitsu \
-                --config \${ROCJITSU_CONFIG_DIR}/gfx1250_mi455x.json \
-                --vfio-socket /tmp/vfio-sockets/rocjitsu.sock &
-              SERVER_PID=\$!
-              sleep 3
-              if ! kill -0 \${SERVER_PID} 2>/dev/null; then
-                echo 'ERROR: rocjitsu exited prematurely'
-                exit 1
-              fi
-              test -S /tmp/vfio-sockets/rocjitsu.sock
-              echo \"rocjitsu is running (PID \${SERVER_PID})\"
-              kill \${SERVER_PID}
-            "
 
   test-compose:
     name: Test Docker Compose Stack
@@ -684,11 +752,11 @@ jobs:
 
       - name: Load Docker images
         run: |
-          gunzip -c ubuntu-qemu-libvfio-user.tar.gz \
+          zstd -dc ubuntu-qemu-libvfio-user.tar.zst \
             | docker load
-          gunzip -c ubuntu-rocm-ernic.tar.gz \
+          zstd -dc ubuntu-rocm-ernic.tar.zst \
             | docker load
-          gunzip -c ubuntu-rocm-rocjitsu.tar.gz \
+          zstd -dc ubuntu-rocm-rocjitsu.tar.zst \
             | docker load
           docker tag \
             batesste-ci-images-ubuntu-qemu-libvfio-user:test \
