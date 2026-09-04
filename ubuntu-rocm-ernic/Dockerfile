@@ -1,59 +1,24 @@
-FROM ubuntu:24.04
+# libvfio-user is already built and installed under /usr/local by the base
+# image, which pins the same SHA this image used to build for itself.
+ARG BASE_IMAGE=docker.io/sbates130272/batesste-ci-images-ubuntu-libvfio-user:latest
+# hadolint ignore=DL3006
+FROM ${BASE_IMAGE}
 
 # Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install build dependencies
-RUN apt-get update && \
+# Install build dependencies beyond those in the base image
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
-    build-essential \
-    ca-certificates \
-    cmake \
-    ninja-build \
-    pkg-config \
-    git \
-    meson \
-    libglib2.0-dev \
-    libjson-c-dev \
-    libcmocka-dev \
     libibverbs-dev \
-    librdmacm-dev \
-    && rm -rf /var/lib/apt/lists/*
+    librdmacm-dev
 
-# Install AMD root CA if present in build context (ZScaler proxy on AMD network).
-# No-op in CI where the file is absent.
-# hadolint ignore=DL3003
-# Mount only common/, not the whole context: BuildKit folds the mounted
-# content digest into this step's cache key, so a repo-wide mount makes any
-# unrelated edit rebuild every layer below -- including the CUDA/ROCm installs.
-RUN --mount=type=bind,source=common,target=/ctx/common \
-    if [ -f /ctx/common/amd-root-ca.crt ]; then \
-        cp /ctx/common/amd-root-ca.crt \
-            /usr/local/share/ca-certificates/amd-root-ca.crt && \
-        update-ca-certificates; \
-    fi
-
-# Accept libvfio-user and rocm-ernic commit SHAs as build arguments
-ARG LIBVFIO_USER_REPO=https://gitlab.com/qemu-project/libvfio-user.git
-ARG LIBVFIO_USER_COMMIT=323f4cb6cddc3713fb7aebe44436f28b28b5413a
 ARG ROCM_ERNIC_REPO=https://github.com/ROCm/rocm-ernic.git
 ARG ROCM_ERNIC_COMMIT=e3ef00c2a0c1ba1df95e6cbbe9362c2a1ad1d2fb
 
 WORKDIR /build
-
-# Clone and build libvfio-user (same SHA as ubuntu-qemu-libvfio-user)
-RUN git clone --filter=blob:none \
-    "${LIBVFIO_USER_REPO}" \
-    /build/libvfio-user && \
-    cd /build/libvfio-user && \
-    git checkout "${LIBVFIO_USER_COMMIT}" && \
-    git rev-parse HEAD \
-        > /build/libvfio-user-commit.txt && \
-    meson setup build --prefix=/usr/local && \
-    ninja -C build && \
-    ninja -C build install && \
-    ldconfig && \
-    rm -rf /build/libvfio-user
 
 # Clone rocm-ernic at the pinned SHA
 RUN git clone --filter=blob:none \
@@ -65,10 +30,13 @@ RUN git clone --filter=blob:none \
         > /build/rocm-ernic-commit.txt
 
 # Build rocm-ernic
-RUN cmake \
+RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
+    cmake \
     -B /build/rocm-ernic/build \
     -G Ninja \
     -S /build/rocm-ernic \
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/usr/local \
     -DERNIC_WERROR=OFF && \
@@ -78,9 +46,8 @@ RUN cmake \
     ldconfig
 
 # Save installed binary path and commit info
+# (libvfio-user-commit.txt is already in place, written by the base image)
 RUN cp /build/rocm-ernic-commit.txt /usr/local/share/rocm-ernic-commit.txt && \
-    cp /build/libvfio-user-commit.txt \
-        /usr/local/share/libvfio-user-commit.txt && \
     rm -rf /build/rocm-ernic
 
 ENV PATH=/usr/local/bin:${PATH}

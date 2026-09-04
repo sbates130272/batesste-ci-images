@@ -9,6 +9,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+# Layer cache lives in GHCR, not the Actions cache: the latter is capped at
+# 10 GB per repository with LRU eviction, and mode=max across every image
+# scope meant they evicted each other between runs.
+env:
+  CACHE_REGISTRY: ghcr.io/${{ github.repository }}/buildcache
+  BASE_REGISTRY: ghcr.io/${{ github.repository }}/ci-base
+
 jobs:
   discover-images:
     name: Discover Images
@@ -20,67 +27,50 @@ jobs:
       - name: Find all Dockerfiles
         id: find-images
         run: |
-          # ubuntu-cuda-rocm-fio layers on ubuntu-cuda-rocm, so it is built
-          # by the build-and-push-derived job instead of this matrix.
+          # ubuntu-base and ubuntu-libvfio-user are built by build-bases;
+          # ubuntu-cuda-rocm-fio layers on ubuntu-cuda-rocm and is built by
+          # build-and-push-derived. None belongs in this matrix.
           IMAGES=$(find . -maxdepth 2 \
             -name "Dockerfile" -type f | \
             sed 's|^\./||' | \
             sed 's|/Dockerfile$||' | sort | \
             jq -R -s -c 'split("\n")[:-1]
-              | map(select(. != "ubuntu-cuda-rocm-fio"))')
+              | map(select(. != "ubuntu-cuda-rocm-fio"
+                        and . != "ubuntu-base"
+                        and . != "ubuntu-libvfio-user"))')
           echo "images=$IMAGES" >> $GITHUB_OUTPUT
           echo "Found images: $IMAGES"
 
-  build-and-push:
-    name: Build and Push
+  # Shared layers, built once. Published to Docker Hub like any other image
+  # so a local build can layer on them without rebuilding, and to a GHCR
+  # scratch tag so the matrix below can resolve them immediately.
+  build-bases:
+    name: Build and Push Base Images
     runs-on: ubuntu-latest
-    needs: discover-images
-    strategy:
-      fail-fast: false
-      matrix:
-        image: >-
-          ${{
-            fromJson(
-              needs.discover-images.outputs.images
-            )
-          }}
-        variant: ['']
-        include:
-          - image: ubuntu-qemu-libvfio-user
-            variant: '-sbates-fork'
-            qemu_repo: >-
-              https://github.com/sbates130272/qemu.git
-            qemu_commit: >-
-              dev/stephen/pci-mmio-bridge-submit
-          - image: ubuntu-rocm-ernic
-            variant: ''
-            rocm_ernic_commit: >-
-              e3ef00c2a0c1ba1df95e6cbbe9362c2a1ad1d2fb
-          - image: ubuntu-rocm-rocjitsu
-            variant: ''
-            rocjitsu_repo: >-
-              https://github.com/ROCm/rocm-systems.git
-            rocjitsu_branch: >-
-              develop
-            rocjitsu_commit: >-
-              5e9cc7c57d372c0198fd8decb1fe5ceb07038a2b
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      base: ${{ steps.refs.outputs.base }}
+      vfu: ${{ steps.refs.outputs.vfu }}
     steps:
       - uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        with:
-          # The VM build stage needs /dev/kvm, reachable only
-          # from a RUN --security=insecure step.
-          buildkitd-flags: >-
-            --allow-insecure-entitlement security.insecure
-            --allow-insecure-entitlement network.host
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
 
       - name: Extract version from tag
         id: version
@@ -98,20 +88,194 @@ jobs:
       - name: Install tool dependencies
         run: pip install -r requirements.txt
 
-      # ci-images-tool.py owns the tag scheme so a release and a local
-      # build cannot drift; the pinned versions reach it through the same
-      # env vars that drive the build args below.
-      - name: Compute image tags and labels
-        id: tags
+      - name: Compute refs, tags and labels
+        id: refs
         env:
           REGISTRY: docker.io
           REGISTRY_IMAGE: batesste-ci-images
           REGISTRY_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          QEMU_COMMIT: ${{ matrix.qemu_commit }}
-          ROCM_ERNIC_COMMIT: ${{ matrix.rocm_ernic_commit }}
-          ROCM_ROCJITSU_COMMIT: ${{ matrix.rocjitsu_commit }}
-          ROCM_ROCJITSU_BRANCH: ${{ matrix.rocjitsu_branch }}
         run: |
+          V="${{ steps.version.outputs.version }}"
+          echo "base=${BASE_REGISTRY}:ubuntu-base-${GITHUB_SHA}" \
+            >> "$GITHUB_OUTPUT"
+          echo "vfu=${BASE_REGISTRY}:ubuntu-libvfio-user-${GITHUB_SHA}" \
+            >> "$GITHUB_OUTPUT"
+          for img in ubuntu-base ubuntu-libvfio-user; do
+            key="${img//-/_}"
+            {
+              echo "${key}_tags<<EOF"
+              ./ci-images-tool.py tags "$img" --tag "$V" \
+                --extra-tag "sha-${GITHUB_SHA:0:7}" \
+                --extra-tag "${{ steps.version.outputs.tag }}"
+              echo "${BASE_REGISTRY}:${img}-${GITHUB_SHA}"
+              echo EOF
+              echo "${key}_labels<<EOF"
+              ./ci-images-tool.py labels "$img" --tag "$V"
+              echo EOF
+            } >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Build and push ubuntu-base
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ubuntu-base/Dockerfile
+          push: true
+          tags: ${{ steps.refs.outputs.ubuntu_base_tags }}
+          cache-from: type=registry,ref=${{ env.CACHE_REGISTRY }}:ubuntu-base
+          cache-to: >-
+            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
+              env.CACHE_REGISTRY
+            }}:ubuntu-base
+          labels: |
+            ${{ steps.refs.outputs.ubuntu_base_labels }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+
+      - name: Build and push ubuntu-libvfio-user
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ubuntu-libvfio-user/Dockerfile
+          push: true
+          tags: ${{ steps.refs.outputs.ubuntu_libvfio_user_tags }}
+          build-args: |
+            BASE_IMAGE=${{ steps.refs.outputs.base }}
+          cache-from: >-
+            type=registry,ref=${{ env.CACHE_REGISTRY }}:ubuntu-libvfio-user
+          cache-to: >-
+            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
+              env.CACHE_REGISTRY
+            }}:ubuntu-libvfio-user
+          labels: |
+            ${{ steps.refs.outputs.ubuntu_libvfio_user_labels }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+
+  build-and-push:
+    name: Build and Push
+    runs-on: ubuntu-latest
+    needs: [discover-images, build-bases]
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: >-
+          ${{
+            fromJson(
+              needs.discover-images.outputs.images
+            )
+          }}
+        variant: ['']
+        include:
+          - image: ubuntu-qemu-libvfio-user
+            variant: '-sbates-fork'
+            qemu_repo: >-
+              https://github.com/sbates130272/qemu.git
+            qemu_commit: >-
+              dev/stephen/pci-mmio-bridge-submit
+    env:
+      REGISTRY: docker.io
+      REGISTRY_IMAGE: batesste-ci-images
+      REGISTRY_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      # Point ci-images-tool.py's BASE_IMAGE resolution at the bases
+      # build-bases just published to the GHCR scratch tag.
+      BASE_IMAGE_FOR_UBUNTU_BASE: ${{ needs.build-bases.outputs.base }}
+      BASE_IMAGE_FOR_UBUNTU_LIBVFIO_USER: ${{ needs.build-bases.outputs.vfu }}
+      QEMU_REPO: ${{ matrix.qemu_repo }}
+      QEMU_COMMIT: ${{ matrix.qemu_commit }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # ubuntu-cuda-rocm downloads ~10 GB of .deb files, which ubuntu-base's
+      # apt cache mounts now keep for the whole build instead of letting
+      # docker-clean discard them. On top of a 28 GB image that overruns the
+      # runner. CI gets nothing from those mounts anyway -- BuildKit never
+      # exports them -- so buy the headroom back off the preinstalled
+      # toolchains we never use rather than give up the local-rebuild win.
+      - name: Free up disk space
+        if: matrix.image == 'ubuntu-cuda-rocm'
+        run: |
+          df -h /
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /usr/local/share/powershell \
+            /usr/share/swift
+          df -h /
+
+      # x86 GitHub-hosted runners do expose /dev/kvm, but as root:kvm 0660,
+      # and BuildKit's RUN step is not in the kvm group. Widen it rather than
+      # fall back to TCG, which turns a minutes-long VM boot into an hour.
+      # ARM Linux, macOS, Windows and ubuntu-slim runners have no /dev/kvm at
+      # all; the build-args step below detects that and selects vm-tcg.
+      - name: Enable KVM for the VM build
+        if: matrix.image == 'ubuntu-qemu-libvfio-user'
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+          ls -l /dev/kvm || echo "no /dev/kvm on this runner"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          # The VM build stage needs /dev/kvm, reachable only
+          # from a RUN --security=insecure step.
+          buildkitd-flags: >-
+            --allow-insecure-entitlement security.insecure
+            --allow-insecure-entitlement network.host
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "version=${TAG#v}" >> $GITHUB_OUTPUT
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install tool dependencies
+        run: pip install -r requirements.txt
+
+      # ci-images-tool.py owns the tag scheme, the labels and the pinned
+      # versions, so a release and a local build cannot drift.
+      - name: Compute image tags, labels and build args
+        id: tags
+        run: |
+          # --kvm only means anything to ubuntu-qemu-libvfio-user, so gate it
+          # on the device rather than on the image name.
+          KVM_FLAG=
+          [ -w /dev/kvm ] && KVM_FLAG=--kvm
           {
             echo 'refs<<TAGS_EOF'
             ./ci-images-tool.py tags "${{ matrix.image }}" \
@@ -124,6 +288,10 @@ jobs:
             ./ci-images-tool.py labels "${{ matrix.image }}" \
               --tag "${{ steps.version.outputs.version }}"
             echo LABELS_EOF
+            echo 'args<<ARGS_EOF'
+            ./ci-images-tool.py build-args "${{ matrix.image }}" \
+              --tag "${{ steps.version.outputs.version }}" ${KVM_FLAG}
+            echo ARGS_EOF
           } >> "$GITHUB_OUTPUT"
 
       - name: Ensure cloud image cache dir exists
@@ -131,7 +299,7 @@ jobs:
 
       - name: Cache Ubuntu cloud image
         if: matrix.image == 'ubuntu-qemu-libvfio-user'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: common/cloud-image-cache
           key: cloud-image-noble-amd64
@@ -157,26 +325,20 @@ jobs:
           push: true
           tags: ${{ steps.tags.outputs.refs }}
           cache-from: >-
-            type=gha,scope=${{
+            type=registry,ref=${{ env.CACHE_REGISTRY }}:${{
               matrix.image
             }}${{
               matrix.variant
             }}
           cache-to: >-
-            type=gha,mode=max,scope=${{
+            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
+              env.CACHE_REGISTRY
+            }}:${{
               matrix.image
             }}${{
               matrix.variant
             }}
-          build-args: |
-            QEMU_REPO=${{ matrix.qemu_repo || 'https://gitlab.com/qemu-project/qemu.git' }}
-            QEMU_COMMIT=${{ matrix.qemu_commit || 'v11.1.1' }}
-            ${{ (matrix.image == 'ubuntu-qemu-libvfio-user' || matrix.image == 'ubuntu-rocm-ernic') && 'LIBVFIO_USER_COMMIT=323f4cb6cddc3713fb7aebe44436f28b28b5413a' || '' }}
-            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_REPO=https://github.com/sbates130272/qemu-minimal.git' || '' }}
-            ${{ matrix.image == 'ubuntu-qemu-libvfio-user' && 'QEMU_MINIMAL_COMMIT=225a81766b87ad2adb4e93d71bb8ed5e4e996466' || '' }}
-            ${{ matrix.image == 'ubuntu-rocm-ernic' && format('ROCM_ERNIC_COMMIT={0}', matrix.rocm_ernic_commit) || '' }}
-            ${{ matrix.image == 'ubuntu-rocm-rocjitsu' && format('ROCJITSU_BRANCH={0}', matrix.rocjitsu_branch) || '' }}
-            ${{ matrix.image == 'ubuntu-rocm-rocjitsu' && format('ROCJITSU_COMMIT={0}', matrix.rocjitsu_commit) || '' }}
+          build-args: ${{ steps.tags.outputs.args }}
           labels: |
             ${{ steps.tags.outputs.labels }}
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
@@ -188,23 +350,47 @@ jobs:
     name: Build and Push Derived
     runs-on: ubuntu-latest
     needs: build-and-push
+    permissions:
+      contents: read
+      packages: write
     env:
       REGISTRY: docker.io
       REGISTRY_IMAGE: batesste-ci-images
       REGISTRY_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      FIO_REPO: https://github.com/axboe/fio.git
-      FIO_COMMIT: 975ea1856fee9f4c0f01f6f19ba3c61ce24f9bc8
     steps:
       - uses: actions/checkout@v7
+
+      # This job builds fio on top of the 28 GB cuda-rocm image, so it is
+      # tighter for space than the job that produced the base. See the
+      # matching step in the build-and-push job above.
+      - name: Free up disk space
+        run: |
+          df -h /
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /usr/local/share/powershell \
+            /usr/share/swift
+          df -h /
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
 
       - name: Extract version from tag
         id: version
@@ -222,14 +408,11 @@ jobs:
       - name: Install tool dependencies
         run: pip install -r requirements.txt
 
-      # The base ref is the first line of the base image's tag set: the
-      # immutable, fully specified tag build-and-push just published.
-      - name: Compute image tags and labels
+      # BASE_IMAGE resolves to the first line of ubuntu-cuda-rocm's tag set:
+      # the immutable, fully specified tag build-and-push just published.
+      - name: Compute image tags, labels and build args
         id: tags
         run: |
-          BASE=$(./ci-images-tool.py tags ubuntu-cuda-rocm \
-            --tag "${{ steps.version.outputs.version }}" | head -1)
-          echo "base=${BASE}" >> "$GITHUB_OUTPUT"
           {
             echo 'refs<<TAGS_EOF'
             ./ci-images-tool.py tags ubuntu-cuda-rocm-fio \
@@ -241,6 +424,10 @@ jobs:
             ./ci-images-tool.py labels ubuntu-cuda-rocm-fio \
               --tag "${{ steps.version.outputs.version }}"
             echo LABELS_EOF
+            echo 'args<<ARGS_EOF'
+            ./ci-images-tool.py build-args ubuntu-cuda-rocm-fio \
+              --tag "${{ steps.version.outputs.version }}"
+            echo ARGS_EOF
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push ubuntu-cuda-rocm-fio
@@ -250,12 +437,13 @@ jobs:
           file: ubuntu-cuda-rocm-fio/Dockerfile
           push: true
           tags: ${{ steps.tags.outputs.refs }}
-          cache-from: type=gha,scope=ubuntu-cuda-rocm-fio
-          cache-to: type=gha,mode=max,scope=ubuntu-cuda-rocm-fio
-          build-args: |
-            BASE_IMAGE=${{ steps.tags.outputs.base }}
-            FIO_REPO=${{ env.FIO_REPO }}
-            FIO_COMMIT=${{ env.FIO_COMMIT }}
+          cache-from: >-
+            type=registry,ref=${{ env.CACHE_REGISTRY }}:ubuntu-cuda-rocm-fio
+          cache-to: >-
+            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
+              env.CACHE_REGISTRY
+            }}:ubuntu-cuda-rocm-fio
+          build-args: ${{ steps.tags.outputs.args }}
           labels: |
             ${{ steps.tags.outputs.labels }}
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
@@ -266,7 +454,7 @@ jobs:
   github-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [build-and-push, build-and-push-derived]
+    needs: [build-bases, build-and-push, build-and-push-derived]
     permissions:
       contents: write
     steps:
