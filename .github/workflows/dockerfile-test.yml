@@ -12,6 +12,8 @@ on:
       - '**/entrypoint.sh'
       - '**/packages.txt'
       - 'ci-images-tool.py'
+      - 'images.yml'
+      - 'requirements.txt'
       - 'compose/**'
       - 'common/**'
       - '.github/workflows/dockerfile-test.yml'
@@ -22,6 +24,8 @@ on:
       - '**/entrypoint.sh'
       - '**/packages.txt'
       - 'ci-images-tool.py'
+      - 'images.yml'
+      - 'requirements.txt'
       - 'compose/**'
       - 'common/**'
       - '.github/workflows/dockerfile-test.yml'
@@ -40,25 +44,31 @@ jobs:
     name: Discover Images
     runs-on: ubuntu-latest
     outputs:
-      images: ${{ steps.find-images.outputs.images }}
+      targets: ${{ steps.find-images.outputs.targets }}
+      keys: ${{ steps.find-images.outputs.keys }}
     steps:
       - uses: actions/checkout@v7
-      - name: Find all Dockerfiles
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install tool dependencies
+        run: pip install -r requirements.txt
+
+      # images.yml says which job builds what, so this no longer globs for
+      # Dockerfiles and carries its own exclusion list. One image can declare
+      # several variants, each a separate target built from the same Dockerfile.
+      - name: Enumerate matrix targets
         id: find-images
         run: |
-          # ubuntu-base and ubuntu-libvfio-user are built by build-bases, and
-          # ubuntu-cuda-rocm-fio layers on ubuntu-cuda-rocm, so none of the
-          # three belongs in the flat parallel matrix.
-          IMAGES=$(find . -maxdepth 2 \
-            -name "Dockerfile" -type f | \
-            sed 's|^\./||' | \
-            sed 's|/Dockerfile$||' | sort | \
-            jq -R -s -c 'split("\n")[:-1]
-              | map(select(. != "ubuntu-cuda-rocm-fio"
-                        and . != "ubuntu-base"
-                        and . != "ubuntu-libvfio-user"))')
-          echo "images=$IMAGES" >> $GITHUB_OUTPUT
-          echo "Found images: $IMAGES"
+          ./ci-images-tool.py validate
+          TARGETS=$(./ci-images-tool.py targets --job matrix --json)
+          echo "targets=$TARGETS" >> $GITHUB_OUTPUT
+          echo "keys=$(echo "$TARGETS" | jq -c 'map(.key)')" >> $GITHUB_OUTPUT
+          echo "$TARGETS" | jq .
 
   # ubuntu-base holds the apt preamble and root CA every image shares;
   # ubuntu-libvfio-user adds the libvfio-user build that qemu and rocm-ernic
@@ -130,7 +140,7 @@ jobs:
             cat /usr/local/share/libvfio-user-commit.txt
 
   build:
-    name: Build Docker Images
+    name: Build ${{ matrix.target.key }}
     runs-on: ubuntu-latest
     needs: [discover-images, build-bases]
     permissions:
@@ -139,27 +149,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: >-
+        # Each entry is a whole target object from ci-images-tool.py: image
+        # directory, variant, and the flat `scope` name used for the cache ref,
+        # the artifact and the local :test tag. Variants (e.g. the QEMU fork)
+        # are declared in images.yml, not spliced in here.
+        target: >-
           ${{
             fromJson(
-              needs.discover-images.outputs.images
+              needs.discover-images.outputs.targets
             )
           }}
-        variant: ['']
-        include:
-          - image: ubuntu-qemu-libvfio-user
-            variant: '-sbates-fork'
-            qemu_repo: >-
-              https://github.com/sbates130272/qemu.git
-            qemu_commit: >-
-              dev/stephen/pci-mmio-bridge-submit
     env:
       # ci-images-tool.py owns the pins; these point its BASE_IMAGE
       # resolution at the images build-bases just published.
       BASE_IMAGE_FOR_UBUNTU_BASE: ${{ needs.build-bases.outputs.base }}
       BASE_IMAGE_FOR_UBUNTU_LIBVFIO_USER: ${{ needs.build-bases.outputs.vfu }}
-      QEMU_REPO: ${{ matrix.qemu_repo }}
-      QEMU_COMMIT: ${{ matrix.qemu_commit }}
     steps:
       - uses: actions/checkout@v7
 
@@ -170,7 +174,7 @@ jobs:
       # exports them -- so buy the headroom back off the preinstalled
       # toolchains we never use rather than give up the local-rebuild win.
       - name: Free up disk space
-        if: matrix.image == 'ubuntu-cuda-rocm'
+        if: matrix.target.image == 'ubuntu-cuda-rocm'
         run: |
           df -h /
           sudo rm -rf \
@@ -188,8 +192,7 @@ jobs:
 
       - name: Cache Ubuntu cloud image
         if: >-
-          matrix.image ==
-          'ubuntu-qemu-libvfio-user'
+          matrix.target.image == 'ubuntu-qemu-libvfio-user'
         uses: actions/cache@v6
         with:
           path: common/cloud-image-cache
@@ -198,8 +201,7 @@ jobs:
 
       - name: Pre-download cloud image
         if: >-
-          matrix.image ==
-          'ubuntu-qemu-libvfio-user'
+          matrix.target.image == 'ubuntu-qemu-libvfio-user'
         run: |
           DIR="common/cloud-image-cache"
           IMG="${DIR}/noble-server-cloudimg-amd64.img"
@@ -216,8 +218,7 @@ jobs:
       # all; the build-args step below detects that and selects vm-tcg.
       - name: Enable KVM for the VM build
         if: >-
-          matrix.image ==
-          'ubuntu-qemu-libvfio-user'
+          matrix.target.image == 'ubuntu-qemu-libvfio-user'
         run: |
           if [ -e /dev/kvm ]; then
             echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
@@ -263,7 +264,7 @@ jobs:
           [ -w /dev/kvm ] && KVM_FLAG=--kvm
           {
             echo 'args<<ARGS_EOF'
-            ./ci-images-tool.py build-args "${{ matrix.image }}" ${KVM_FLAG}
+            ./ci-images-tool.py build-args "${{ matrix.target.key }}" ${KVM_FLAG}
             echo ARGS_EOF
           } >> "$GITHUB_OUTPUT"
 
@@ -271,30 +272,18 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: ${{ matrix.image }}/Dockerfile
+          file: ${{ matrix.target.image }}/Dockerfile
           allow: security.insecure
           push: false
           load: true
           tags: >-
-            batesste-ci-images-${{
-              matrix.image
-            }}${{
-              matrix.variant
-            }}:test
+            batesste-ci-images-${{ matrix.target.scope }}:test
           cache-from: >-
-            type=registry,ref=${{ env.CACHE_REGISTRY }}:${{
-              matrix.image
-            }}${{
-              matrix.variant
-            }}
+            type=registry,ref=${{ env.CACHE_REGISTRY }}:${{ matrix.target.scope }}
           cache-to: >-
             type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
               env.CACHE_REGISTRY
-            }}:${{
-              matrix.image
-            }}${{
-              matrix.variant
-            }}
+            }}:${{ matrix.target.scope }}
           build-args: ${{ steps.buildargs.outputs.args }}
 
       # ── per-image checks, run here rather than in a downstream job:
@@ -302,26 +291,26 @@ jobs:
       # round-trip of a multi-GB image is pure overhead.
 
       - name: Test entrypoint script syntax
-        if: hashFiles(format('{0}/entrypoint.sh', matrix.image)) != ''
+        if: hashFiles(format('{0}/entrypoint.sh', matrix.target.image)) != ''
         run: |
           docker run --rm --entrypoint /bin/bash \
-            "batesste-ci-images-${{ matrix.image }}${{ matrix.variant }}:test" \
+            "batesste-ci-images-${{ matrix.target.scope }}:test" \
             -c "bash -n /build/entrypoint.sh && \
                 echo 'Entrypoint syntax OK'"
 
       - name: Test entrypoint help
-        if: hashFiles(format('{0}/entrypoint.sh', matrix.image)) != ''
+        if: hashFiles(format('{0}/entrypoint.sh', matrix.target.image)) != ''
         run: |
           timeout 10 docker run --rm \
             --cap-add NET_ADMIN \
             -e USERNAME=testuser \
             -e VM_NAME=test-vm \
             -e SSH_PORT=2222 \
-            "batesste-ci-images-${{ matrix.image }}${{ matrix.variant }}:test" \
+            "batesste-ci-images-${{ matrix.target.scope }}:test" \
             || true
 
       - name: Verify toolkit binaries and install paths
-        if: matrix.image == 'ubuntu-cuda-rocm'
+        if: matrix.target.image == 'ubuntu-cuda-rocm'
         run: |
           docker run --rm \
             "batesste-ci-images-ubuntu-cuda-rocm:test" \
@@ -346,7 +335,7 @@ jobs:
             '
 
       - name: Verify rocm-ernic binary and commit metadata
-        if: matrix.image == 'ubuntu-rocm-ernic'
+        if: matrix.target.image == 'ubuntu-rocm-ernic'
         run: |
           docker run --rm \
             "batesste-ci-images-ubuntu-rocm-ernic:test" \
@@ -358,7 +347,7 @@ jobs:
             '
 
       - name: Run rocm-ernic loopback smoke test
-        if: matrix.image == 'ubuntu-rocm-ernic'
+        if: matrix.target.image == 'ubuntu-rocm-ernic'
         run: |
           docker run --rm --name rocm-ernic-test \
             --cap-add NET_ADMIN \
@@ -380,7 +369,7 @@ jobs:
             "
 
       - name: Verify rocjitsu binary and commit metadata
-        if: matrix.image == 'ubuntu-rocm-rocjitsu'
+        if: matrix.target.image == 'ubuntu-rocm-rocjitsu'
         run: |
           docker run --rm \
             "batesste-ci-images-ubuntu-rocm-rocjitsu:test" \
@@ -391,7 +380,7 @@ jobs:
             '
 
       - name: Run rocjitsu vfio-socket smoke test
-        if: matrix.image == 'ubuntu-rocm-rocjitsu'
+        if: matrix.target.image == 'ubuntu-rocm-rocjitsu'
         run: |
           docker run --rm --name rocjitsu-test \
             --cap-add NET_ADMIN \
@@ -418,7 +407,7 @@ jobs:
       # tarball in each direction, and skips writing it to a disk that the
       # image and its retained debs have already largely filled.
       - name: Push cuda-rocm to GHCR for build-derived
-        if: matrix.image == 'ubuntu-cuda-rocm'
+        if: matrix.target.image == 'ubuntu-cuda-rocm'
         run: |
           REF="${BASE_REGISTRY}:ubuntu-cuda-rocm-${GITHUB_SHA}"
           docker tag batesste-ci-images-ubuntu-cuda-rocm:test "$REF"
@@ -428,38 +417,20 @@ jobs:
       # job still pay the artifact round-trip. zstd rather than gzip: these
       # images are multi-GB and gzip is the slowest part of the hop.
       - name: Export Docker image
-        if: >-
-          matrix.image == 'ubuntu-qemu-libvfio-user' ||
-          matrix.image == 'ubuntu-rocm-ernic' ||
-          matrix.image == 'ubuntu-rocm-rocjitsu'
+        if: matrix.target.artifact
         run: |
           docker save \
-            "batesste-ci-images-${{ matrix.image }}${{ matrix.variant }}:test" \
+            "batesste-ci-images-${{ matrix.target.scope }}:test" \
             | zstd -T0 -3 \
-            > "/tmp/${{ matrix.image }}${{ matrix.variant }}.tar.zst"
+            > "/tmp/${{ matrix.target.scope }}.tar.zst"
 
-<<<<<<< HEAD
       - uses: actions/upload-artifact@v7
-=======
-      - uses: actions/upload-artifact@v4
-        if: >-
-          matrix.image == 'ubuntu-qemu-libvfio-user' ||
-          matrix.image == 'ubuntu-rocm-ernic' ||
-          matrix.image == 'ubuntu-rocm-rocjitsu'
->>>>>>> origin/main
+        if: matrix.target.artifact
         with:
           name: >-
-            docker-image-${{
-              matrix.image
-            }}${{
-              matrix.variant
-            }}
+            docker-image-${{ matrix.target.scope }}
           path: >-
-            /tmp/${{
-              matrix.image
-            }}${{
-              matrix.variant
-            }}.tar.zst
+            /tmp/${{ matrix.target.scope }}.tar.zst
           compression-level: 0
           retention-days: 1
 
@@ -469,7 +440,7 @@ jobs:
     needs: [discover-images, build]
     if: >-
       contains(
-        fromJson(needs.discover-images.outputs.images),
+        fromJson(needs.discover-images.outputs.keys),
         'ubuntu-qemu-libvfio-user'
       )
     steps:
@@ -650,26 +621,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build ubuntu-cuda-rocm-fio
-<<<<<<< HEAD
-        run: |
-          docker build \
-            -f ubuntu-cuda-rocm-fio/Dockerfile \
-            --build-arg BASE_IMAGE=batesste-ci-images-ubuntu-cuda-rocm:test \
-            --build-arg FIO_REPO=https://github.com/axboe/fio.git \
-            --build-arg FIO_COMMIT=975ea1856fee9f4c0f01f6f19ba3c61ce24f9bc8 \
-            -t batesste-ci-images-ubuntu-cuda-rocm-fio:test \
-            .
-
-      - name: Export Docker image
-        run: |
-          docker save \
-            "batesste-ci-images-ubuntu-cuda-rocm-fio:test" \
-            | gzip > /tmp/ubuntu-cuda-rocm-fio.tar.gz
-
-      - uses: actions/upload-artifact@v7
-=======
         uses: docker/build-push-action@v7
->>>>>>> origin/main
         with:
           context: .
           file: ubuntu-cuda-rocm-fio/Dockerfile
@@ -744,15 +696,15 @@ jobs:
     needs: [discover-images, build]
     if: >-
       contains(
-        fromJson(needs.discover-images.outputs.images),
+        fromJson(needs.discover-images.outputs.keys),
         'ubuntu-qemu-libvfio-user'
       ) &&
       contains(
-        fromJson(needs.discover-images.outputs.images),
+        fromJson(needs.discover-images.outputs.keys),
         'ubuntu-rocm-ernic'
       ) &&
       contains(
-        fromJson(needs.discover-images.outputs.images),
+        fromJson(needs.discover-images.outputs.keys),
         'ubuntu-rocm-rocjitsu'
       )
     steps:

@@ -40,7 +40,9 @@ and pushing of these images.
 - **ubuntu-rocm-rocjitsu**: Ubuntu 24.04 image with rocjitsu built from a
   pinned source commit with `-DROCJITSU_ENABLE_VFIO=ON`. Provides a
   software-emulated AMD GPU vfio-user server for KFD/amdgpu bring-up without
-  real hardware. See `ubuntu-rocm-rocjitsu/` for details.
+  real hardware. See `ubuntu-rocm-rocjitsu/` for details. Also published as
+  `…-ubuntu-rocm-rocjitsu-730bc62`, the same Dockerfile built against a newer
+  upstream commit — see [Image Variants](#image-variants).
 
 ### rocjitsu vfio-user mode
 
@@ -97,10 +99,11 @@ batesste-ci-images/
 ├── systemd/                   # Systemd service files
 │   ├── build-vm.service
 │   └── build-vm.timer
+├── images.yml                 # Single source of truth: pins, tags, variants
 ├── ci-images-tool.py          # Python CLI for build/push/inspect
 ├── requirements.txt           # Python dependencies
 ├── .python-version            # Python version pin (3.12)
-├── env.example                # Example environment configuration
+├── env.example                # Machine-local environment configuration
 └── README.md
 ```
 
@@ -187,10 +190,11 @@ Two caches are in play:
 
 ### 1a. List and Inspect Images
 
-List all discoverable image directories:
+List all images, or every build target including variants:
 
 ```bash
 ./ci-images-tool.py list
+./ci-images-tool.py targets
 ```
 
 Inspect a locally-built image (size, layers, tags):
@@ -260,9 +264,85 @@ Refer to each image's documentation for detailed usage examples.
 
 ## Configuration
 
-The `env.example` file provides example environment variables that may be
-used by various images. Not all images require all variables. See
-individual image documentation for specific requirements.
+### images.yml
+
+`images.yml` is the single source of truth for everything that is not the
+Dockerfile itself: the pinned upstream versions, the build args they map to,
+the tag variant, the OCI labels, which image each one layers on, and which CI
+job builds it. `ci-images-tool.py` is a generic engine over that file — adding
+an image means adding a Dockerfile and an entry, with no Python change.
+
+Each entry declares its pins as *vars*:
+
+```yaml
+  ubuntu-rocm-rocjitsu:
+    job: matrix
+    base: ubuntu-base
+    vars:
+      rocjitsu_commit:
+        value: 5e9cc7c57d372c0198fd8decb1fe5ceb07038a2b
+        env: ROCM_ROCJITSU_COMMIT
+    build_args:
+      ROCJITSU_COMMIT: "{rocjitsu_commit}"
+    variant: "rocjitsu.{rocjitsu_commit|short}"
+```
+
+A var can be overridden from the environment for a one-off local build, using
+the `env:` name (defaulting to the var name upper-cased). Read the current
+values back through the tool rather than grepping the YAML:
+
+```bash
+./ci-images-tool.py config ubuntu-rocm-rocjitsu
+./ci-images-tool.py config ubuntu-rocm-rocjitsu --get rocjitsu_commit
+./ci-images-tool.py validate      # every target renders; run in CI lint
+```
+
+`scripts/version-scrub.sh` reads pins the same way and writes bumps back to
+`images.yml` (plus the matching Dockerfile `ARG` fallback), so the pins cannot
+drift between the tool, the workflows and the Dockerfiles the way they used to.
+
+#### Local overlay
+
+An optional `images.local.yml` beside `images.yml` is deep-merged over it when
+present: dictionaries merge key by key, anything else replaces. It is
+gitignored and CI never reads it, so a published image always matches the spec
+in the tree.
+
+Unlike an environment override it can reach *anything* — including a variant's
+own pins, since writing the file is a deliberate act rather than a stray
+variable — and it can declare targets that do not exist upstream:
+
+```yaml
+images:
+  ubuntu-rocm-rocjitsu:
+    variants:
+      scratch:
+        suffix: "-scratch"
+        vars:
+          rocjitsu_commit: <sha you are testing>
+```
+
+```bash
+./ci-images-tool.py build ubuntu-rocm-rocjitsu@scratch
+```
+
+Because it silently changes what every tag and build arg resolves to, the tool
+prints `note: images.local.yml applied over images.yml` on stderr whenever it
+is in effect, and `validate` names both files. Delete the file to go back to
+the checked-in spec.
+
+### Environment variables
+
+`images.yml` is checked in and describes what gets built; `.env` is not checked
+in and covers the two things it cannot hold — secrets (registry credentials),
+and settings belonging to the machine rather than the repository: whether this
+host has `/dev/kvm`, and the knobs `compose` and `entrypoint.sh` read when a
+container *runs* (`SSH_PORT`, `VCPUS`, `VMEM`, `VFIO_USER_SOCKET`), which are
+not build inputs at all.
+
+Copy `env.example` to get started. Pinned versions are not duplicated there,
+and neither are values `images.yml` already owns: entries are left blank
+because an empty value means "unset", so the `images.yml` default applies.
 
 Common configuration variables:
 
@@ -287,9 +367,9 @@ The `ci-images-tool.py` CLI also supports:
 - Automatically reads `.env` from script directory, current
   directory, or `/etc/batesste-ci-images/.env` (in order)
 
-Image-specific variables are documented in each image's directory. For
-example, the `ubuntu-qemu-libvfio-user` image may use variables like
-`QEMU_COMMIT`, `VM_NAME`, `USERNAME`, etc.
+Image-specific variables are documented in each image's directory and declared
+in `images.yml`. For example, the `ubuntu-qemu-libvfio-user` image may use
+variables like `QEMU_COMMIT`, `VM_NAME`, `USERNAME`, etc.
 
 ### Image Tags
 
@@ -304,10 +384,11 @@ are told apart without pulling them. The payload half is the *variant*:
 | `ubuntu-rocm-ernic` | `ernic.<sha>-vfu.<sha>` |
 | `ubuntu-rocm-rocjitsu` | `rocjitsu.<sha>` |
 | `ubuntu-qemu-libvfio-user` | `qemu11.1.1-vfu.<sha>` |
-| `ubuntu-kernel-build` | none |
+| `ubuntu-kernel-build` | `ubuntu24.04` |
 
 `<sha>` is the pinned upstream commit abbreviated to seven characters;
-`vfu` is libvfio-user, which both of those images link against.
+`vfu` is libvfio-user, which both of those images link against. The variants
+are templates in `images.yml`, so they follow the pins automatically.
 
 Releasing git tag `v1.1.0` publishes `ubuntu-cuda-rocm` as:
 
@@ -340,11 +421,51 @@ duplicating the logic:
 ./ci-images-tool.py labels ubuntu-cuda-rocm --tag 1.1.0
 ```
 
+### Image Variants
+
+One Dockerfile can publish more than one image. A *variant* is the same
+Dockerfile built with some vars overlaid — typically a different upstream ref —
+and each variant gets its own repository, named by suffixing the image
+directory, so it keeps its own `latest` and its own rolling aliases instead of
+racing the default build for them.
+
+| Target | Repository |
+| --- | --- |
+| `ubuntu-rocm-rocjitsu` | `…-ubuntu-rocm-rocjitsu` |
+| `ubuntu-rocm-rocjitsu@730bc62` | `…-ubuntu-rocm-rocjitsu-730bc62` |
+| `ubuntu-qemu-libvfio-user` | `…-ubuntu-qemu-libvfio-user` |
+| `ubuntu-qemu-libvfio-user@sbates-fork` | `…-ubuntu-qemu-libvfio-user-sbates-fork` |
+
+Refer to one on the command line as `<image>@<variant>`; every subcommand that
+takes an image takes a target:
+
+```bash
+./ci-images-tool.py targets                   # every target
+./ci-images-tool.py build ubuntu-rocm-rocjitsu@730bc62
+./ci-images-tool.py tags ubuntu-rocm-rocjitsu@730bc62 --tag 1.2.0
+```
+
+Declaring one is an overlay on the image's own entry:
+
+```yaml
+    variants:
+      730bc62:
+        suffix: "-730bc62"
+        vars:
+          rocjitsu_commit: 730bc62d60191337a07da50892538475370cb071
+```
+
+A variant's pins are deliberately immune to environment overrides, and
+`scripts/version-scrub.sh` never touches them: a variant exists precisely to
+sit at a ref of its own, so bumping it to branch HEAD would defeat the point.
+The default target keeps tracking branch HEAD as before.
+
 ### Immutable Builds
 
 For reproducible builds, images may support build arguments or environment
-variables to pin specific versions or commit hashes. See individual image
-documentation for details on how to configure immutable builds.
+variables to pin specific versions or commit hashes; the checked-in pins live
+in `images.yml`. See individual image documentation for details on how to
+configure immutable builds.
 
 ## Automated Daily Rebuilds
 
@@ -535,10 +656,13 @@ To add a new image:
    - Build requirements and arguments
    - Usage examples
    - Configuration options
-5. Update this top-level README to list the new image in the "Available
+5. Add an entry under `images:` in `images.yml` giving at least its `job:`
+   (`bases`, `matrix` or `derived`), its `base:`, and any pinned `vars` with
+   the `build_args` and `variant` they feed. Run `./ci-images-tool.py validate`
+6. Update this top-level README to list the new image in the "Available
    Images" section
-6. The `ci-images-tool.py` CLI will automatically
-   discover and build it
+7. The `ci-images-tool.py` CLI and both CI workflows pick it up from
+   `images.yml` — no workflow change is needed
 
 The image directory name will be used as part of the Docker image tag:
 `{REGISTRY_IMAGE}-{image-directory}:{IMAGE_TAG}`

@@ -17,6 +17,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 ARG ROCJITSU_REPO=https://github.com/ROCm/rocm-systems.git
 ARG ROCJITSU_BRANCH=develop
 ARG ROCJITSU_COMMIT=5e9cc7c57d372c0198fd8decb1fe5ceb07038a2b
+# Which config the vfio-user probe below and the default CMD serve. A build
+# variant pinned to a different upstream ref can point at a renamed or newly
+# added profile from images.yml without editing this file.
+ARG ROCJITSU_CONFIG=gfx1250_mi455x.json
 
 WORKDIR /build
 
@@ -59,6 +63,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
 # transport is actually built against.
 ENV ROCJITSU_CONFIG_DIR=/usr/local/share/rocjitsu/configs
 ENV ROCJITSU_SOCKET_DIR=/run/rocjitsu
+ENV ROCJITSU_CONFIG_PATH=${ROCJITSU_CONFIG_DIR}/${ROCJITSU_CONFIG}
 
 RUN cp /build/rocjitsu-commit.txt \
         /usr/local/share/rocjitsu-commit.txt && \
@@ -85,7 +90,7 @@ RUN cp /build/rocjitsu-commit.txt \
 # The verdict has to be latched inside the loop: libvfio-user unlinks the socket
 # on teardown, so re-testing it after the shutdown would always fail.
 # hadolint ignore=DL3001
-RUN rocjitsu --config "${ROCJITSU_CONFIG_DIR}/gfx1250_mi455x.json" \
+RUN rocjitsu --config "${ROCJITSU_CONFIG_PATH}" \
              --vfio-socket /tmp/probe.sock > /tmp/probe.log 2>&1 & \
     probe_pid=$!; \
     served=0; \
@@ -114,6 +119,8 @@ RUN rm -rf /build/rocm-systems /tmp/deps
 
 ENV PATH=/usr/local/bin:${PATH}
 
-CMD ["rocjitsu", \
-     "--config", "/usr/local/share/rocjitsu/configs/gfx1250_mi455x.json", \
-     "--vfio-socket", "/run/rocjitsu/rocjitsu.sock"]
+# sh -c so ROCJITSU_CONFIG_PATH expands; exec so rocjitsu still ends up as PID 1
+# and libvfio-user gets the SIGTERM that unlinks its socket on teardown.
+CMD ["sh", "-c", \
+     "exec rocjitsu --config \"${ROCJITSU_CONFIG_PATH}\" \
+      --vfio-socket \"${ROCJITSU_SOCKET_DIR}/rocjitsu.sock\""]
