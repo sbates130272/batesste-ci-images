@@ -106,6 +106,33 @@ images:
       "{ns}.rocm.stream": "{rocm_stream}"
       "{ns}.fio.commit": "{fio_commit}"
 
+  ubuntu-rocm-nixl:
+    job: derived
+    base: ubuntu-cuda-rocm
+    vars:
+      nixl_repo: https://github.com/ai-dynamo/nixl.git
+      nixl_commit: 6c352ce2e6396d5f7179e96f5f3bd4eac88b30c4
+      # UCX is built from source rather than apt: the packaged build has no
+      # ROCm transport, so it cannot register HIP memory.
+      ucx_repo: https://github.com/openucx/ucx.git
+      ucx_commit: 42fc490e469b2f824374357c51227512323d5856
+      etcd_repo: https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git
+      etcd_commit: 7c6e714f188f9576e25e0350cac4181139eec23e
+    build_args:
+      NIXL_REPO: "{nixl_repo}"
+      NIXL_COMMIT: "{nixl_commit}"
+      UCX_REPO: "{ucx_repo}"
+      UCX_COMMIT: "{ucx_commit}"
+      ETCD_REPO: "{etcd_repo}"
+      ETCD_COMMIT: "{etcd_commit}"
+    variant: "nixl.{nixl_commit|short}-ucx.{ucx_commit|short}"
+    labels:
+      "{ns}.rocm.version": "{rocm_version}"
+      "{ns}.cuda.version": "{cuda_version|dots}"
+      "{ns}.rocm.stream": "{rocm_stream}"
+      "{ns}.nixl.commit": "{nixl_commit}"
+      "{ns}.ucx.commit": "{ucx_commit}"
+
   ubuntu-rocm-ernic:
     job: matrix
     base: ubuntu-libvfio-user

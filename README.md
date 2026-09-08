@@ -34,6 +34,8 @@ and pushing of these images.
   upstream commit with both direct-to-GPU storage engines enabled:
   `libhipfile` (AMD hipFile) and `libcufile` (NVIDIA GPUDirect Storage). See
   `ubuntu-cuda-rocm-fio/` for details.
+- **ubuntu-rocm-nixl**: `ubuntu-cuda-rocm` plus UCX, NIXL, and NIXLBench built
+  with ROCm/HIP support for AMD GPUs. See `ubuntu-rocm-nixl/` for details.
 - **ubuntu-rocm-ernic**: Ubuntu 24.04 image with libvfio-user and rocm-ernic
   built from pinned source commits. Designed for RDMA/ERNIC development and
   CI. See `ubuntu-rocm-ernic/` for details.
@@ -86,6 +88,10 @@ batesste-ci-images/
 ├── ubuntu-cuda-rocm-fio/      # fio with libhipfile + libcufile engines
 │   ├── Dockerfile
 │   └── README.md
+├── ubuntu-rocm-nixl/          # NIXL and NIXLBench with ROCm/HIP support
+│   ├── Dockerfile
+│   ├── README.md
+│   └── patches/nixl/
 ├── ubuntu-rocm-ernic/         # libvfio-user + rocm-ernic build environment
 │   └── Dockerfile
 ├── ubuntu-rocm-rocjitsu/      # rocjitsu vfio-user emulated GPU image
@@ -383,6 +389,7 @@ are told apart without pulling them. The payload half is the *variant*:
 | `ubuntu-cuda-rocm-fio` | `rocm7.14-cuda13.3-fio.<sha>` |
 | `ubuntu-rocm-ernic` | `ernic.<sha>-vfu.<sha>` |
 | `ubuntu-rocm-rocjitsu` | `rocjitsu.<sha>` |
+| `ubuntu-rocm-nixl` | `nixl.<sha>-ucx.<sha>` |
 | `ubuntu-qemu-libvfio-user` | `qemu11.1.1-vfu.<sha>` |
 | `ubuntu-kernel-build` | `ubuntu24.04` |
 
