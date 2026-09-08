@@ -767,10 +767,17 @@ jobs:
 
       - name: Run nixlbench help
         if: matrix.target.image == 'ubuntu-rocm-nixl'
+        # gflags exits 1 from every help flag, so the exit status says nothing
+        # about whether the binary works. Assert on the banner instead: it is
+        # printed only once nixlbench has loaded and resolved its shared
+        # libraries, which is the thing this step exists to catch.
         run: |
-          docker run --rm \
+          OUT=$(docker run --rm \
             "batesste-ci-images-${{ matrix.target.scope }}:test" \
-            nixlbench --help
+            nixlbench --help 2>&1 || true)
+          echo "${OUT}"
+          echo "${OUT}" | grep -q "NIXL Benchmark" \
+            || { echo "ERROR: nixlbench printed no help banner"; exit 1; }
 
       - name: Verify pinned NIXL and UCX commits
         if: matrix.target.image == 'ubuntu-rocm-nixl'
