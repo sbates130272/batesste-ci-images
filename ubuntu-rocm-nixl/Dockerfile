@@ -29,6 +29,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     libunwind-dev \
     meson \
     protobuf-compiler \
+    pybind11-dev \
     python3-dev \
     python3-pip \
     rdma-core \
@@ -142,10 +143,38 @@ RUN git init /build/etcd-cpp-apiv3 && \
     cmake --install /build/etcd-cpp-apiv3/build && \
     ldconfig
 
+ARG LIBFABRIC_REPO=https://github.com/ofiwg/libfabric.git
+ARG LIBFABRIC_TAG=v1.21.0
+
+# libfabric is what makes the ROCm support in this image NIXL's own rather than
+# just UCX's: NIXL consumes rocm_dep and hipify only under src/utils/libfabric
+# and src/plugins/libfabric, so without libfabric nothing in NIXL links HIP.
+# Providers are trimmed to match upstream's ROCm image.
+RUN set -eux; \
+    git clone --depth 1 --branch "${LIBFABRIC_TAG}" "${LIBFABRIC_REPO}" \
+        /build/libfabric; \
+    cd /build/libfabric; \
+    ./autogen.sh; \
+    ./configure \
+        --prefix=/usr/local \
+        --disable-verbs \
+        --disable-psm3 \
+        --disable-opx \
+        --disable-usnic \
+        --disable-rstream \
+        --enable-efa; \
+    make -j"$(nproc)"; \
+    make install; \
+    ldconfig
+
 # Keep this directory in the image context so local patches can be added
 # without changing the source checkout or the build command.
 COPY ubuntu-rocm-nixl/patches/nixl /build/patches/nixl
 
+# ROCm's bin goes on PATH because NIXL translates the libfabric plugin's CUDA
+# sources to HIP with find_program('hipify-perl'), which searches PATH only.
+# The base image ships it under the ROCm prefix but does not put that on PATH.
+#
 # CUDA_HOME is pointed at nothing on purpose. The base image carries CUDA
 # headers and libraries but no nvcc, and NIXL's meson falls back to probing
 # /usr/local/cuda, then calls add_languages('CUDA') on whatever it finds --
@@ -158,6 +187,7 @@ RUN set -eux; \
     fi; \
     ROCM_PATH="$(cat /etc/rocm-path)"; \
     export CUDA_HOME=/nonexistent CUDA_PATH=/nonexistent; \
+    PATH="${ROCM_PATH}/bin:${PATH}"; export PATH; \
     meson setup /build/nixl/build /build/nixl \
         --prefix=/usr/local/nixl \
         --buildtype=release \
@@ -167,7 +197,10 @@ RUN set -eux; \
         -Dbuild_nixl_ep=false \
         -Drocm_path="${ROCM_PATH}" \
         -Dwheel_variant=rocm \
-        -Ducx_path=/usr/local; \
+        -Ducx_path=/usr/local \
+        -Dlibfabric_path=/usr/local \
+        -Detcd_inc_path=/usr/local/include \
+        -Detcd_lib_path=/usr/local/lib; \
     meson compile -C /build/nixl/build; \
     meson install -C /build/nixl/build
 
@@ -180,13 +213,15 @@ RUN set -eux; \
         -Ducx_path=/usr/local \
         -Drocm_path="$(cat /etc/rocm-path)" \
         -Duse_rocm=true \
-        -Dbuild_raw_cli=false; \
+        -Dbuild_raw_cli=false \
+        -Detcd_inc_path=/usr/local/include \
+        -Detcd_lib_path=/usr/local/lib; \
     meson compile -C /build/nixl/benchmark/nixlbench/build; \
     meson install -C /build/nixl/benchmark/nixlbench/build; \
     cp /build/ucx-commit.txt /usr/local/share/ucx-commit.txt; \
     cp /build/nixl-commit.txt /usr/local/share/nixl-commit.txt; \
     rm -rf /build/ucx /build/nixl /build/etcd-cpp-apiv3 /build/abseil-cpp \
-        /build/grpc /build/patches
+        /build/grpc /build/libfabric /build/patches
 
 ENV PATH=/usr/local/bin:/usr/local/nixl/bin:${PATH}
 ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/nixl/lib:${LD_LIBRARY_PATH}

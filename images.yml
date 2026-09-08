@@ -125,6 +125,10 @@ images:
       absl_tag: lts_2025_08_14
       grpc_repo: https://github.com/grpc/grpc.git
       grpc_tag: v1.73.0
+      # NIXL only uses HIP in its libfabric plugin, so libfabric is what makes
+      # the ROCm support here NIXL's own and not just UCX's.
+      libfabric_repo: https://github.com/ofiwg/libfabric.git
+      libfabric_tag: v1.21.0
     build_args:
       NIXL_REPO: "{nixl_repo}"
       NIXL_COMMIT: "{nixl_commit}"
@@ -136,6 +140,8 @@ images:
       ABSL_TAG: "{absl_tag}"
       GRPC_REPO: "{grpc_repo}"
       GRPC_TAG: "{grpc_tag}"
+      LIBFABRIC_REPO: "{libfabric_repo}"
+      LIBFABRIC_TAG: "{libfabric_tag}"
     variant: "nixl.{nixl_commit|short}-ucx.{ucx_commit|short}"
     labels:
       "{ns}.rocm.version": "{rocm_version}"
