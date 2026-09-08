@@ -36,6 +36,23 @@ jobs:
       - name: Run ruff format check
         run: ruff format --check .
 
+  images-config:
+    name: Image Config Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install tool dependencies
+        run: pip install -r requirements.txt
+      # Every target must render: a typo in a template or a variant pinning a
+      # var no image declares fails here rather than mid-release.
+      - name: Validate images.yml
+        run: ./ci-images-tool.py validate
+
   readme-structure:
     name: README Project Structure
     runs-on: ubuntu-latest

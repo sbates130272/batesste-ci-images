@@ -5,12 +5,16 @@ ci-images-tool.py
 Build, push, inspect, and query OCI registry status for
 the batesste-ci-images Docker image collection.
 
-Replaces build-and-push.sh with a richer CLI.
+Everything about what gets built -- the pins, the build args, the tag variant,
+the OCI labels, the base each image layers on, and the variants published from
+the same Dockerfile -- is declared in images.yml. This file is the engine that
+reads it; adding an image needs a Dockerfile and a YAML entry, not a code change.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -21,53 +25,26 @@ from pathlib import Path
 
 import docker
 import requests
+import yaml
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
 console = Console()
+# Notices that must not land in the plain stdout that `tags`, `labels`,
+# `build-args`, `config --get` and `targets --json` are consumed from.
+err_console = Console(stderr=True)
+
+SPEC_FILE = "images.yml"
+OVERLAY_FILE = "images.local.yml"
+BASE_IMAGE_DIR = "ubuntu-base"
 
 DEFAULT_UBUNTU_VERSION = "24.04"
-DEFAULT_QEMU_REPO = "https://gitlab.com/qemu-project/qemu.git"
-DEFAULT_QEMU_COMMIT = "v11.1.1"
-DEFAULT_LIBVFIO_USER_COMMIT = "323f4cb6cddc3713fb7aebe44436f28b28b5413a"
-DEFAULT_QEMU_MINIMAL_REPO = "https://github.com/sbates130272/qemu-minimal.git"
-DEFAULT_QEMU_MINIMAL_COMMIT = "225a81766b87ad2adb4e93d71bb8ed5e4e996466"
-DEFAULT_KVM = True
 DEFAULT_REGISTRY = "docker.io"
+DEFAULT_REGISTRY_IMAGE = "batesste-ci-images"
 DEFAULT_IMAGE_TAG = "latest"
-DEFAULT_USERNAME = "batesste"
-DEFAULT_PASSWORD = "changeme"
-DEFAULT_RELEASE = "noble"
-DEFAULT_ARCH = "amd64"
-DEFAULT_CUDA_VERSION = "13-3"
-DEFAULT_ROCM_VERSION = "7.14"
-DEFAULT_ROCM_STREAM = "therock"
-DEFAULT_ROCM_ERNIC_COMMIT = "e3ef00c2a0c1ba1df95e6cbbe9362c2a1ad1d2fb"
-DEFAULT_ROCM_ROCJITSU_REPO = "https://github.com/ROCm/rocm-systems.git"
-DEFAULT_ROCM_ROCJITSU_BRANCH = "develop"
-DEFAULT_ROCM_ROCJITSU_COMMIT = "5e9cc7c57d372c0198fd8decb1fe5ceb07038a2b"
-DEFAULT_FIO_REPO = "https://github.com/axboe/fio.git"
-DEFAULT_FIO_COMMIT = "975ea1856fee9f4c0f01f6f19ba3c61ce24f9bc8"
-FIO_IMAGE_DIR = "ubuntu-cuda-rocm-fio"
-FIO_BASE_IMAGE_DIR = "ubuntu-cuda-rocm"
-
-BASE_IMAGE_DIR = "ubuntu-base"
-VFU_IMAGE_DIR = "ubuntu-libvfio-user"
-
-# Which image each image is layered on. Everything not listed here builds
-# straight from a public upstream tag. Ordering used to fall out of the
-# alphabetical sort in discover_images(); state it instead, so adding an
-# image cannot silently reorder a base after its dependant.
-IMAGE_BASES = {
-    "ubuntu-cuda-rocm": BASE_IMAGE_DIR,
-    "ubuntu-kernel-build": BASE_IMAGE_DIR,
-    "ubuntu-rocm-rocjitsu": BASE_IMAGE_DIR,
-    VFU_IMAGE_DIR: BASE_IMAGE_DIR,
-    "ubuntu-qemu-libvfio-user": VFU_IMAGE_DIR,
-    "ubuntu-rocm-ernic": VFU_IMAGE_DIR,
-    FIO_IMAGE_DIR: FIO_BASE_IMAGE_DIR,
-}
+DEFAULT_LABEL_NS = "io.batesste.ci-images"
+DEFAULT_KVM = True
 
 _SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 _VERSION_RE = re.compile(r"^\d+(\.\d+)*$")
@@ -101,46 +78,225 @@ def resolve_image_tag(raw: str | None = None) -> str:
     return tag
 
 
+# ── template rendering ─────────────────────────────────
+
+
+def _sanitise(value: str) -> str:
+    """Reduce *value* to the OCI tag charset."""
+    return re.sub(r"[^a-z0-9._]+", "-", value.strip().lower()).strip("-._")
+
+
+def _ver(value: str) -> str:
+    """Normalise an upstream version into a tag fragment.
+
+    Strips the git-tag ``v`` prefix: ``v11.1.1`` -> ``11.1.1``.
+    """
+    return _sanitise(value.strip().lower().removeprefix("v"))
+
+
+def _short(commit: str) -> str:
+    """Abbreviate a pinned ref.
+
+    Full SHAs shrink to 7 chars; a branch keeps only its last path segment, so
+    ``dev/stephen/pci-mmio-bridge-submit`` becomes ``pci-mmio-bridge-submit``.
+    """
+    c = commit.strip().lower()
+    if _SHA_RE.match(c):
+        return c[:7]
+    return _sanitise(c.rsplit("/", 1)[-1])
+
+
+def _dots(value: str) -> str:
+    """CUDA's apt package form to the way NVIDIA versions it: 13-3 -> 13.3."""
+    return value.replace("-", ".")
+
+
+FILTERS = {
+    "short": _short,
+    "ver": _ver,
+    "dots": _dots,
+    "sanitise": _sanitise,
+}
+
+_TEMPLATE_RE = re.compile(r"\{([a-z_][a-z0-9_]*)((?:\|[a-z]+)*)\}")
+
+
+def template_vars(template: str) -> set[str]:
+    """Every var name a template references."""
+    return {m.group(1) for m in _TEMPLATE_RE.finditer(template)}
+
+
+def render(template: str, values: dict[str, str], where: str) -> str:
+    """Interpolate ``{var}`` and ``{var|filter|filter}`` against *values*.
+
+    *where* names the YAML site, so an unresolvable var reports where it came
+    from rather than just what it was.
+    """
+
+    def sub(match: re.Match[str]) -> str:
+        name, filters = match.group(1), match.group(2)
+        if name not in values:
+            console.print(f"[red]Error:[/] {where}: unknown var '{name}'")
+            sys.exit(1)
+        out = values[name]
+        for f in filter(None, filters.split("|")):
+            fn = FILTERS.get(f)
+            if fn is None:
+                console.print(f"[red]Error:[/] {where}: unknown filter '{f}'")
+                sys.exit(1)
+            out = fn(out)
+        return out
+
+    return _TEMPLATE_RE.sub(sub, template)
+
+
+# ── spec ───────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Target:
+    """An image directory plus an optional variant of it.
+
+    The variant is what lets one Dockerfile publish more than one image: the
+    same build context with overlaid vars, pushed to its own suffixed
+    repository so each keeps its own ``latest``.
+    """
+
+    image: str
+    variant: str = ""
+
+    @property
+    def key(self) -> str:
+        """Canonical CLI name: ``ubuntu-rocm-rocjitsu@730bc62``."""
+        return f"{self.image}@{self.variant}" if self.variant else self.image
+
+    def __str__(self) -> str:
+        return self.key
+
+
+@dataclass
+class Spec:
+    """Parsed images.yml."""
+
+    defaults: dict
+    images: dict
+    workdir: Path
+    overlay: Path | None = None
+
+    @property
+    def label_ns(self) -> str:
+        return self.defaults.get("label_namespace", DEFAULT_LABEL_NS)
+
+    def image_spec(self, image: str) -> dict:
+        spec = self.images.get(image)
+        if spec is None:
+            console.print(f"[red]Error:[/] {SPEC_FILE} has no entry for '{image}'")
+            sys.exit(1)
+        return spec
+
+    def variant_spec(self, target: Target) -> dict:
+        if not target.variant:
+            return {}
+        variants = self.image_spec(target.image).get("variants") or {}
+        spec = variants.get(target.variant)
+        if spec is None:
+            console.print(
+                f"[red]Error:[/] {target.image} has no variant '{target.variant}'"
+            )
+            sys.exit(1)
+        return spec
+
+    def base_chain(self, image: str) -> list[str]:
+        """*image* and every image it layers on, base first."""
+        chain: list[str] = []
+        seen: set[str] = set()
+        cur = image
+        while cur and cur not in seen:
+            seen.add(cur)
+            chain.append(cur)
+            cur = self.images.get(cur, {}).get("base", "")
+        chain.reverse()
+        return chain
+
+
+def _read_yaml(path: Path) -> dict:
+    try:
+        return yaml.safe_load(path.read_text()) or {}
+    except OSError as exc:
+        console.print(f"[red]Error:[/] cannot read {path}: {exc}")
+        sys.exit(1)
+    except yaml.YAMLError as exc:
+        console.print(f"[red]Error:[/] {path} is not valid YAML: {exc}")
+        sys.exit(1)
+
+
+def deep_merge(base: dict, over: dict) -> dict:
+    """*over* laid on *base*: dicts merge key by key, anything else replaces.
+
+    Replacing rather than merging lists is what makes an overlay predictable --
+    a list in the overlay is the whole new value, not an unordered addition to
+    whatever was there.
+    """
+
+    merged = dict(base)
+    for key, value in over.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def load_spec(workdir: Path) -> Spec:
+    data = _read_yaml(workdir / SPEC_FILE)
+
+    # An optional, gitignored scratch file. It can reach anything the spec can,
+    # including a variant's pins -- unlike an environment override, writing it
+    # is deliberate. It is never read in CI, so a published image always
+    # matches what is checked in.
+    overlay = workdir / OVERLAY_FILE
+    applied = None
+    if overlay.is_file():
+        data = deep_merge(data, _read_yaml(overlay))
+        applied = overlay
+        # Loud, because it silently changes what every tag and build arg
+        # resolves to; on stderr, because callers parse stdout.
+        err_console.print(f"[yellow]note:[/] {OVERLAY_FILE} applied over {SPEC_FILE}")
+
+    return Spec(
+        defaults=data.get("defaults") or {},
+        images=data.get("images") or {},
+        workdir=workdir,
+        overlay=applied,
+    )
+
+
 # ── configuration ──────────────────────────────────────
 
 
 @dataclass
 class Config:
-    """Centralised configuration built from env + CLI."""
+    """Global settings: everything not owned by images.yml.
 
+    The pins live in the spec; what is left here is machine-local -- where to
+    push, who to push as, and what this host can accelerate.
+    """
+
+    spec: Spec
     image_tag: str = DEFAULT_IMAGE_TAG
     registry: str = DEFAULT_REGISTRY
-    registry_image: str = ""
+    registry_image: str = DEFAULT_REGISTRY_IMAGE
     registry_username: str = ""
     registry_password: str = ""
     workdir: Path = field(default_factory=Path.cwd)
 
     # The Ubuntu release ubuntu-base is built FROM, read off its Dockerfile.
-    # Distinct from ``release``, which names the cloud image the QEMU VM guest
-    # is built from.
+    # Distinct from the ``release`` var, which names the cloud image the QEMU
+    # VM guest is built from.
     ubuntu_version: str = DEFAULT_UBUNTU_VERSION
 
-    qemu_repo: str = DEFAULT_QEMU_REPO
-    qemu_commit: str = DEFAULT_QEMU_COMMIT
-    libvfio_user_commit: str = DEFAULT_LIBVFIO_USER_COMMIT
-    qemu_minimal_repo: str = DEFAULT_QEMU_MINIMAL_REPO
-    qemu_minimal_commit: str = DEFAULT_QEMU_MINIMAL_COMMIT
     kvm: bool = DEFAULT_KVM
-
-    username: str = DEFAULT_USERNAME
-    vm_name: str = ""
-    password: str = DEFAULT_PASSWORD
-    release: str = DEFAULT_RELEASE
-    arch: str = DEFAULT_ARCH
-    cuda_version: str = DEFAULT_CUDA_VERSION
-    rocm_version: str = DEFAULT_ROCM_VERSION
-    rocm_stream: str = DEFAULT_ROCM_STREAM
-    rocm_ernic_commit: str = DEFAULT_ROCM_ERNIC_COMMIT
-    rocm_rocjitsu_repo: str = DEFAULT_ROCM_ROCJITSU_REPO
-    rocm_rocjitsu_branch: str = DEFAULT_ROCM_ROCJITSU_BRANCH
-    rocm_rocjitsu_commit: str = DEFAULT_ROCM_ROCJITSU_COMMIT
-    fio_repo: str = DEFAULT_FIO_REPO
-    fio_commit: str = DEFAULT_FIO_COMMIT
+    # Retained for compatibility: FIO_BASE_IMAGE predates BASE_IMAGE_FOR_*.
     fio_base_image: str = ""
 
 
@@ -178,7 +334,7 @@ _FROM_UBUNTU_RE = re.compile(r"^FROM\s+ubuntu:(\S+)", re.IGNORECASE | re.MULTILI
 def _ubuntu_version_from_base(workdir: Path) -> str:
     """The Ubuntu release ``ubuntu-base`` is built FROM.
 
-    Parsed out of the Dockerfile rather than pushed in as a build arg. The
+    Parsed out of the Dockerfile rather than declared in images.yml. The
     FROM line is what actually decides it, so reading it keeps one source of
     truth without making the first instruction of the base image depend on a
     variable -- which would invalidate every layer below it, in every image,
@@ -217,7 +373,7 @@ def load_config(
     password_file: str | None = None,
 ) -> Config:
     """Load .env then populate a Config from the
-    environment, applying defaults."""
+    environment, applying the spec's defaults."""
 
     script_dir = Path(__file__).resolve().parent
 
@@ -247,58 +403,24 @@ def load_config(
             )
         workdir = script_dir
 
+    spec = load_spec(workdir)
+    d = spec.defaults
+
     cfg = Config(
-        image_tag=resolve_image_tag(os.environ.get("IMAGE_TAG")),
-        registry=os.environ.get("REGISTRY", DEFAULT_REGISTRY),
-        registry_image=os.environ.get("REGISTRY_IMAGE", ""),
+        spec=spec,
+        image_tag=resolve_image_tag(
+            os.environ.get("IMAGE_TAG", d.get("image_tag", DEFAULT_IMAGE_TAG))
+        ),
+        registry=_env_or_default("REGISTRY", d.get("registry", DEFAULT_REGISTRY)),
+        registry_image=_env_or_default(
+            "REGISTRY_IMAGE",
+            d.get("registry_image", DEFAULT_REGISTRY_IMAGE),
+        ),
         registry_username=os.environ.get("REGISTRY_USERNAME", ""),
         registry_password=os.environ.get("REGISTRY_PASSWORD", ""),
         workdir=workdir,
         ubuntu_version=_ubuntu_version_from_base(workdir),
-        # _env_or_default, not os.environ.get: the CI matrix sets QEMU_REPO for
-        # every job and leaves it empty for all but the fork variant, and
-        # env.example ships it blank. An empty value has to mean "unset".
-        qemu_repo=_env_or_default("QEMU_REPO", DEFAULT_QEMU_REPO),
-        qemu_commit=_env_or_default("QEMU_COMMIT", DEFAULT_QEMU_COMMIT),
-        libvfio_user_commit=os.environ.get(
-            "LIBVFIO_USER_COMMIT",
-            DEFAULT_LIBVFIO_USER_COMMIT,
-        ),
-        qemu_minimal_repo=_env_or_default(
-            "QEMU_MINIMAL_REPO",
-            DEFAULT_QEMU_MINIMAL_REPO,
-        ),
-        qemu_minimal_commit=_env_or_default(
-            "QEMU_MINIMAL_COMMIT",
-            DEFAULT_QEMU_MINIMAL_COMMIT,
-        ),
         kvm=_env_bool("KVM", DEFAULT_KVM),
-        username=os.environ.get("USERNAME", DEFAULT_USERNAME),
-        vm_name=os.environ.get("VM_NAME", ""),
-        password=os.environ.get("PASSWORD", DEFAULT_PASSWORD),
-        release=os.environ.get("RELEASE", DEFAULT_RELEASE),
-        arch=os.environ.get("ARCH", DEFAULT_ARCH),
-        cuda_version=_env_or_default("CUDA_VERSION", DEFAULT_CUDA_VERSION),
-        rocm_version=_env_or_default("ROCM_VERSION", DEFAULT_ROCM_VERSION),
-        rocm_stream=os.environ.get("ROCM_STREAM", DEFAULT_ROCM_STREAM),
-        rocm_ernic_commit=_env_or_default(
-            "ROCM_ERNIC_COMMIT",
-            DEFAULT_ROCM_ERNIC_COMMIT,
-        ),
-        rocm_rocjitsu_repo=os.environ.get(
-            "ROCM_ROCJITSU_REPO",
-            DEFAULT_ROCM_ROCJITSU_REPO,
-        ),
-        rocm_rocjitsu_branch=os.environ.get(
-            "ROCM_ROCJITSU_BRANCH",
-            DEFAULT_ROCM_ROCJITSU_BRANCH,
-        ),
-        rocm_rocjitsu_commit=_env_or_default(
-            "ROCM_ROCJITSU_COMMIT",
-            DEFAULT_ROCM_ROCJITSU_COMMIT,
-        ),
-        fio_repo=os.environ.get("FIO_REPO", DEFAULT_FIO_REPO),
-        fio_commit=_env_or_default("FIO_COMMIT", DEFAULT_FIO_COMMIT),
         fio_base_image=os.environ.get("FIO_BASE_IMAGE", ""),
     )
 
@@ -306,157 +428,257 @@ def load_config(
     return cfg
 
 
-# ── image discovery ────────────────────────────────────
+# ── var resolution ─────────────────────────────────────
 
 
-def discover_images(workdir: Path) -> list[str]:
-    """Return sorted list of subdirectory names that
-    contain a Dockerfile."""
-    dirs: list[str] = []
-    for child in sorted(workdir.iterdir()):
-        if child.is_dir() and (child / "Dockerfile").is_file():
-            dirs.append(child.name)
-    return dirs
+def _declaration(name: str, raw: object) -> dict:
+    """Normalise a ``vars:`` entry to ``{value, env, secret}``.
+
+    Scalar form ``name: value`` derives the env override name by upper-casing.
+    """
+    if isinstance(raw, dict):
+        decl = dict(raw)
+    else:
+        decl = {"value": raw}
+    decl.setdefault("value", "")
+    decl.setdefault("env", name.upper())
+    decl.setdefault("secret", False)
+    decl["value"] = "" if decl["value"] is None else str(decl["value"])
+    return decl
 
 
-def order_images(image_dirs: list[str]) -> list[str]:
-    """Sort so every image follows the image it is layered on.
+def declarations(spec: Spec, image: str) -> dict[str, dict]:
+    """Var declarations in scope for *image*: defaults, then the base chain.
 
-    Stable within a dependency level: the input order (alphabetical, from
-    discover_images) is preserved for images that do not depend on each other.
+    An image inherits its base's vars, which is how ubuntu-cuda-rocm-fio names
+    the ROCm and CUDA versions in its own tag variant without repeating the
+    pins that ubuntu-cuda-rocm owns.
     """
 
-    ordered: list[str] = []
-    seen: set[str] = set()
-    known = set(image_dirs)
+    out: dict[str, dict] = {}
+    for name, raw in (spec.defaults.get("vars") or {}).items():
+        out[name] = _declaration(name, raw)
+    for img in spec.base_chain(image):
+        for name, raw in (spec.images.get(img, {}).get("vars") or {}).items():
+            out[name] = _declaration(name, raw)
+    return out
 
-    def visit(name: str, stack: tuple[str, ...] = ()) -> None:
-        if name in seen:
+
+def resolve_vars(
+    cfg: Config,
+    target: Target,
+    extra: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Every var visible to *target*'s templates and build args.
+
+    Precedence: declared default, then the variant's overlay, then the
+    environment -- but the environment may only override a var the variant does
+    *not* pin.  A stray ``QEMU_COMMIT`` in a local .env must not silently
+    rewrite what the -sbates-fork image is built against.
+    """
+
+    spec = cfg.spec
+    decls = declarations(spec, target.image)
+    pinned = spec.variant_spec(target).get("vars") or {}
+
+    values: dict[str, str] = {}
+    for name, decl in decls.items():
+        if name in pinned:
+            values[name] = str(pinned[name])
+        else:
+            values[name] = _env_or_default(decl["env"], decl["value"])
+
+    for name in pinned:
+        if name not in decls:
+            console.print(
+                f"[red]Error:[/] {target.key}: variant pins undeclared var '{name}'"
+            )
+            sys.exit(1)
+
+    values.update(
+        {
+            "ns": spec.label_ns,
+            "ubuntu_version": cfg.ubuntu_version,
+            "image_dir": target.image,
+            "image_tag": cfg.image_tag,
+            "scope": target_scope(cfg, target),
+        }
+    )
+    if extra:
+        values.update(extra)
+    return values
+
+
+def secret_vars(cfg: Config, target: Target) -> set[str]:
+    return {
+        n for n, d in declarations(cfg.spec, target.image).items() if d.get("secret")
+    }
+
+
+# ── targets ────────────────────────────────────────────
+
+
+def target_suffix(cfg: Config, target: Target) -> str:
+    """Appended to the repository name, so a variant gets its own repo."""
+    return str(cfg.spec.variant_spec(target).get("suffix", ""))
+
+
+def target_scope(cfg: Config, target: Target) -> str:
+    """Directory name plus suffix.
+
+    Used for the BuildKit cache ref, CI artifact names and the local ``:test``
+    tag -- anywhere a target needs a flat, filesystem- and tag-safe name.
+    """
+    return f"{target.image}{target_suffix(cfg, target)}"
+
+
+def target_attr(cfg: Config, target: Target, key: str, default: object = "") -> object:
+    """A spec field, with the variant overriding the image."""
+    variant = cfg.spec.variant_spec(target)
+    if key in variant:
+        return variant[key]
+    return cfg.spec.image_spec(target.image).get(key, default)
+
+
+def needs_entitlement(cfg: Config, target: Target) -> str:
+    return str(target_attr(cfg, target, "entitlement", "") or "")
+
+
+def base_target(cfg: Config, target: Target) -> Target | None:
+    """The target this one layers on, or None if it builds from upstream.
+
+    Variants do not stack: a variant layers on its base's *default* target
+    unless it names a ``base_variant``.
+    """
+    base = str(target_attr(cfg, target, "base", "") or "")
+    if not base:
+        return None
+    return Target(base, str(target_attr(cfg, target, "base_variant", "") or ""))
+
+
+def discover_targets(cfg: Config) -> list[Target]:
+    """Every target declared in the spec, in dependency order.
+
+    Stable within a dependency level: the spec's own order is preserved for
+    images that do not depend on each other.
+    """
+
+    flat: list[Target] = []
+    for image in cfg.spec.images:
+        flat.append(Target(image))
+        for variant in cfg.spec.image_spec(image).get("variants") or {}:
+            flat.append(Target(image, variant))
+    return order_targets(cfg, flat)
+
+
+def order_targets(cfg: Config, targets: list[Target]) -> list[Target]:
+    """Sort so every target follows the target it is layered on."""
+
+    ordered: list[Target] = []
+    seen: set[Target] = set()
+    known = set(targets)
+
+    def visit(t: Target, stack: tuple[Target, ...] = ()) -> None:
+        if t in seen:
             return
-        if name in stack:
-            cycle = " -> ".join((*stack, name))
+        if t in stack:
+            cycle = " -> ".join(x.key for x in (*stack, t))
             console.print(f"[red]Error:[/] circular image dependency: {cycle}")
             sys.exit(1)
-        base = IMAGE_BASES.get(name)
+        base = base_target(cfg, t)
         # A base outside the requested set is pulled from the registry
         # instead of being built, so it imposes no ordering.
         if base and base in known:
-            visit(base, (*stack, name))
-        seen.add(name)
-        ordered.append(name)
+            visit(base, (*stack, t))
+        seen.add(t)
+        ordered.append(t)
 
-    for name in image_dirs:
-        visit(name)
+    for t in targets:
+        visit(t)
     return ordered
 
 
-def resolve_image_dirs(workdir: Path, image_arg: str | None) -> list[str]:
-    """If the caller specified a single image name, return
-    it; otherwise discover all, base images first."""
-    if image_arg:
-        dockerfile = workdir / image_arg / "Dockerfile"
-        if not dockerfile.is_file():
-            console.print(f"[red]Error:[/] Dockerfile not found in {image_arg}")
-            sys.exit(1)
-        return [image_arg]
-    return order_images(discover_images(workdir))
+def parse_target(cfg: Config, name: str) -> Target:
+    """``ubuntu-rocm-rocjitsu`` or ``ubuntu-rocm-rocjitsu@730bc62``."""
+    image, _, variant = name.partition("@")
+    target = Target(image, variant)
+    cfg.spec.variant_spec(target)  # validates the variant exists
+    if not (cfg.workdir / image / "Dockerfile").is_file():
+        console.print(f"[red]Error:[/] Dockerfile not found in {image}")
+        sys.exit(1)
+    return target
+
+
+def resolve_targets(cfg: Config, arg: str | None) -> list[Target]:
+    """The named target, or every target in dependency order."""
+    if arg:
+        return [parse_target(cfg, arg)]
+    return discover_targets(cfg)
 
 
 # ── image naming ───────────────────────────────────────
 
 
-def full_image_ref(cfg: Config, image_dir: str) -> str:
-    """Compute the full registry/name portion (without
-    tag) matching the shell script logic."""
-
-    if cfg.registry_image:
-        if "/" in cfg.registry_image:
-            name = f"{cfg.registry_image}-{image_dir}"
-        elif cfg.registry_username:
-            name = f"{cfg.registry_username}/{cfg.registry_image}-{image_dir}"
-        else:
-            name = f"{cfg.registry_image}-{image_dir}"
-    else:
-        if cfg.registry_username:
-            name = f"{cfg.registry_username}/batesste-ci-images-{image_dir}"
-        else:
-            name = f"batesste-ci-images-{image_dir}"
-    return name
+def repo_name(cfg: Config, target: Target) -> str:
+    """The bare repository name, no user prefix and no registry."""
+    return f"{cfg.registry_image.rsplit('/', 1)[-1]}-{target_scope(cfg, target)}"
 
 
-def tagged_ref(cfg: Config, image_dir: str, tag: str | None = None) -> str:
+def full_image_ref(cfg: Config, target: Target) -> str:
+    """The full registry-relative name (without tag)."""
+    name = cfg.registry_image
+    if "/" not in name and cfg.registry_username:
+        name = f"{cfg.registry_username}/{name}"
+    return f"{name}-{target_scope(cfg, target)}"
+
+
+def tagged_ref(cfg: Config, target: Target, tag: str | None = None) -> str:
     """Full registry/name:tag string."""
     t = tag or cfg.image_tag
-    name = full_image_ref(cfg, image_dir)
-    return f"{cfg.registry}/{name}:{t}"
+    return f"{cfg.registry}/{full_image_ref(cfg, target)}:{t}"
 
 
-def _sanitise(value: str) -> str:
-    """Reduce *value* to the OCI tag charset."""
-    return re.sub(r"[^a-z0-9._]+", "-", value.strip().lower()).strip("-._")
+def _qemu_variant(cfg: Config, target: Target, values: dict[str, str]) -> str:
+    """QEMU's tag fragment.
 
-
-def _ver(value: str) -> str:
-    """Normalise an upstream version into a tag fragment.
-
-    Strips the git-tag ``v`` prefix: ``v11.1.1`` -> ``11.1.1``.
+    A release tag becomes ``qemu11.1.1``; a fork branch or SHA is named rather
+    than dressed up as a version.  libvfio-user is in the tag too: this image
+    links against it, so without it two builds differing only in that pin would
+    collide.
     """
-    return _sanitise(value.strip().lower().removeprefix("v"))
+    ref = values["qemu_commit"].strip().lower()
+    vfu = f"-vfu.{_short(values['libvfio_user_commit'])}"
+    if _VERSION_RE.match(ref.removeprefix("v")):
+        return f"qemu{_ver(ref)}{vfu}"
+    return f"qemu.{_short(ref)}{vfu}"
 
 
-def _short(commit: str) -> str:
-    """Abbreviate a pinned ref.
-
-    Full SHAs shrink to 7 chars; a branch keeps only its last path segment, so
-    ``dev/stephen/pci-mmio-bridge-submit`` becomes ``pci-mmio-bridge-submit``.
-    """
-    c = commit.strip().lower()
-    if _SHA_RE.match(c):
-        return c[:7]
-    return _sanitise(c.rsplit("/", 1)[-1])
+VARIANT_HELPERS = {"qemu_variant": _qemu_variant}
 
 
-def image_variant(cfg: Config, image_dir: str) -> str:
+def image_variant(cfg: Config, target: Target) -> str:
     """Tag fragment naming the payload that differentiates this build.
 
-    Derived from the same Config fields that feed the build args, so the tag
-    cannot drift from what was actually built.
-
-    Images that add no pinned payload of their own are differentiated by the
-    Ubuntu release instead, which is otherwise the only thing that can change
-    between two of their builds.  The rest leave it out: it is implied by the
-    base they layer on, and the tags are long enough already.
+    Derived from the same vars that feed the build args, so the tag cannot
+    drift from what was actually built.
     """
 
-    if image_dir in {BASE_IMAGE_DIR, "ubuntu-kernel-build"}:
-        return f"ubuntu{_ver(cfg.ubuntu_version)}"
-    if image_dir in {"ubuntu-cuda-rocm", FIO_IMAGE_DIR}:
-        # CUDA_VERSION carries the apt package form (13-3); publish it the way
-        # NVIDIA versions it (13.3).
-        cuda = _ver(cfg.cuda_version.replace("-", "."))
-        variant = f"rocm{_ver(cfg.rocm_version)}-cuda{cuda}"
-        if image_dir == FIO_IMAGE_DIR:
-            variant += f"-fio.{_short(cfg.fio_commit)}"
-        return variant
-    # Both images below link against libvfio-user, so it belongs in the tag:
-    # without it two builds differing only in that pin would collide.
-    vfu = f"-vfu.{_short(cfg.libvfio_user_commit)}"
-    if image_dir == VFU_IMAGE_DIR:
-        return f"vfu.{_short(cfg.libvfio_user_commit)}"
-    if image_dir == "ubuntu-rocm-ernic":
-        return f"ernic.{_short(cfg.rocm_ernic_commit)}{vfu}"
-    if image_dir == "ubuntu-rocm-rocjitsu":
-        return f"rocjitsu.{_short(cfg.rocm_rocjitsu_commit)}"
-    if image_dir == "ubuntu-qemu-libvfio-user":
-        ref = cfg.qemu_commit.strip().lower()
-        if _VERSION_RE.match(ref.removeprefix("v")):
-            return f"qemu{_ver(ref)}{vfu}"
-        # A fork branch or SHA: name it rather than dress it up as a version.
-        return f"qemu.{_short(ref)}{vfu}"
-    return ""
+    template = str(target_attr(cfg, target, "variant", "") or "")
+    if not template:
+        return ""
+    values = resolve_vars(cfg, target)
+    if template.startswith("!"):
+        helper = VARIANT_HELPERS.get(template[1:])
+        if helper is None:
+            console.print(
+                f"[red]Error:[/] {target.key}: unknown variant helper '{template[1:]}'"
+            )
+            sys.exit(1)
+        return helper(cfg, target, values)
+    return render(template, values, f"{target.key} variant")
 
 
-def tag_set(cfg: Config, image_dir: str, base_tag: str | None = None) -> list[str]:
+def tag_set(cfg: Config, target: Target, base_tag: str | None = None) -> list[str]:
     """Every tag this image should be published under, primary first.
 
     For ``1.1.0`` and variant ``rocm7.14-cuda13.3`` that is::
@@ -470,7 +692,7 @@ def tag_set(cfg: Config, image_dir: str, base_tag: str | None = None) -> list[st
     """
 
     base = (base_tag or cfg.image_tag).strip()
-    variant = image_variant(cfg, image_dir)
+    variant = image_variant(cfg, target)
     semver = _SEMVER_RE.match(base)
     minor = f"{semver.group(1)}.{semver.group(2)}" if semver else ""
 
@@ -491,47 +713,48 @@ def tag_set(cfg: Config, image_dir: str, base_tag: str | None = None) -> list[st
     return tags
 
 
-def primary_ref(cfg: Config, image_dir: str) -> str:
+def primary_ref(cfg: Config, target: Target) -> str:
     """The most specific published ref -- what CI should pin."""
-    return tagged_ref(cfg, image_dir, tag=tag_set(cfg, image_dir)[0])
+    return tagged_ref(cfg, target, tag=tag_set(cfg, target)[0])
 
 
-def base_image_for(cfg: Config, image_dir: str) -> str:
-    """The BASE_IMAGE build arg for a layered image, or "" if it has no base.
+def _env_key(name: str) -> str:
+    """ubuntu-rocm-ernic -> UBUNTU_ROCM_ERNIC"""
+    return name.replace("-", "_").upper()
 
-    Defaults to this run's own tag for the base: ``resolve_image_dirs``
-    orders bases first, so a full build produces and ``--load``s the base
-    before the dependant needs it.
+
+def base_image_for(cfg: Config, target: Target) -> str:
+    """The BASE_IMAGE build arg for a layered target, or "" if it has no base.
+
+    Defaults to this run's own tag for the base: ``discover_targets`` orders
+    bases first, so a full build produces and ``--load``s the base before the
+    dependant needs it.
     """
-    base_dir = IMAGE_BASES.get(image_dir)
-    if not base_dir:
+    base = base_target(cfg, target)
+    if not base:
         return ""
     # Two override forms: one keyed by the dependant, one keyed by the base.
     # CI uses the latter to point every dependant at a scratch registry copy
     # of a base built earlier in the same run, with a single env var.
-    override = os.environ.get(f"BASE_IMAGE_{_env_key(image_dir)}", "")
+    override = os.environ.get(f"BASE_IMAGE_{_env_key(target_scope(cfg, target))}", "")
     if not override:
-        override = os.environ.get(f"BASE_IMAGE_FOR_{_env_key(base_dir)}", "")
-    if not override and image_dir == FIO_IMAGE_DIR:
-        # Retained for compatibility: FIO_BASE_IMAGE predates the generic form.
+        override = os.environ.get(f"BASE_IMAGE_{_env_key(target.image)}", "")
+    if not override:
+        override = os.environ.get(f"BASE_IMAGE_FOR_{_env_key(base.image)}", "")
+    if not override and target.image == "ubuntu-cuda-rocm-fio":
         override = cfg.fio_base_image
     if override:
         return override
-    return primary_ref(cfg, base_dir)
-
-
-def _env_key(image_dir: str) -> str:
-    """ubuntu-rocm-ernic -> UBUNTU_ROCM_ERNIC"""
-    return image_dir.replace("-", "_").upper()
+    return primary_ref(cfg, base)
 
 
 def build_args_for(
     cfg: Config,
-    image_dir: str,
+    target: Target,
     kvm_build: bool = False,
     include_secrets: bool = True,
 ) -> list[str]:
-    """Every ``--build-arg`` this image needs, as ``KEY=value`` strings.
+    """Every ``--build-arg`` this target needs, as ``KEY=value`` strings.
 
     Single source of truth for the pins: both the local build and the CI
     workflows read them from here, so a version cannot be bumped in one
@@ -542,55 +765,55 @@ def build_args_for(
     """
 
     args: list[str] = []
-    base = base_image_for(cfg, image_dir)
+    base = base_image_for(cfg, target)
     if base:
         args.append(f"BASE_IMAGE={base}")
 
-    if image_dir == BASE_IMAGE_DIR:
-        return args
-    if image_dir == VFU_IMAGE_DIR:
-        args.append(f"LIBVFIO_USER_COMMIT={cfg.libvfio_user_commit}")
-        return args
-    if image_dir == "ubuntu-cuda-rocm":
-        args += [
-            f"CUDA_VERSION={cfg.cuda_version}",
-            f"ROCM_VERSION={cfg.rocm_version}",
-            f"ROCM_STREAM={cfg.rocm_stream}",
-        ]
-        return args
-    if image_dir == "ubuntu-qemu-libvfio-user":
-        args += [
-            f"QEMU_REPO={cfg.qemu_repo}",
-            f"QEMU_COMMIT={cfg.qemu_commit}",
-            f"QEMU_MINIMAL_REPO={cfg.qemu_minimal_repo}",
-            f"QEMU_MINIMAL_COMMIT={cfg.qemu_minimal_commit}",
-            f"VM_STAGE={'vm-kvm' if kvm_build else 'vm-tcg'}",
-            f"KVM={'true' if kvm_build else 'false'}",
-            f"USERNAME={cfg.username}",
-            f"VM_NAME={cfg.vm_name}",
-            f"RELEASE={cfg.release}",
-            f"ARCH={cfg.arch}",
-        ]
-        if include_secrets:
-            args.append(f"PASSWORD={cfg.password}")
-        return args
-    if image_dir == "ubuntu-rocm-ernic":
-        args.append(f"ROCM_ERNIC_COMMIT={cfg.rocm_ernic_commit}")
-        return args
-    if image_dir == "ubuntu-rocm-rocjitsu":
-        args += [
-            f"ROCJITSU_REPO={cfg.rocm_rocjitsu_repo}",
-            f"ROCJITSU_BRANCH={cfg.rocm_rocjitsu_branch}",
-            f"ROCJITSU_COMMIT={cfg.rocm_rocjitsu_commit}",
-        ]
-        return args
-    if image_dir == FIO_IMAGE_DIR:
-        args += [
-            f"FIO_REPO={cfg.fio_repo}",
-            f"FIO_COMMIT={cfg.fio_commit}",
-        ]
-        return args
+    values = resolve_vars(
+        cfg,
+        target,
+        extra={
+            "vm_stage": "vm-kvm" if kvm_build else "vm-tcg",
+            "kvm": "true" if kvm_build else "false",
+        },
+    )
+    secrets = secret_vars(cfg, target)
+
+    for key, template in (
+        cfg.spec.image_spec(target.image).get("build_args") or {}
+    ).items():
+        template = str(template)
+        if not include_secrets and template_vars(template) & secrets:
+            continue
+        args.append(f"{key}={render(template, values, f'{target.key} {key}')}")
     return args
+
+
+def image_labels(cfg: Config, target: Target) -> dict[str, str]:
+    """OCI labels describing what went into *target*.
+
+    The variant tag is a summary for humans; these are the same facts in a
+    form a scanner can read without parsing a tag.
+    """
+
+    values = resolve_vars(cfg, target)
+    labels = {
+        "org.opencontainers.image.title": repo_name(cfg, target),
+        f"{cfg.spec.label_ns}.variant": image_variant(cfg, target),
+    }
+    # The canonical published base, not whatever scratch ref this particular
+    # build layered on: CI points BASE_IMAGE at a per-run GHCR tag that will
+    # not exist by the time anyone reads the label.
+    base = base_target(cfg, target)
+    if base:
+        labels["org.opencontainers.image.base.name"] = primary_ref(cfg, base)
+
+    for key, template in (
+        cfg.spec.image_spec(target.image).get("labels") or {}
+    ).items():
+        where = f"{target.key} label"
+        labels[render(str(key), values, where)] = render(str(template), values, where)
+    return {k: v for k, v in labels.items() if v}
 
 
 # ── docker helpers ─────────────────────────────────────
@@ -716,13 +939,13 @@ def has_credentials(cfg: Config) -> bool:
 
 
 def cmd_build(args: argparse.Namespace) -> None:
-    """Build one or all images with docker buildx."""
+    """Build one or all targets with docker buildx."""
 
     cfg = load_config(
         env_file=args.env_file,
         password_file=args.password_file,
     )
-    image_dirs = resolve_image_dirs(cfg.workdir, args.image)
+    targets = resolve_targets(cfg, args.image)
     dry_run: bool = args.dry_run
 
     insecure_ok = True
@@ -745,41 +968,42 @@ def cmd_build(args: argparse.Namespace) -> None:
 
     # A base built earlier in this same run only exists in the local daemon,
     # which the docker-container builder cannot see.
+    selected = set(targets)
     local_bases = {
-        d
-        for d in image_dirs
-        if IMAGE_BASES.get(d) in image_dirs and not args.base_from_registry
+        t
+        for t in targets
+        if base_target(cfg, t) in selected and not args.base_from_registry
     }
 
-    # ubuntu-qemu-libvfio-user is the only image needing an entitlement the
-    # 'default' builder cannot grant, so it is the only one for which being
-    # pushed off the buildx builder actually costs anything. Images are built
-    # in dependency order and each is pushed as soon as it is built, so when
-    # we have credentials its base is already published by the time we get
-    # here: point at that and keep the builder, rather than trading KVM for a
-    # local image reference. Only worth it for this one image -- routing
-    # ubuntu-cuda-rocm-fio the same way would re-pull a 28 GB base for no gain.
+    # The VM image is the only one needing an entitlement the 'default' builder
+    # cannot grant, so it is the only one for which being pushed off the buildx
+    # builder actually costs anything. Targets are built in dependency order and
+    # each is pushed as soon as it is built, so when we have credentials its base
+    # is already published by the time we get here: point at that and keep the
+    # builder, rather than trading KVM for a local image reference. Only worth it
+    # for entitlement-needing images -- routing ubuntu-cuda-rocm-fio the same way
+    # would re-pull a 28 GB base for no gain.
     if has_credentials(cfg) and kvm_build:
-        local_bases.discard("ubuntu-qemu-libvfio-user")
+        local_bases -= {t for t in local_bases if needs_entitlement(cfg, t)}
 
-    if "ubuntu-qemu-libvfio-user" in local_bases and kvm_build:
-        console.print(
-            "[yellow]Warning:[/] ubuntu-libvfio-user is being built in this "
-            "run and no registry credentials are set, so "
-            "ubuntu-qemu-libvfio-user must build on the 'default' builder, "
-            "which cannot grant security.insecure; its VM stage falls back to "
-            "TCG emulation. Pass --base-from-registry to build against the "
-            "published base and keep KVM."
-        )
+    for t in local_bases:
+        if needs_entitlement(cfg, t) and kvm_build:
+            console.print(
+                f"[yellow]Warning:[/] {base_target(cfg, t)} is being built in "
+                f"this run and no registry credentials are set, so {t.key} must "
+                "build on the 'default' builder, which cannot grant "
+                "security.insecure; its VM stage falls back to TCG emulation. "
+                "Pass --base-from-registry to build against the published base "
+                "and keep KVM."
+            )
 
-    for image_dir in image_dirs:
-        refs = [tagged_ref(cfg, image_dir, tag=t) for t in tag_set(cfg, image_dir)]
-        local_base = image_dir in local_bases
-        image_kvm = kvm_build and not (
-            image_dir == "ubuntu-qemu-libvfio-user" and local_base
-        )
+    for target in targets:
+        refs = [tagged_ref(cfg, target, tag=x) for x in tag_set(cfg, target)]
+        local_base = target in local_bases
+        entitlement = needs_entitlement(cfg, target)
+        target_kvm = kvm_build and not (entitlement and local_base)
 
-        build_args = build_args_for(cfg, image_dir, kvm_build=image_kvm)
+        build_args = build_args_for(cfg, target, kvm_build=target_kvm)
         if args.cache_bust:
             build_args.append(f"CACHE_BUST={args.cache_bust}")
 
@@ -793,33 +1017,30 @@ def cmd_build(args: argparse.Namespace) -> None:
         # The vm-kvm stage runs QEMU against /dev/kvm, which only
         # an insecure-entitlement RUN can reach.  vm-tcg does not
         # need (and must not request) the entitlement.
-        if image_dir == "ubuntu-qemu-libvfio-user" and image_kvm:
-            cmd += ["--allow", "security.insecure"]
+        if entitlement and target_kvm:
+            cmd += ["--allow", entitlement]
         for ba in build_args:
             cmd += ["--build-arg", ba]
         if args.no_cache:
             cmd.append("--no-cache")
         for ref in refs:
             cmd += ["--tag", ref]
-        for key, value in image_labels(cfg, image_dir).items():
+        for key, value in image_labels(cfg, target).items():
             cmd += ["--label", f"{key}={value}"]
         cmd += ["--load"]
         cmd += [
             "-f",
-            str(cfg.workdir / image_dir / "Dockerfile"),
+            str(cfg.workdir / target.image / "Dockerfile"),
         ]
         cmd.append(str(cfg.workdir))
 
-        console.rule(f"[bold]Building {image_dir}[/]")
-        _print_build_summary(cfg, image_dir, args, kvm_build)
+        console.rule(f"[bold]Building {target.key}[/]")
+        _print_build_summary(cfg, target, args, target_kvm)
 
-        # The Dockerfile bind-mounts this dir; buildx fails if it
-        # is missing (it holds only gitignored *.img downloads).
-        if image_dir == "ubuntu-qemu-libvfio-user":
-            (cfg.workdir / "common" / "cloud-image-cache").mkdir(
-                parents=True,
-                exist_ok=True,
-            )
+        # Declared in images.yml: the Dockerfile bind-mounts these, and
+        # buildx fails if one is missing (they hold gitignored downloads).
+        for rel in target_attr(cfg, target, "context_dirs", []) or []:
+            (cfg.workdir / str(rel)).mkdir(parents=True, exist_ok=True)
 
         if dry_run:
             console.print("[yellow]dry-run:[/] " + " ".join(cmd))
@@ -835,59 +1056,43 @@ def cmd_build(args: argparse.Namespace) -> None:
         else:
             console.print("[dim]Registry credentials not provided, skipping push[/]")
 
-        console.rule(f"[bold green]Build complete: {image_dir}[/]")
+        console.rule(f"[bold green]Build complete: {target.key}[/]")
 
 
 def _print_build_summary(
     cfg: Config,
-    image_dir: str,
+    target: Target,
     args: argparse.Namespace,
     kvm_build: bool = False,
 ) -> None:
     """Pretty-print the build configuration."""
-    tags = tag_set(cfg, image_dir)
+    tags = tag_set(cfg, target)
     table = Table(
         title="Build Configuration",
         show_header=False,
     )
     table.add_column("Key", style="bold")
     table.add_column("Value")
-    table.add_row("Image", tagged_ref(cfg, image_dir, tag=tags[0]))
+    table.add_row("Image", tagged_ref(cfg, target, tag=tags[0]))
     table.add_row("Aliases", ", ".join(tags[1:]) or "-")
-    table.add_row("Directory", image_dir)
-    base = base_image_for(cfg, image_dir)
+    table.add_row("Directory", target.image)
+    if target.variant:
+        table.add_row("Variant", target.variant)
+    base = base_image_for(cfg, target)
     if base:
         table.add_row("Base Image", base)
 
-    if image_dir == BASE_IMAGE_DIR:
-        table.add_row("Ubuntu Version", cfg.ubuntu_version)
-    if image_dir == "ubuntu-cuda-rocm":
-        table.add_row("CUDA Version", cfg.cuda_version)
-        table.add_row("ROCm Version", cfg.rocm_version)
-        table.add_row("ROCm Stream", cfg.rocm_stream)
-    elif image_dir == "ubuntu-rocm-ernic":
-        table.add_row("libvfio-user Commit", cfg.libvfio_user_commit)
-        table.add_row("ROCM_ERNIC Commit", cfg.rocm_ernic_commit)
-    elif image_dir == "ubuntu-rocm-rocjitsu":
-        table.add_row("ROCjitsu Branch", cfg.rocm_rocjitsu_branch)
-        table.add_row("ROCjitsu Commit", cfg.rocm_rocjitsu_commit)
-    elif image_dir == "ubuntu-cuda-rocm-fio":
-        table.add_row("fio Commit", cfg.fio_commit)
-    elif image_dir == VFU_IMAGE_DIR:
-        table.add_row("libvfio-user Commit", cfg.libvfio_user_commit)
-    elif image_dir == "ubuntu-qemu-libvfio-user":
-        table.add_row("QEMU Commit", cfg.qemu_commit)
-        table.add_row("libvfio-user Commit", cfg.libvfio_user_commit)
-        table.add_row(
-            "qemu-minimal Commit",
-            cfg.qemu_minimal_commit if cfg.qemu_minimal_repo else "(VM build disabled)",
-        )
-        table.add_row(
-            "KVM",
-            "true" if kvm_build else "false (TCG emulation)",
-        )
-    elif image_dir == "ubuntu-kernel-build":
-        pass
+    # The pins themselves, straight off the resolved vars: no per-image chain
+    # to keep in step with images.yml.
+    secrets = secret_vars(cfg, target)
+    values = resolve_vars(cfg, target)
+    own = declarations(cfg.spec, target.image)
+    for name in own:
+        if name in secrets:
+            continue
+        table.add_row(name, values[name] or "-")
+    if needs_entitlement(cfg, target):
+        table.add_row("KVM", "true" if kvm_build else "false (TCG emulation)")
 
     if args.cache_bust:
         table.add_row("Cache Bust", args.cache_bust)
@@ -908,58 +1113,143 @@ def cmd_push(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     docker_login(cfg)
-    image_dirs = resolve_image_dirs(cfg.workdir, args.image)
 
-    for image_dir in image_dirs:
-        console.rule(f"[bold]Pushing {image_dir}[/]")
-        for tag in tag_set(cfg, image_dir):
-            ref = tagged_ref(cfg, image_dir, tag=tag)
+    for target in resolve_targets(cfg, args.image):
+        console.rule(f"[bold]Pushing {target.key}[/]")
+        for tag in tag_set(cfg, target):
+            ref = tagged_ref(cfg, target, tag=tag)
             subprocess.run(["docker", "push", ref], check=True)
             console.print(f"[green]Pushed[/] {ref}")
 
 
 def cmd_list(args: argparse.Namespace) -> None:
-    """List all discoverable image directories."""
+    """List every target declared in the spec."""
 
     cfg = load_config(env_file=args.env_file)
-    dirs = discover_images(cfg.workdir)
+    targets = discover_targets(cfg)
 
-    table = Table(title="Discoverable Images")
+    if args.names_only:
+        print("\n".join(t.key for t in targets))
+        return
+
+    table = Table(title="Targets")
     table.add_column("#", style="dim")
-    table.add_column("Directory")
+    table.add_column("Target")
+    table.add_column("Job")
     table.add_column("Variant")
     table.add_column("Full Reference")
 
-    for idx, d in enumerate(dirs, 1):
-        table.add_row(str(idx), d, image_variant(cfg, d) or "-", primary_ref(cfg, d))
+    for idx, t in enumerate(targets, 1):
+        table.add_row(
+            str(idx),
+            t.key,
+            str(target_attr(cfg, t, "job", "-")),
+            image_variant(cfg, t) or "-",
+            primary_ref(cfg, t),
+        )
 
     console.print(table)
 
 
+def cmd_targets(args: argparse.Namespace) -> None:
+    """Emit the CI build matrix.
+
+    Both workflows call this instead of globbing for Dockerfiles and carrying
+    their own exclusion lists, so which job builds what is decided in one place.
+    """
+
+    cfg = load_config(env_file=args.env_file)
+    rows = []
+    for t in discover_targets(cfg):
+        job = str(target_attr(cfg, t, "job", "matrix"))
+        if args.job and job != args.job:
+            continue
+        rows.append(
+            {
+                "key": t.key,
+                "image": t.image,
+                "variant": t.variant,
+                "suffix": target_suffix(cfg, t),
+                "scope": target_scope(cfg, t),
+                "job": job,
+                "artifact": bool(target_attr(cfg, t, "artifact", False)),
+                "entitlement": needs_entitlement(cfg, t),
+            }
+        )
+
+    if args.json:
+        print(json.dumps(rows, separators=(",", ":")))
+        return
+    print("\n".join(r["key"] for r in rows))
+
+
+def cmd_validate(args: argparse.Namespace) -> None:
+    """Check images.yml against the tree, and that everything renders."""
+
+    cfg = load_config(env_file=args.env_file)
+    errors: list[str] = []
+
+    on_disk = {
+        c.name
+        for c in cfg.workdir.iterdir()
+        if c.is_dir() and (c / "Dockerfile").is_file()
+    }
+    declared = set(cfg.spec.images)
+    for missing in sorted(on_disk - declared):
+        errors.append(f"{missing}/Dockerfile exists but {SPEC_FILE} has no entry")
+    for missing in sorted(declared - on_disk):
+        errors.append(
+            f"{SPEC_FILE} declares {missing} but {missing}/Dockerfile is absent"
+        )
+
+    targets = discover_targets(cfg)  # also detects dependency cycles
+
+    scopes: dict[str, str] = {}
+    for t in targets:
+        scope = target_scope(cfg, t)
+        if scope in scopes:
+            errors.append(f"{t.key} and {scopes[scope]} share the repository {scope}")
+        scopes[scope] = t.key
+        # Renders every template; render() exits on an unknown var or filter.
+        image_variant(cfg, t)
+        image_labels(cfg, t)
+        build_args_for(cfg, t)
+        build_args_for(cfg, t, kvm_build=True)
+
+    if errors:
+        for e in errors:
+            console.print(f"[red]Error:[/] {e}")
+        sys.exit(1)
+    source = SPEC_FILE
+    if cfg.spec.overlay:
+        source = f"{SPEC_FILE} + {OVERLAY_FILE}"
+    console.print(f"[green]OK[/] {len(targets)} targets in {source}")
+
+
 def cmd_tags(args: argparse.Namespace) -> None:
-    """Print an image's tag set, one per line, on plain stdout.
+    """Print a target's tag set, one per line, on plain stdout.
 
     Release CI consumes this so the workflow and a local build derive the tags
-    from one implementation; the pinned versions reach it through the same env
-    vars that drive the build args.
+    from one implementation.
     """
 
     cfg = load_config(env_file=args.env_file)
     if args.tag:
         cfg.image_tag = resolve_image_tag(args.tag)
 
-    tags = tag_set(cfg, args.image) + list(args.extra_tag)
+    target = parse_target(cfg, args.image)
+    tags = tag_set(cfg, target) + list(args.extra_tag)
     if args.names_only:
         print("\n".join(dict.fromkeys(tags)))
         return
 
-    name = full_image_ref(cfg, args.image) + args.suffix
+    name = full_image_ref(cfg, target) + args.suffix
     seen = dict.fromkeys(f"{cfg.registry}/{name}:{t}" for t in tags)
     print("\n".join(seen))
 
 
 def cmd_build_args(args: argparse.Namespace) -> None:
-    """Print an image's build args, one ``KEY=value`` per line, on plain stdout.
+    """Print a target's build args, one ``KEY=value`` per line, on plain stdout.
 
     CI feeds this straight into ``docker/build-push-action``'s ``build-args``
     so the pins live in exactly one place.
@@ -973,7 +1263,7 @@ def cmd_build_args(args: argparse.Namespace) -> None:
         "\n".join(
             build_args_for(
                 cfg,
-                args.image,
+                parse_target(cfg, args.image),
                 kvm_build=args.kvm,
                 include_secrets=False,
             )
@@ -981,60 +1271,40 @@ def cmd_build_args(args: argparse.Namespace) -> None:
     )
 
 
-def image_labels(cfg: Config, image_dir: str) -> dict[str, str]:
-    """OCI labels describing what went into *image_dir*.
-
-    The variant tag is a summary for humans; these are the same facts in a
-    form a scanner can read without parsing a tag.
-    """
-
-    ns = "io.batesste.ci-images"
-    labels = {
-        "org.opencontainers.image.title": f"batesste-ci-images-{image_dir}",
-        f"{ns}.variant": image_variant(cfg, image_dir),
-    }
-    if image_dir == BASE_IMAGE_DIR:
-        labels["org.opencontainers.image.base.name"] = (
-            f"docker.io/library/ubuntu:{cfg.ubuntu_version}"
-        )
-        labels[f"{ns}.ubuntu.version"] = cfg.ubuntu_version
-    if image_dir in {"ubuntu-cuda-rocm", FIO_IMAGE_DIR}:
-        labels[f"{ns}.rocm.version"] = cfg.rocm_version
-        # Publish CUDA the way NVIDIA versions it, not in its apt form (13-3).
-        labels[f"{ns}.cuda.version"] = cfg.cuda_version.replace("-", ".")
-        labels[f"{ns}.rocm.stream"] = cfg.rocm_stream
-    if image_dir == FIO_IMAGE_DIR:
-        labels[f"{ns}.fio.commit"] = cfg.fio_commit
-    # The canonical published base, not whatever scratch ref this particular
-    # build layered on: CI points BASE_IMAGE at a per-run GHCR tag that will
-    # not exist by the time anyone reads the label.
-    base_dir = IMAGE_BASES.get(image_dir)
-    if base_dir:
-        labels["org.opencontainers.image.base.name"] = primary_ref(cfg, base_dir)
-    if image_dir == VFU_IMAGE_DIR:
-        labels[f"{ns}.libvfio-user.commit"] = cfg.libvfio_user_commit
-    if image_dir == "ubuntu-rocm-ernic":
-        labels[f"{ns}.ernic.commit"] = cfg.rocm_ernic_commit
-        labels[f"{ns}.libvfio-user.commit"] = cfg.libvfio_user_commit
-    if image_dir == "ubuntu-rocm-rocjitsu":
-        labels[f"{ns}.rocjitsu.branch"] = cfg.rocm_rocjitsu_branch
-        labels[f"{ns}.rocjitsu.commit"] = cfg.rocm_rocjitsu_commit
-    if image_dir == "ubuntu-qemu-libvfio-user":
-        labels[f"{ns}.qemu.repo"] = cfg.qemu_repo
-        labels[f"{ns}.qemu.commit"] = cfg.qemu_commit
-        labels[f"{ns}.libvfio-user.commit"] = cfg.libvfio_user_commit
-    return {k: v for k, v in labels.items() if v}
-
-
 def cmd_labels(args: argparse.Namespace) -> None:
-    """Print an image's OCI labels as ``key=value`` lines on plain stdout."""
+    """Print a target's OCI labels as ``key=value`` lines on plain stdout."""
 
     cfg = load_config(env_file=args.env_file)
     if args.tag:
         cfg.image_tag = resolve_image_tag(args.tag)
 
-    labels = image_labels(cfg, args.image)
+    labels = image_labels(cfg, parse_target(cfg, args.image))
     print("\n".join(f"{k}={v}" for k, v in labels.items()))
+
+
+def cmd_config(args: argparse.Namespace) -> None:
+    """Print a resolved var, or every var, for a target.
+
+    ``--get`` is what scripts/version-scrub.sh uses to read the current pin
+    without grepping the YAML itself.
+    """
+
+    cfg = load_config(env_file=args.env_file)
+    target = parse_target(cfg, args.image)
+    values = resolve_vars(cfg, target)
+    secrets = secret_vars(cfg, target)
+
+    if args.get:
+        if args.get not in values:
+            console.print(f"[red]Error:[/] {target.key} has no var '{args.get}'")
+            sys.exit(1)
+        print(values[args.get])
+        return
+
+    for name in declarations(cfg.spec, target.image):
+        if name in secrets:
+            continue
+        print(f"{name}={values[name]}")
 
 
 def cmd_inspect(args: argparse.Namespace) -> None:
@@ -1044,7 +1314,6 @@ def cmd_inspect(args: argparse.Namespace) -> None:
         env_file=args.env_file,
         password_file=getattr(args, "password_file", None),
     )
-    image_dirs = resolve_image_dirs(cfg.workdir, args.image)
 
     try:
         client = docker.from_env()
@@ -1052,9 +1321,9 @@ def cmd_inspect(args: argparse.Namespace) -> None:
         console.print(f"[red]Error:[/] cannot connect to Docker daemon: {exc}")
         sys.exit(1)
 
-    for image_dir in image_dirs:
-        ref = primary_ref(cfg, image_dir)
-        console.rule(f"[bold]{image_dir}[/]")
+    for target in resolve_targets(cfg, args.image):
+        ref = primary_ref(cfg, target)
+        console.rule(f"[bold]{target.key}[/]")
 
         try:
             img = client.images.get(ref)
@@ -1095,12 +1364,10 @@ def cmd_status(args: argparse.Namespace) -> None:
         env_file=args.env_file,
         password_file=getattr(args, "password_file", None),
     )
-    image_dirs = resolve_image_dirs(cfg.workdir, args.image)
 
-    for image_dir in image_dirs:
-        name = full_image_ref(cfg, image_dir)
-        console.rule(f"[bold]{image_dir}[/]")
-        _query_registry(cfg, name)
+    for target in resolve_targets(cfg, args.image):
+        console.rule(f"[bold]{target.key}[/]")
+        _query_registry(cfg, full_image_ref(cfg, target))
 
 
 def _registry_base_url(registry: str) -> str:
@@ -1216,6 +1483,8 @@ def _query_registry(cfg: Config, repo_name: str) -> None:
 
 # ── argparse ───────────────────────────────────────────
 
+TARGET_HELP = "Target name: <image> or <image>@<variant>"
+
 
 def _add_common_args(
     parser: argparse.ArgumentParser,
@@ -1247,7 +1516,8 @@ def build_parser() -> argparse.ArgumentParser:
         "image",
         nargs="?",
         default=None,
-        help=("Image directory name (builds all if omitted)"),
+        metavar="TARGET",
+        help=f"{TARGET_HELP} (builds all if omitted)",
     )
     p_build.add_argument(
         "--no-cache",
@@ -1289,7 +1559,8 @@ def build_parser() -> argparse.ArgumentParser:
         "image",
         nargs="?",
         default=None,
-        help=("Image directory name (pushes all if omitted)"),
+        metavar="TARGET",
+        help=f"{TARGET_HELP} (pushes all if omitted)",
     )
     p_push.add_argument(
         "--password-file",
@@ -1301,19 +1572,45 @@ def build_parser() -> argparse.ArgumentParser:
     # ── list ──
     p_list = sub.add_parser(
         "list",
-        help="List discoverable image directories",
+        help="List every target declared in images.yml",
+    )
+    p_list.add_argument(
+        "--names-only",
+        action="store_true",
+        help="Print bare target keys, one per line",
     )
     _add_common_args(p_list)
+
+    # ── targets ──
+    p_targets = sub.add_parser(
+        "targets",
+        help="Emit the CI build matrix",
+    )
+    p_targets.add_argument(
+        "--job",
+        metavar="NAME",
+        help="Only targets whose job is NAME (bases, matrix, derived)",
+    )
+    p_targets.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a JSON array for a GitHub Actions matrix",
+    )
+    _add_common_args(p_targets)
+
+    # ── validate ──
+    p_validate = sub.add_parser(
+        "validate",
+        help="Check images.yml against the tree and render every template",
+    )
+    _add_common_args(p_validate)
 
     # ── tags ──
     p_tags = sub.add_parser(
         "tags",
-        help="Print the tags an image should be published under",
+        help="Print the tags a target should be published under",
     )
-    p_tags.add_argument(
-        "image",
-        help="Image directory name",
-    )
+    p_tags.add_argument("image", metavar="TARGET", help=TARGET_HELP)
     p_tags.add_argument(
         "--tag",
         metavar="TAG",
@@ -1326,7 +1623,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--suffix",
         default="",
         metavar="TEXT",
-        help=("Appended to the repository name, not the tag (e.g. -sbates-fork)"),
+        help=(
+            "Extra text appended to the repository name, on top of the "
+            "target's own variant suffix"
+        ),
     )
     p_tags.add_argument(
         "--extra-tag",
@@ -1345,12 +1645,9 @@ def build_parser() -> argparse.ArgumentParser:
     # ── build-args ──
     p_build_args = sub.add_parser(
         "build-args",
-        help="Print an image's docker build args as KEY=value lines",
+        help="Print a target's docker build args as KEY=value lines",
     )
-    p_build_args.add_argument(
-        "image",
-        help="Image directory name",
-    )
+    p_build_args.add_argument("image", metavar="TARGET", help=TARGET_HELP)
     p_build_args.add_argument(
         "--tag",
         metavar="TAG",
@@ -1359,19 +1656,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_build_args.add_argument(
         "--kvm",
         action="store_true",
-        help="Select the vm-kvm stage for ubuntu-qemu-libvfio-user",
+        help="Select the vm-kvm stage for the VM image",
     )
     _add_common_args(p_build_args)
 
     # ── labels ──
     p_labels = sub.add_parser(
         "labels",
-        help="Print an image's OCI labels as key=value lines",
+        help="Print a target's OCI labels as key=value lines",
     )
-    p_labels.add_argument(
-        "image",
-        help="Image directory name",
-    )
+    p_labels.add_argument("image", metavar="TARGET", help=TARGET_HELP)
     p_labels.add_argument(
         "--tag",
         metavar="TAG",
@@ -1382,6 +1676,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common_args(p_labels)
 
+    # ── config ──
+    p_config = sub.add_parser(
+        "config",
+        help="Print a target's resolved vars as name=value lines",
+    )
+    p_config.add_argument("image", metavar="TARGET", help=TARGET_HELP)
+    p_config.add_argument(
+        "--get",
+        metavar="VAR",
+        help="Print just this var's value",
+    )
+    _add_common_args(p_config)
+
     # ── inspect ──
     p_inspect = sub.add_parser(
         "inspect",
@@ -1391,7 +1698,8 @@ def build_parser() -> argparse.ArgumentParser:
         "image",
         nargs="?",
         default=None,
-        help=("Image directory name (inspects all if omitted)"),
+        metavar="TARGET",
+        help=f"{TARGET_HELP} (inspects all if omitted)",
     )
     p_inspect.add_argument(
         "--password-file",
@@ -1409,7 +1717,8 @@ def build_parser() -> argparse.ArgumentParser:
         "image",
         nargs="?",
         default=None,
-        help=("Image directory name (queries all if omitted)"),
+        metavar="TARGET",
+        help=f"{TARGET_HELP} (queries all if omitted)",
     )
     p_status.add_argument(
         "--password-file",
@@ -1428,9 +1737,12 @@ DISPATCH = {
     "build": cmd_build,
     "push": cmd_push,
     "list": cmd_list,
+    "targets": cmd_targets,
+    "validate": cmd_validate,
     "tags": cmd_tags,
     "build-args": cmd_build_args,
     "labels": cmd_labels,
+    "config": cmd_config,
     "inspect": cmd_inspect,
     "status": cmd_status,
 }

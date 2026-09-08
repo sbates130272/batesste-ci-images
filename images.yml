@@ -1,0 +1,215 @@
+# Single source of truth for every image this repo publishes.
+#
+# ci-images-tool.py is a generic engine over this file: the pins, the build
+# args, the tag variant, the OCI labels and the base each image layers on are
+# all declared here and nowhere else. Adding an image means adding a Dockerfile
+# and an entry below -- no Python change.
+#
+# A *target* is an image plus an optional variant: the same Dockerfile built
+# with overlaid vars and published to its own suffixed repository. Refer to one
+# on the command line as `<image>@<variant>`.
+#
+# vars
+#   Each var is `name: value` or `name: {value: …, env: …, secret: true}`.
+#   The environment can override a var (env name defaults to the var name
+#   upper-cased) -- but never one a variant pins, so a stray .env cannot
+#   rewrite what a variant is deliberately built against. An empty env value
+#   means "unset"; `none` means "disabled".
+#
+# templates
+#   "{var}" interpolates, with optional filters: |short (abbreviate a SHA or
+#   branch), |ver (strip a leading v), |dots (13-3 -> 13.3), |sanitise.
+#   A leading ! names a Python helper for the rare case a template cannot
+#   express (see VARIANT_HELPERS in ci-images-tool.py).
+#
+# job
+#   Which CI job builds this image: `bases` (built once, up front),
+#   `matrix` (the flat parallel matrix), `derived` (built after the matrix,
+#   on top of an image the matrix produced).
+#
+# overlay
+#   An optional, gitignored images.local.yml beside this file is deep-merged
+#   over it for local experiments -- it can reach anything here, including a
+#   variant's pins. CI never reads it. See the README.
+
+defaults:
+  registry: docker.io
+  registry_image: batesste-ci-images
+  image_tag: auto
+  label_namespace: io.batesste.ci-images
+
+  # Shared by more than one image, so they cannot be owned by any single one.
+  vars:
+    libvfio_user_commit: 323f4cb6cddc3713fb7aebe44436f28b28b5413a
+
+images:
+
+  ubuntu-base:
+    job: bases
+    variant: "ubuntu{ubuntu_version|ver}"
+    labels:
+      org.opencontainers.image.base.name: "docker.io/library/ubuntu:{ubuntu_version}"
+      "{ns}.ubuntu.version": "{ubuntu_version}"
+
+  ubuntu-libvfio-user:
+    job: bases
+    base: ubuntu-base
+    build_args:
+      LIBVFIO_USER_COMMIT: "{libvfio_user_commit}"
+    variant: "vfu.{libvfio_user_commit|short}"
+    labels:
+      "{ns}.libvfio-user.commit": "{libvfio_user_commit}"
+
+  ubuntu-kernel-build:
+    job: matrix
+    base: ubuntu-base
+    # Adds no pinned payload of its own, so the Ubuntu release is the only
+    # thing that can differ between two of its builds.
+    variant: "ubuntu{ubuntu_version|ver}"
+
+  ubuntu-cuda-rocm:
+    job: matrix
+    base: ubuntu-base
+    # No CI artifact: its only consumer wants a registry ref, so the build job
+    # pushes it straight to GHCR instead of round-tripping a ~13 GB tarball.
+    vars:
+      cuda_version: "13-3"
+      rocm_version: "7.14"
+      # 'therock' (repo.amd.com, ROCm 7.13+) or 'legacy' (repo.radeon.com, <=7.2)
+      rocm_stream: therock
+    build_args:
+      CUDA_VERSION: "{cuda_version}"
+      ROCM_VERSION: "{rocm_version}"
+      ROCM_STREAM: "{rocm_stream}"
+    # CUDA_VERSION carries the apt package form (13-3); publish it the way
+    # NVIDIA versions it (13.3).
+    variant: "rocm{rocm_version|ver}-cuda{cuda_version|dots|ver}"
+    labels:
+      "{ns}.rocm.version": "{rocm_version}"
+      "{ns}.cuda.version": "{cuda_version|dots}"
+      "{ns}.rocm.stream": "{rocm_stream}"
+
+  ubuntu-cuda-rocm-fio:
+    job: derived
+    base: ubuntu-cuda-rocm
+    vars:
+      # Must be a master commit -- the libhipfile engine is not in any fio tag yet
+      fio_repo: https://github.com/axboe/fio.git
+      fio_commit: 975ea1856fee9f4c0f01f6f19ba3c61ce24f9bc8
+    build_args:
+      FIO_REPO: "{fio_repo}"
+      FIO_COMMIT: "{fio_commit}"
+    variant: "rocm{rocm_version|ver}-cuda{cuda_version|dots|ver}-fio.{fio_commit|short}"
+    labels:
+      "{ns}.rocm.version": "{rocm_version}"
+      "{ns}.cuda.version": "{cuda_version|dots}"
+      "{ns}.rocm.stream": "{rocm_stream}"
+      "{ns}.fio.commit": "{fio_commit}"
+
+  ubuntu-rocm-ernic:
+    job: matrix
+    base: ubuntu-libvfio-user
+    artifact: true
+    vars:
+      rocm_ernic_commit: e3ef00c2a0c1ba1df95e6cbbe9362c2a1ad1d2fb
+    build_args:
+      ROCM_ERNIC_COMMIT: "{rocm_ernic_commit}"
+    # This image links against libvfio-user, so that pin belongs in the tag:
+    # without it two builds differing only in it would collide.
+    variant: "ernic.{rocm_ernic_commit|short}-vfu.{libvfio_user_commit|short}"
+    labels:
+      "{ns}.ernic.commit": "{rocm_ernic_commit}"
+      "{ns}.libvfio-user.commit": "{libvfio_user_commit}"
+
+  ubuntu-rocm-rocjitsu:
+    job: matrix
+    base: ubuntu-base
+    artifact: true
+    vars:
+      rocjitsu_repo:
+        value: https://github.com/ROCm/rocm-systems.git
+        env: ROCM_ROCJITSU_REPO
+      rocjitsu_branch:
+        value: develop
+        env: ROCM_ROCJITSU_BRANCH
+      rocjitsu_commit:
+        value: 5e9cc7c57d372c0198fd8decb1fe5ceb07038a2b
+        env: ROCM_ROCJITSU_COMMIT
+      # Only gfx_target_version 120500 has an IP discovery profile upstream, so
+      # this is the only config the vfio-user front end can actually serve. It
+      # is a var so a variant built against a different upstream ref can point
+      # at a renamed or newly added profile without touching the Dockerfile.
+      rocjitsu_config:
+        value: gfx1250_mi455x.json
+        env: ROCM_ROCJITSU_CONFIG
+    build_args:
+      ROCJITSU_REPO: "{rocjitsu_repo}"
+      ROCJITSU_BRANCH: "{rocjitsu_branch}"
+      ROCJITSU_COMMIT: "{rocjitsu_commit}"
+      ROCJITSU_CONFIG: "{rocjitsu_config}"
+    variant: "rocjitsu.{rocjitsu_commit|short}"
+    labels:
+      "{ns}.rocjitsu.branch": "{rocjitsu_branch}"
+      "{ns}.rocjitsu.commit": "{rocjitsu_commit}"
+    variants:
+      730bc62:
+        suffix: "-730bc62"
+        # Nothing downstream consumes it, so skip the multi-GB CI artifact
+        # round-trip the default target pays for the compose test.
+        artifact: false
+        # A large jump ahead of the default pin, published alongside it rather
+        # than replacing it. version-scrub.sh must not touch this.
+        vars:
+          rocjitsu_commit: 730bc62d60191337a07da50892538475370cb071
+
+  ubuntu-qemu-libvfio-user:
+    job: matrix
+    base: ubuntu-libvfio-user
+    artifact: true
+    entitlement: security.insecure
+    # The Dockerfile bind-mounts this; buildx fails if it is missing (it holds
+    # only gitignored *.img downloads).
+    context_dirs:
+      - common/cloud-image-cache
+    vars:
+      qemu_repo: https://gitlab.com/qemu-project/qemu.git
+      # A release tag (e.g. v11.1.1) or a commit hash; tags are typically
+      # stable but not as strictly immutable as a full SHA.
+      qemu_commit: v11.1.1
+      # Set QEMU_MINIMAL_REPO=none to skip the VM build entirely.
+      qemu_minimal_repo: https://github.com/sbates130272/qemu-minimal.git
+      qemu_minimal_commit: 225a81766b87ad2adb4e93d71bb8ed5e4e996466
+      username: batesste
+      vm_name: ""
+      password:
+        value: changeme
+        secret: true
+      release: noble
+      arch: amd64
+    build_args:
+      QEMU_REPO: "{qemu_repo}"
+      QEMU_COMMIT: "{qemu_commit}"
+      QEMU_MINIMAL_REPO: "{qemu_minimal_repo}"
+      QEMU_MINIMAL_COMMIT: "{qemu_minimal_commit}"
+      # vm_stage and kvm are decided at build time from /dev/kvm and the
+      # builder's entitlements, not pinned here.
+      VM_STAGE: "{vm_stage}"
+      KVM: "{kvm}"
+      USERNAME: "{username}"
+      VM_NAME: "{vm_name}"
+      RELEASE: "{release}"
+      ARCH: "{arch}"
+      PASSWORD: "{password}"
+    # A release tag becomes qemu11.1.1; a fork branch or SHA is named rather
+    # than dressed up as a version. Not expressible as a template.
+    variant: "!qemu_variant"
+    labels:
+      "{ns}.qemu.repo": "{qemu_repo}"
+      "{ns}.qemu.commit": "{qemu_commit}"
+      "{ns}.libvfio-user.commit": "{libvfio_user_commit}"
+    variants:
+      sbates-fork:
+        suffix: "-sbates-fork"
+        vars:
+          qemu_repo: https://github.com/sbates130272/qemu.git
+          qemu_commit: dev/stephen/pci-mmio-bridge-submit
