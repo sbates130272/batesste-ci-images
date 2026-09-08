@@ -20,6 +20,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     libclang-dev \
     libcpprest-dev \
     libgflags-dev \
+    libhwloc-dev \
     libibverbs-dev \
     libnuma-dev \
     libprotobuf-dev \
