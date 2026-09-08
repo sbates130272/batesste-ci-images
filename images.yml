@@ -203,8 +203,15 @@ images:
         artifact: false
         # A large jump ahead of the default pin, published alongside it rather
         # than replacing it. version-scrub.sh must not touch this.
+        #
+        # This commit is not on develop -- it is the head of a WIP branch as of
+        # 2026-09-08. The branch is recorded so the image's build.json and
+        # branch label say where the commit came from; it is provenance only,
+        # since the Dockerfile fetches the commit directly. The pin does not
+        # track the branch, so the two will diverge once the branch moves.
         vars:
           rocjitsu_commit: 730bc62d60191337a07da50892538475370cb071
+          rocjitsu_branch: users/agutierr/gfx1250-vfio-compute-wip
 
   ubuntu-qemu-libvfio-user:
     job: matrix
