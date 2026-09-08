@@ -313,7 +313,7 @@ jobs:
         if: matrix.target.image == 'ubuntu-cuda-rocm'
         run: |
           docker run --rm \
-            "batesste-ci-images-ubuntu-cuda-rocm:test" \
+            "batesste-ci-images-${{ matrix.target.scope }}:test" \
             bash -lc '
               set -e
               echo "CUDA version file:"; cat /etc/cuda-version
@@ -338,7 +338,7 @@ jobs:
         if: matrix.target.image == 'ubuntu-rocm-ernic'
         run: |
           docker run --rm \
-            "batesste-ci-images-ubuntu-rocm-ernic:test" \
+            "batesste-ci-images-${{ matrix.target.scope }}:test" \
             bash -lc '
               set -e
               which rocm-ernic
@@ -351,7 +351,7 @@ jobs:
         run: |
           docker run --rm --name rocm-ernic-test \
             --cap-add NET_ADMIN \
-            "batesste-ci-images-ubuntu-rocm-ernic:test" \
+            "batesste-ci-images-${{ matrix.target.scope }}:test" \
             bash -c "
               mkdir -p /tmp/vfio-sockets
               rocm-ernic \
@@ -372,7 +372,7 @@ jobs:
         if: matrix.target.image == 'ubuntu-rocm-rocjitsu'
         run: |
           docker run --rm \
-            "batesste-ci-images-ubuntu-rocm-rocjitsu:test" \
+            "batesste-ci-images-${{ matrix.target.scope }}:test" \
             bash -lc '
               set -e
               which rocjitsu
@@ -384,11 +384,11 @@ jobs:
         run: |
           docker run --rm --name rocjitsu-test \
             --cap-add NET_ADMIN \
-            "batesste-ci-images-ubuntu-rocm-rocjitsu:test" \
+            "batesste-ci-images-${{ matrix.target.scope }}:test" \
             bash -c "
               mkdir -p /tmp/vfio-sockets
               rocjitsu \
-                --config \${ROCJITSU_CONFIG_DIR}/gfx1250_mi455x.json \
+                --config \${ROCJITSU_CONFIG_PATH} \
                 --vfio-socket /tmp/vfio-sockets/rocjitsu.sock &
               SERVER_PID=\$!
               sleep 3
@@ -406,11 +406,14 @@ jobs:
       # to push it straight back out again. Pushing here skips a ~13 GB
       # tarball in each direction, and skips writing it to a disk that the
       # image and its retained debs have already largely filled.
+      # Gated on the key, not the image: REF names one base image, so were
+      # cuda-rocm ever to declare a variant, gating on the image would have two
+      # jobs racing to push different content to the same ref.
       - name: Push cuda-rocm to GHCR for build-derived
-        if: matrix.target.image == 'ubuntu-cuda-rocm'
+        if: matrix.target.key == 'ubuntu-cuda-rocm'
         run: |
           REF="${BASE_REGISTRY}:ubuntu-cuda-rocm-${GITHUB_SHA}"
-          docker tag batesste-ci-images-ubuntu-cuda-rocm:test "$REF"
+          docker tag "batesste-ci-images-${{ matrix.target.scope }}:test" "$REF"
           docker push "$REF"
 
       # Only the jobs that genuinely need an image built by a *different*
