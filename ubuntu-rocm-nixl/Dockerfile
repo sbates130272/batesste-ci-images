@@ -146,11 +146,18 @@ RUN git init /build/etcd-cpp-apiv3 && \
 # without changing the source checkout or the build command.
 COPY ubuntu-rocm-nixl/patches/nixl /build/patches/nixl
 
+# CUDA_HOME is pointed at nothing on purpose. The base image carries CUDA
+# headers and libraries but no nvcc, and NIXL's meson falls back to probing
+# /usr/local/cuda, then calls add_languages('CUDA') on whatever it finds --
+# which fails without a compiler. Upstream never hits this because its ROCm
+# image has no CUDA at all. nixlbench needs no equivalent: use_rocm=true makes
+# it skip CUDA outright, since it treats the two as mutually exclusive.
 RUN set -eux; \
     if find /build/patches/nixl -type f -name '*.patch' -print -quit | grep -q .; then \
         git -C /build/nixl apply /build/patches/nixl/*.patch; \
     fi; \
     ROCM_PATH="$(cat /etc/rocm-path)"; \
+    export CUDA_HOME=/nonexistent CUDA_PATH=/nonexistent; \
     meson setup /build/nixl/build /build/nixl \
         --prefix=/usr/local/nixl \
         --buildtype=release \
