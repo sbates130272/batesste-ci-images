@@ -669,7 +669,9 @@ To add a new image:
 6. Update this top-level README to list the new image in the "Available
    Images" section
 7. The `ci-images-tool.py` CLI and both CI workflows pick it up from
-   `images.yml` — no workflow change is needed
+   `images.yml` — no workflow change is needed to *build* it. Any per-image
+   smoke test still has to be added to `dockerfile-test.yml` by hand, gated
+   on `matrix.target.image`, alongside the existing ones
 
 The image directory name will be used as part of the Docker image tag:
 `{REGISTRY_IMAGE}-{image-directory}:{IMAGE_TAG}`

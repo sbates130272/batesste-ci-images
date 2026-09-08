@@ -1164,6 +1164,7 @@ def cmd_targets(args: argparse.Namespace) -> None:
         job = str(target_attr(cfg, t, "job", "matrix"))
         if args.job and job != args.job:
             continue
+        base = base_target(cfg, t)
         rows.append(
             {
                 "key": t.key,
@@ -1174,6 +1175,10 @@ def cmd_targets(args: argparse.Namespace) -> None:
                 "job": job,
                 "artifact": bool(target_attr(cfg, t, "artifact", False)),
                 "entitlement": needs_entitlement(cfg, t),
+                # Lets the derived CI job point BASE_IMAGE at the copy of its
+                # base built earlier in the same run without naming any image.
+                "base": base.key if base else "",
+                "base_scope": target_scope(cfg, base) if base else "",
             }
         )
 

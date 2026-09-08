@@ -11,6 +11,7 @@ on:
       - '**/Dockerfile'
       - '**/entrypoint.sh'
       - '**/packages.txt'
+      - '**/patches/**'
       - 'ci-images-tool.py'
       - 'images.yml'
       - 'requirements.txt'
@@ -23,6 +24,7 @@ on:
       - '**/Dockerfile'
       - '**/entrypoint.sh'
       - '**/packages.txt'
+      - '**/patches/**'
       - 'ci-images-tool.py'
       - 'images.yml'
       - 'requirements.txt'
@@ -46,6 +48,7 @@ jobs:
     outputs:
       targets: ${{ steps.find-images.outputs.targets }}
       keys: ${{ steps.find-images.outputs.keys }}
+      derived: ${{ steps.find-images.outputs.derived }}
     steps:
       - uses: actions/checkout@v7
 
@@ -69,6 +72,9 @@ jobs:
           echo "targets=$TARGETS" >> $GITHUB_OUTPUT
           echo "keys=$(echo "$TARGETS" | jq -c 'map(.key)')" >> $GITHUB_OUTPUT
           echo "$TARGETS" | jq .
+          DERIVED=$(./ci-images-tool.py targets --job derived --json)
+          echo "derived=$DERIVED" >> $GITHUB_OUTPUT
+          echo "$DERIVED" | jq .
 
   # ubuntu-base holds the apt preamble and root CA every image shares;
   # ubuntu-libvfio-user adds the libvfio-user build that qemu and rocm-ernic
@@ -558,17 +564,26 @@ jobs:
             || true
 
   build-derived:
-    name: Build Derived Images
+    name: Build ${{ matrix.target.key }}
     runs-on: ubuntu-latest
-    needs: [build-bases, build]
+    needs: [discover-images, build-bases, build]
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: >-
+          ${{
+            fromJson(
+              needs.discover-images.outputs.derived
+            )
+          }}
     steps:
       - uses: actions/checkout@v7
 
       # This job loads the 28 GB cuda-rocm image into the daemon and then
-      # builds fio on top of it, so it is tighter for space than the job that
+      # builds on top of it, so it is tighter for space than the job that
       # produced the base. See the matching step in the build job above.
       - name: Free up disk space
         run: |
@@ -600,7 +615,7 @@ jobs:
       - name: Resolve base ref
         id: base
         run: |
-          echo "ref=${BASE_REGISTRY}:ubuntu-cuda-rocm-${GITHUB_SHA}" \
+          echo "ref=${BASE_REGISTRY}:${{ matrix.target.base_scope }}-${GITHUB_SHA}" \
             >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
@@ -612,39 +627,49 @@ jobs:
       - name: Install tool dependencies
         run: pip install -r requirements.txt
 
+      # BASE_IMAGE_<SCOPE> is the dependant-keyed override, so the env var
+      # name has to be built from the target rather than written out. That
+      # keeps this job generic: a new `job: derived` entry in images.yml is
+      # picked up by the matrix without touching the workflow.
       - name: Compute build args
         id: buildargs
-        env:
-          BASE_IMAGE_FOR_UBUNTU_CUDA_ROCM: ${{ steps.base.outputs.ref }}
         run: |
+          VAR="BASE_IMAGE_$(echo '${{ matrix.target.scope }}' \
+            | tr '[:lower:]-' '[:upper:]_')"
+          export "${VAR}=${{ steps.base.outputs.ref }}"
           {
             echo 'args<<ARGS_EOF'
-            ./ci-images-tool.py build-args ubuntu-cuda-rocm-fio
+            ./ci-images-tool.py build-args "${{ matrix.target.key }}"
             echo ARGS_EOF
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build ubuntu-cuda-rocm-fio
+      - name: Build Docker image
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: ubuntu-cuda-rocm-fio/Dockerfile
+          file: ${{ matrix.target.image }}/Dockerfile
           push: false
           load: true
-          tags: batesste-ci-images-ubuntu-cuda-rocm-fio:test
+          tags: >-
+            batesste-ci-images-${{ matrix.target.scope }}:test
           build-args: ${{ steps.buildargs.outputs.args }}
           cache-from: >-
-            type=registry,ref=${{ env.CACHE_REGISTRY }}:ubuntu-cuda-rocm-fio
+            type=registry,ref=${{ env.CACHE_REGISTRY }}:${{ matrix.target.scope }}
           cache-to: >-
             type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
               env.CACHE_REGISTRY
-            }}:ubuntu-cuda-rocm-fio
+            }}:${{ matrix.target.scope }}
+
+      # ── per-image checks, gated by scope so a variant of one of these
+      # images does not silently inherit another's assertions.
 
       # Runners have no NVIDIA driver. fio starts anyway because the base
       # image ships cuda-compat, so no LD_LIBRARY_PATH juggling is needed.
       - name: Verify both GPU engines are compiled in
+        if: matrix.target.image == 'ubuntu-cuda-rocm-fio'
         run: |
           docker run --rm \
-            "batesste-ci-images-ubuntu-cuda-rocm-fio:test" \
+            "batesste-ci-images-${{ matrix.target.scope }}:test" \
             bash -lc '
               set -e
               fio --version
@@ -655,9 +680,10 @@ jobs:
             '
 
       - name: Verify libcuda resolves to cuda-compat, not a stub
+        if: matrix.target.image == 'ubuntu-cuda-rocm-fio'
         run: |
           docker run --rm \
-            "batesste-ci-images-ubuntu-cuda-rocm-fio:test" \
+            "batesste-ci-images-${{ matrix.target.scope }}:test" \
             bash -lc '
               set -e
               # compat must be last in ld.so.conf.d so a host-injected
@@ -675,11 +701,12 @@ jobs:
             '
 
       - name: Verify pinned fio commit
+        if: matrix.target.image == 'ubuntu-cuda-rocm-fio'
         run: |
           ACTUAL=$(docker run --rm \
-            "batesste-ci-images-ubuntu-cuda-rocm-fio:test" \
+            "batesste-ci-images-${{ matrix.target.scope }}:test" \
             cat /usr/local/share/fio-commit.txt)
-          EXPECTED=$(./ci-images-tool.py build-args ubuntu-cuda-rocm-fio \
+          EXPECTED=$(./ci-images-tool.py build-args "${{ matrix.target.key }}" \
             | sed -n 's/^FIO_COMMIT=//p')
           if [ "$ACTUAL" != "$EXPECTED" ]; then
             echo "ERROR: fio commit $ACTUAL != $EXPECTED"
@@ -687,11 +714,83 @@ jobs:
           fi
 
       - name: Run fio smoke job
+        if: matrix.target.image == 'ubuntu-cuda-rocm-fio'
         run: |
           docker run --rm \
-            "batesste-ci-images-ubuntu-cuda-rocm-fio:test" \
+            "batesste-ci-images-${{ matrix.target.scope }}:test" \
             fio --name=smoke --ioengine=psync --rw=write \
                 --bs=64k --size=4m --directory=/tmp --minimal
+
+      # Runners have no AMD GPU, so nothing here can move data. What is worth
+      # asserting is that the ROCm-aware build actually happened: an apt UCX,
+      # or a NIXL that fell back to its CPU-only path, would still install and
+      # still print --help, and the image would be quietly useless.
+      - name: Verify UCX was built with ROCm support
+        if: matrix.target.image == 'ubuntu-rocm-nixl'
+        run: |
+          docker run --rm \
+            "batesste-ci-images-${{ matrix.target.scope }}:test" \
+            bash -lc '
+              set -e
+              ucx_info -v
+              cat /usr/local/share/ucx-commit.txt
+              # The rocm UCT module is only produced by a --with-rocm build,
+              # so its presence is the assertion. Probing the transport at
+              # runtime is not: the runner has no /dev/kfd, so the module
+              # may decline to load even when it is correctly built.
+              find /usr/local/lib -name "libuct_rocm*" | grep . \
+                || { echo "ERROR: UCX has no ROCm module"; exit 1; }
+            '
+
+      - name: Verify NIXL was built against ROCm
+        if: matrix.target.image == 'ubuntu-rocm-nixl'
+        run: |
+          docker run --rm \
+            "batesste-ci-images-${{ matrix.target.scope }}:test" \
+            bash -lc '
+              set -e
+              cat /usr/local/share/nixl-commit.txt
+              command -v nixlbench
+              # Which object carries the HIP dependency is up to NIXL and
+              # has moved between releases, so search the whole install tree
+              # rather than pinning a filename. A CPU-only fallback build
+              # would still install and still answer --help; this is what
+              # tells the two apart.
+              FOUND=$(find /usr/local/nixl /usr/local/bin /usr/local/lib \
+                        -type f 2>/dev/null \
+                | xargs -r -n1 ldd 2>/dev/null \
+                | grep -c "libamdhip64" || true)
+              echo "objects linking libamdhip64: ${FOUND}"
+              [ "${FOUND}" -gt 0 ] \
+                || { echo "ERROR: nothing links ROCm"; exit 1; }
+            '
+
+      - name: Run nixlbench help
+        if: matrix.target.image == 'ubuntu-rocm-nixl'
+        run: |
+          docker run --rm \
+            "batesste-ci-images-${{ matrix.target.scope }}:test" \
+            nixlbench --help
+
+      - name: Verify pinned NIXL and UCX commits
+        if: matrix.target.image == 'ubuntu-rocm-nixl'
+        run: |
+          ARGS=$(./ci-images-tool.py build-args "${{ matrix.target.key }}")
+          for pair in \
+            "nixl-commit.txt:NIXL_COMMIT" \
+            "ucx-commit.txt:UCX_COMMIT"; do
+            FILE="${pair%%:*}"
+            ARG="${pair##*:}"
+            ACTUAL=$(docker run --rm \
+              "batesste-ci-images-${{ matrix.target.scope }}:test" \
+              cat "/usr/local/share/${FILE}")
+            EXPECTED=$(echo "$ARGS" | sed -n "s/^${ARG}=//p")
+            if [ "$ACTUAL" != "$EXPECTED" ]; then
+              echo "ERROR: ${ARG} $ACTUAL != $EXPECTED"
+              exit 1
+            fi
+            echo "${ARG} ${ACTUAL} matches"
+          done
 
   test-compose:
     name: Test Docker Compose Stack
