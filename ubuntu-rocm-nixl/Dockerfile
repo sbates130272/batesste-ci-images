@@ -20,20 +20,20 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     libclang-dev \
     libcpprest-dev \
     libgflags-dev \
-    libgrpc++-dev \
     libibverbs-dev \
     libnuma-dev \
     libprotobuf-dev \
+    libssl-dev \
     libtool \
     libtomlplusplus-dev \
     libunwind-dev \
     meson \
     protobuf-compiler \
-    protobuf-compiler-grpc \
     python3-dev \
     python3-pip \
     rdma-core \
-    uuid-dev
+    uuid-dev \
+    zlib1g-dev
 
 WORKDIR /build
 
@@ -69,6 +69,57 @@ RUN git init /build/nixl && \
     git -C /build/nixl checkout FETCH_HEAD && \
     git -C /build/nixl rev-parse HEAD > /build/nixl-commit.txt
 
+ARG ABSL_REPO=https://github.com/abseil/abseil-cpp.git
+ARG ABSL_TAG=lts_2025_08_14
+ARG GRPC_REPO=https://github.com/grpc/grpc.git
+ARG GRPC_TAG=v1.73.0
+
+# Abseil and gRPC are built from source, and libgrpc++-dev is deliberately absent
+# from the apt list above: it is the only package that pulls libabsl-dev, whose
+# 20220623 Abseil predates absl_log. NIXL probes the system Abseil unconditionally
+# and refuses to fall back to its bundled subproject when it finds a partial one,
+# because that would link two Abseil versions into one process. etcd-cpp-apiv3
+# needs gRPC, and it is nixlbench's only distributed runtime, so dropping gRPC is
+# not an option -- a complete, modern Abseil is. C++20 must match NIXL's own
+# cpp_std across all of these, since Abseil's ABI varies with the standard.
+RUN set -eux; \
+    git clone --depth 1 --branch "${ABSL_TAG}" "${ABSL_REPO}" /build/abseil-cpp; \
+    cmake -B /build/abseil-cpp/build \
+        -G Ninja \
+        -S /build/abseil-cpp \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DCMAKE_INSTALL_LIBDIR=lib \
+        -DCMAKE_CXX_STANDARD=20 \
+        -DBUILD_SHARED_LIBS=ON \
+        -DABSL_PROPAGATE_CXX_STD=ON \
+        -DABSL_ENABLE_INSTALL=ON; \
+    cmake --build /build/abseil-cpp/build --parallel "$(nproc)"; \
+    cmake --install /build/abseil-cpp/build; \
+    ldconfig
+
+RUN set -eux; \
+    git clone --depth 1 --branch "${GRPC_TAG}" \
+        --recurse-submodules --shallow-submodules "${GRPC_REPO}" /build/grpc; \
+    cmake -B /build/grpc/build \
+        -G Ninja \
+        -S /build/grpc \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DCMAKE_INSTALL_LIBDIR=lib \
+        -DCMAKE_CXX_STANDARD=20 \
+        -DBUILD_SHARED_LIBS=ON \
+        -DgRPC_INSTALL=ON \
+        -DgRPC_BUILD_TESTS=OFF \
+        -DgRPC_ABSL_PROVIDER=package \
+        -DgRPC_PROTOBUF_PROVIDER=module \
+        -DgRPC_SSL_PROVIDER=package \
+        -DgRPC_ZLIB_PROVIDER=package \
+        -Dabsl_DIR=/usr/local/lib/cmake/absl; \
+    cmake --build /build/grpc/build --parallel "$(nproc)"; \
+    cmake --install /build/grpc/build; \
+    ldconfig
+
 ARG ETCD_REPO=https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git
 ARG ETCD_COMMIT=7c6e714f188f9576e25e0350cac4181139eec23e
 
@@ -76,11 +127,16 @@ RUN git init /build/etcd-cpp-apiv3 && \
     git -C /build/etcd-cpp-apiv3 remote add origin "${ETCD_REPO}" && \
     git -C /build/etcd-cpp-apiv3 fetch --depth 1 origin "${ETCD_COMMIT}" && \
     git -C /build/etcd-cpp-apiv3 checkout FETCH_HEAD && \
+    sed -i '/^find_dependency(cpprestsdk)$/d' \
+        /build/etcd-cpp-apiv3/etcd-cpp-api-config.in.cmake && \
     cmake -B /build/etcd-cpp-apiv3/build \
         -G Ninja \
         -S /build/etcd-cpp-apiv3 \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DCMAKE_INSTALL_LIBDIR=lib \
+        -DCMAKE_CXX_STANDARD=20 \
+        -DETCD_CMAKE_CXX_STANDARD=20 \
         -DBUILD_ETCD_CORE_ONLY=ON && \
     cmake --build /build/etcd-cpp-apiv3/build --parallel "$(nproc)" && \
     cmake --install /build/etcd-cpp-apiv3/build && \
@@ -122,7 +178,8 @@ RUN set -eux; \
     meson install -C /build/nixl/benchmark/nixlbench/build; \
     cp /build/ucx-commit.txt /usr/local/share/ucx-commit.txt; \
     cp /build/nixl-commit.txt /usr/local/share/nixl-commit.txt; \
-    rm -rf /build/ucx /build/nixl /build/etcd-cpp-apiv3 /build/patches
+    rm -rf /build/ucx /build/nixl /build/etcd-cpp-apiv3 /build/abseil-cpp \
+        /build/grpc /build/patches
 
 ENV PATH=/usr/local/bin:/usr/local/nixl/bin:${PATH}
 ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/nixl/lib:${LD_LIBRARY_PATH}

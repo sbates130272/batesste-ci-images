@@ -4,6 +4,12 @@ Ubuntu 24.04 image containing NIXL and NIXLBench built with ROCm/HIP support
 for AMD GPUs. UCX is built from source with its ROCm transport enabled before
 NIXL and NIXLBench are built.
 
+Abseil, gRPC and etcd-cpp-apiv3 are also built from source. Ubuntu's
+`libgrpc++-dev` depends on an Abseil that predates `absl_log`, and NIXL refuses
+to build against a partial Abseil rather than mix two versions at runtime;
+etcd-cpp-apiv3 needs gRPC, and it is NIXLBench's only distributed runtime. The
+Abseil and gRPC pins match those upstream NIXL uses for its own ROCm image.
+
 The image uses the ROCm installation path recorded by
 `ubuntu-cuda-rocm` in `/etc/rocm-path`, so it works with both the legacy and
 therock ROCm layouts.
@@ -14,8 +20,8 @@ therock ROCm layouts.
 ./ci-images-tool.py build ubuntu-rocm-nixl
 ```
 
-The source revisions can be overridden with `NIXL_COMMIT` and `UCX_COMMIT`
-Docker build arguments. Files ending in `.patch` placed in `patches/nixl/` are
+The source revisions can be overridden with the `NIXL_COMMIT`, `UCX_COMMIT`,
+`ETCD_COMMIT`, `ABSL_TAG` and `GRPC_TAG` Docker build arguments. Files ending in `.patch` placed in `patches/nixl/` are
 applied to the pinned NIXL checkout before it is configured.
 
 ## Run

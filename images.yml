@@ -118,6 +118,13 @@ images:
       ucx_commit: 42fc490e469b2f824374357c51227512323d5856
       etcd_repo: https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git
       etcd_commit: 7c6e714f188f9576e25e0350cac4181139eec23e
+      # Abseil and gRPC are built from source because Ubuntu's libgrpc++-dev
+      # drags in an Abseil too old for NIXL. These match the pins upstream
+      # NIXL uses in .ci/dockerfiles/Dockerfile.rocm.
+      absl_repo: https://github.com/abseil/abseil-cpp.git
+      absl_tag: lts_2025_08_14
+      grpc_repo: https://github.com/grpc/grpc.git
+      grpc_tag: v1.73.0
     build_args:
       NIXL_REPO: "{nixl_repo}"
       NIXL_COMMIT: "{nixl_commit}"
@@ -125,6 +132,10 @@ images:
       UCX_COMMIT: "{ucx_commit}"
       ETCD_REPO: "{etcd_repo}"
       ETCD_COMMIT: "{etcd_commit}"
+      ABSL_REPO: "{absl_repo}"
+      ABSL_TAG: "{absl_tag}"
+      GRPC_REPO: "{grpc_repo}"
+      GRPC_TAG: "{grpc_tag}"
     variant: "nixl.{nixl_commit|short}-ucx.{ucx_commit|short}"
     labels:
       "{ns}.rocm.version": "{rocm_version}"
