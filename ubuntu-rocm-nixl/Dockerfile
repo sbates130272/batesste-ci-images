@@ -182,6 +182,11 @@ COPY ubuntu-rocm-nixl/patches/nixl /build/patches/nixl
 # which fails without a compiler. Upstream never hits this because its ROCm
 # image has no CUDA at all. nixlbench needs no equivalent: use_rocm=true makes
 # it skip CUDA outright, since it treats the two as mutually exclusive.
+#
+# The install libdir is discovered rather than assumed: meson honours Debian
+# multiarch, so libnixl lands in lib/x86_64-linux-gnu, not lib. ldconfig is used
+# instead of LD_LIBRARY_PATH so the libraries resolve for any process in the
+# image, including one that resets the environment.
 RUN set -eux; \
     if find /build/patches/nixl -type f -name '*.patch' -print -quit | grep -q .; then \
         git -C /build/nixl apply /build/patches/nixl/*.patch; \
@@ -203,7 +208,10 @@ RUN set -eux; \
         -Detcd_inc_path=/usr/local/include \
         -Detcd_lib_path=/usr/local/lib; \
     meson compile -C /build/nixl/build; \
-    meson install -C /build/nixl/build
+    meson install -C /build/nixl/build; \
+    dirname "$(find /usr/local/nixl -name libnixl.so -print -quit)" \
+        > /etc/ld.so.conf.d/nixl.conf; \
+    ldconfig
 
 RUN set -eux; \
     meson setup /build/nixl/benchmark/nixlbench/build \
@@ -225,6 +233,6 @@ RUN set -eux; \
         /build/grpc /build/libfabric /build/patches
 
 ENV PATH=/usr/local/bin:/usr/local/nixl/bin:${PATH}
-ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/nixl/lib:${LD_LIBRARY_PATH}
+ENV LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH}
 
 CMD ["nixlbench", "--help"]
