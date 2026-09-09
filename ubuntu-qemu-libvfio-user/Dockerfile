@@ -86,6 +86,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 # Python packaging tooling. setuptools is no longer implicit on 3.12, and pipx
 # installs CLI tools without hand-rolling a venv for each one.
+# pipx defaults to ~/.local/bin, which is not on PATH here, so point it at
+# /usr/local/bin instead: "pipx install <tool>" then just works, at build
+# time and at run time.
+ENV PIPX_HOME=/opt/pipx \
+    PIPX_BIN_DIR=/usr/local/bin \
+    PIPX_MAN_DIR=/usr/local/share/man
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update -qq && \

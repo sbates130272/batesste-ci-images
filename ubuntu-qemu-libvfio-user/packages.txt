@@ -7,3 +7,5 @@ libibverbs-dev
 cmake
 ninja-build
 pkg-config
+pipx
+python3-venv
