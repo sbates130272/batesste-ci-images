@@ -22,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       targets: ${{ steps.find-images.outputs.targets }}
+      derived: ${{ steps.find-images.outputs.derived }}
     steps:
       - uses: actions/checkout@v7
 
@@ -44,6 +45,9 @@ jobs:
           TARGETS=$(./ci-images-tool.py targets --job matrix --json)
           echo "targets=$TARGETS" >> $GITHUB_OUTPUT
           echo "$TARGETS" | jq .
+          DERIVED=$(./ci-images-tool.py targets --job derived --json)
+          echo "derived=$DERIVED" >> $GITHUB_OUTPUT
+          echo "$DERIVED" | jq .
 
   # Shared layers, built once. Published to Docker Hub like any other image
   # so a local build can layer on them without rebuilding, and to a GHCR
@@ -336,12 +340,21 @@ jobs:
             org.opencontainers.image.created=${{ github.event.repository.updated_at }}
 
   build-and-push-derived:
-    name: Build and Push Derived
+    name: Build and Push ${{ matrix.target.key }}
     runs-on: ubuntu-latest
-    needs: build-and-push
+    needs: [discover-images, build-and-push]
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: >-
+          ${{
+            fromJson(
+              needs.discover-images.outputs.derived
+            )
+          }}
     env:
       REGISTRY: docker.io
       REGISTRY_IMAGE: batesste-ci-images
@@ -349,7 +362,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # This job builds fio on top of the 28 GB cuda-rocm image, so it is
+      # This job builds on top of the 28 GB cuda-rocm image, so it is
       # tighter for space than the job that produced the base. See the
       # matching step in the build-and-push job above.
       - name: Free up disk space
@@ -397,41 +410,45 @@ jobs:
       - name: Install tool dependencies
         run: pip install -r requirements.txt
 
-      # BASE_IMAGE resolves to the first line of ubuntu-cuda-rocm's tag set:
-      # the immutable, fully specified tag build-and-push just published.
+      # BASE_IMAGE resolves to the first line of the base's tag set: the
+      # immutable, fully specified tag build-and-push just published.
       - name: Compute image tags, labels and build args
         id: tags
         run: |
           {
             echo 'refs<<TAGS_EOF'
-            ./ci-images-tool.py tags ubuntu-cuda-rocm-fio \
+            ./ci-images-tool.py tags "${{ matrix.target.key }}" \
               --tag "${{ steps.version.outputs.version }}" \
               --extra-tag "sha-${GITHUB_SHA:0:7}" \
               --extra-tag "${{ steps.version.outputs.tag }}"
             echo TAGS_EOF
             echo 'labels<<LABELS_EOF'
-            ./ci-images-tool.py labels ubuntu-cuda-rocm-fio \
+            ./ci-images-tool.py labels "${{ matrix.target.key }}" \
               --tag "${{ steps.version.outputs.version }}"
             echo LABELS_EOF
             echo 'args<<ARGS_EOF'
-            ./ci-images-tool.py build-args ubuntu-cuda-rocm-fio \
+            ./ci-images-tool.py build-args "${{ matrix.target.key }}" \
               --tag "${{ steps.version.outputs.version }}"
             echo ARGS_EOF
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build and push ubuntu-cuda-rocm-fio
+      - name: Build and push Docker image
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: ubuntu-cuda-rocm-fio/Dockerfile
+          file: ${{ matrix.target.image }}/Dockerfile
           push: true
           tags: ${{ steps.tags.outputs.refs }}
           cache-from: >-
-            type=registry,ref=${{ env.CACHE_REGISTRY }}:ubuntu-cuda-rocm-fio
+            type=registry,ref=${{ env.CACHE_REGISTRY }}:${{
+              matrix.target.scope
+            }}
           cache-to: >-
             type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
               env.CACHE_REGISTRY
-            }}:ubuntu-cuda-rocm-fio
+            }}:${{
+              matrix.target.scope
+            }}
           build-args: ${{ steps.tags.outputs.args }}
           labels: |
             ${{ steps.tags.outputs.labels }}
