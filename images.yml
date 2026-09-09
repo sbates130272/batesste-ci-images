@@ -96,6 +96,10 @@ images:
       # Must be a master commit -- the libhipfile engine is not in any fio tag yet
       fio_repo: https://github.com/axboe/fio.git
       fio_commit: 975ea1856fee9f4c0f01f6f19ba3c61ce24f9bc8
+      # Provenance only, and empty here: the default target tracks master HEAD,
+      # so it has no branch of its own worth recording. A variant built from a
+      # fork branch fills it in and the label appears only there.
+      fio_branch: ""
     build_args:
       FIO_REPO: "{fio_repo}"
       FIO_COMMIT: "{fio_commit}"
@@ -105,6 +109,25 @@ images:
       "{ns}.cuda.version": "{cuda_version|dots}"
       "{ns}.rocm.stream": "{rocm_stream}"
       "{ns}.fio.commit": "{fio_commit}"
+      "{ns}.fio.repo": "{fio_repo}"
+      "{ns}.fio.branch": "{fio_branch}"
+    variants:
+      async-hipfile:
+        suffix: "-async-hipfile"
+        # AMD's asynchronous hipFile work: adds hipfile_mode=sync|batch|stream
+        # to the libhipfile engine. Published alongside the master build rather
+        # than replacing it, so the upstream image keeps tracking axboe HEAD.
+        #
+        # This commit is the head of a WIP fork branch as of 2026-09-02, two
+        # commits ahead of and two behind the master pin. version-scrub.sh must
+        # not touch it. The branch is recorded so build.json and the branch
+        # label say where the commit came from; it is provenance only, since
+        # the Dockerfile fetches the commit directly. The pin does not track
+        # the branch, so the two will diverge once the branch moves.
+        vars:
+          fio_repo: https://github.com/ROCm/fio.git
+          fio_commit: c32261752c88b3f7aadfde4d011a028ae954f869
+          fio_branch: zbyrne/async_hipfile_engine
 
   ubuntu-rocm-nixl:
     job: derived

@@ -7,6 +7,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 ARG FIO_REPO=https://github.com/axboe/fio.git
 # libhipfile landed on fio master (67256d4e, 2026-05-08) and is not in any
 # release tag yet, so this must be a master commit rather than fio-3.x.
+# The asynchronous hipFile engine is not upstream at all: the
+# ubuntu-cuda-rocm-fio@async-hipfile variant overrides both args to build it
+# from a ROCm fork branch. Everything below is written to work either way.
 ARG FIO_COMMIT=975ea1856fee9f4c0f01f6f19ba3c61ce24f9bc8
 ARG CACHE_BUST=
 
@@ -68,6 +71,33 @@ RUN set -eux; \
     fio --enghelp > /usr/local/share/fio-engines.txt; \
     grep -qE '^[[:space:]]*libhipfile$' /usr/local/share/fio-engines.txt; \
     grep -qE '^[[:space:]]*libcufile$' /usr/local/share/fio-engines.txt; \
+    fio --enghelp=libhipfile > /usr/local/share/fio-libhipfile-help.txt
+
+# Asynchronous submission (hipfile_mode=batch|stream) only exists on the ROCm
+# fork branch. Record which build this is once, here, so neither the smoke
+# script nor CI has to re-derive it from engine help at runtime. The examples
+# and the sweep harness likewise ship only when the checkout carries them.
+#
+# --enghelp=<engine> lists options one line each; the mode names only appear
+# when a single option is asked about, so that output is appended as well.
+RUN set -eux; \
+    if grep -q 'hipfile_mode' /usr/local/share/fio-libhipfile-help.txt; then \
+        echo yes > /usr/local/share/fio-hipfile-async.txt; \
+        fio --enghelp=libhipfile,hipfile_mode \
+            >> /usr/local/share/fio-libhipfile-help.txt; \
+    else \
+        echo no > /usr/local/share/fio-hipfile-async.txt; \
+    fi; \
+    mkdir -p /usr/local/share/fio/examples; \
+    for f in /build/fio/examples/libhipfile*.fio; do \
+        if [ -e "$f" ]; then cp "$f" /usr/local/share/fio/examples/; fi; \
+    done; \
+    if [ -f /build/fio/fio_sweep.py ]; then \
+        install -m 0755 /build/fio/fio_sweep.py /usr/local/bin/fio-sweep; \
+    fi; \
     rm -rf /build/fio
+
+COPY ubuntu-cuda-rocm-fio/hipfile-smoke.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/hipfile-smoke.sh
 
 CMD ["fio", "--version"]

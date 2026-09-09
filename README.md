@@ -32,7 +32,10 @@ and pushing of these images.
   ROCm/HIP tools on Ubuntu 24.04. See `ubuntu-cuda-rocm/` for details.
 - **ubuntu-cuda-rocm-fio**: `ubuntu-cuda-rocm` plus fio built from a pinned
   upstream commit with both direct-to-GPU storage engines enabled:
-  `libhipfile` (AMD hipFile) and `libcufile` (NVIDIA GPUDirect Storage). See
+  `libhipfile` (AMD hipFile) and `libcufile` (NVIDIA GPUDirect Storage). Also
+  published as `…-ubuntu-cuda-rocm-fio-async-hipfile`, the same Dockerfile
+  built against AMD's fork branch adding asynchronous hipFile submission
+  (`hipfile_mode=batch|stream`) — see [Image Variants](#image-variants). See
   `ubuntu-cuda-rocm-fio/` for details.
 - **ubuntu-rocm-nixl**: `ubuntu-cuda-rocm` plus UCX, NIXL, and NIXLBench built
   with ROCm/HIP support for AMD GPUs. See `ubuntu-rocm-nixl/` for details.
@@ -440,6 +443,8 @@ racing the default build for them.
 | --- | --- |
 | `ubuntu-rocm-rocjitsu` | `…-ubuntu-rocm-rocjitsu` |
 | `ubuntu-rocm-rocjitsu@730bc62` | `…-ubuntu-rocm-rocjitsu-730bc62` |
+| `ubuntu-cuda-rocm-fio` | `…-ubuntu-cuda-rocm-fio` |
+| `ubuntu-cuda-rocm-fio@async-hipfile` | `…-ubuntu-cuda-rocm-fio-async-hipfile` |
 | `ubuntu-qemu-libvfio-user` | `…-ubuntu-qemu-libvfio-user` |
 | `ubuntu-qemu-libvfio-user@sbates-fork` | `…-ubuntu-qemu-libvfio-user-sbates-fork` |
 
