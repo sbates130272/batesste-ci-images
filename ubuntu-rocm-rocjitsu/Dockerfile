@@ -12,7 +12,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     g++-14 \
     gcc-14 \
     libclang-rt-dev \
-    libdrm-dev
+    libdrm-dev \
+    python3
 
 ARG ROCJITSU_REPO=https://github.com/ROCm/rocm-systems.git
 ARG ROCJITSU_BRANCH=users/agutierr/gfx1250-vfio-compute-wip
@@ -58,6 +59,25 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     cmake --install /build/rocm-systems/build && \
     ldconfig
 
+# rj-ip-discovery and vfio_guest_firmware.py are what let a guest boot amdgpu
+# against the emulator: the first generates the ip_discovery.bin that
+# amdgpu.discovery=2 reads instead of polling BAR registers, the second the
+# firmware-format stubs that GFX/SDMA/MES early_init parse before any real
+# microcode is needed. Without them the driver stalls in gfx_v12_1_hw_init.
+#
+# Upstream builds rj-ip-discovery (CMakeLists.txt add_subdirectory) but ships
+# no install() rule for it -- only rocjitsu_bin and rj_pretranslate -- so it
+# has to come out of the build tree by hand. Located rather than hardcoded so
+# a rearranged build layout fails here instead of silently shipping nothing.
+RUN set -eux; \
+    rj_ip_discovery=$(find /build/rocm-systems/build \
+        -type f -name rj-ip-discovery -perm -u+x -print -quit); \
+    test -n "${rj_ip_discovery}"; \
+    install -m 0755 "${rj_ip_discovery}" /usr/local/bin/rj-ip-discovery; \
+    install -m 0755 \
+        /build/rocm-systems/emulation/rocjitsu/tools/vfio_guest_firmware.py \
+        /usr/local/bin/vfio_guest_firmware.py
+
 # Upstream's install(DIRECTORY configs/) already placed these; the tags come from
 # emulation/rocjitsu/cmake/rj_libvfio_user.cmake, which pins what the vfio-user
 # transport is actually built against.
@@ -74,6 +94,7 @@ RUN cp /build/rocjitsu-commit.txt \
   "libvfio_user_tag": "v0.8",\n\
   "json_c_tag": "json-c-0.18-20240915",\n\
   "vfio_enabled": true,\n\
+  "guest_tools": ["rj-ip-discovery", "vfio_guest_firmware.py"],\n\
   "config_dir": "%s"\n\
 }\n' \
         "${ROCJITSU_REPO}" \
@@ -114,6 +135,21 @@ RUN rocjitsu --config "${ROCJITSU_CONFIG_PATH}" \
         exit 1; \
     fi; \
     rm -f /tmp/probe.log
+
+# Both tools are useless if they cannot produce their artefact, and a guest
+# that gets an empty ip_discovery.bin hangs in hw_init rather than failing
+# cleanly -- so prove they run here, where the failure is legible.
+# gfx1250 is asserted by name: it is the generation the served config models,
+# and a rename upstream should break the build, not the guest.
+RUN set -eux; \
+    rj-ip-discovery gfx1250 /tmp/ip_discovery.bin; \
+    test -s /tmp/ip_discovery.bin; \
+    vfio_guest_firmware.py --output /tmp/fw-probe; \
+    for f in gc_12_1_0_imu.bin gc_12_1_0_mec.bin gc_12_1_0_rlc_1.bin \
+             gc_12_1_0_uni_mes.bin sdma_7_1_0.bin; do \
+        test -s "/tmp/fw-probe/${f}"; \
+    done; \
+    rm -rf /tmp/ip_discovery.bin /tmp/fw-probe
 
 RUN rm -rf /build/rocm-systems /tmp/deps
 

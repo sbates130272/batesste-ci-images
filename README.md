@@ -63,6 +63,25 @@ config with any other `gfx_target_version` leaves the device unusable, so
 build runs a smoke test that starts the server and waits for `vfu: serving`, so
 this fails at build time rather than at deploy time.
 
+#### Guest bring-up tools
+
+Booting amdgpu against the emulator needs two artefacts the guest cannot
+produce for itself, so the image ships the tools that generate them:
+
+| Tool | Generates |
+| --- | --- |
+| `rj-ip-discovery gfx1250 <out>` | `ip_discovery.bin`, staged at `/lib/firmware/amdgpu/ip_discovery.bin` and read with `amdgpu.discovery=2` |
+| `vfio_guest_firmware.py --output <dir>` | the five GFX/SDMA/MES firmware stubs (`gc_12_1_0_{imu,mec,rlc_1,uni_mes}.bin`, `sdma_7_1_0.bin`) |
+
+Without the discovery table the driver polls BAR registers for a completion
+bit rocjitsu never sets and spins at 99% CPU in `gfx_v12_1_hw_init`; without
+the firmware stubs it cannot get through `early_init`. The stubs carry only
+header metadata and rocjitsu sentinel payloads — they are not AMD microcode.
+
+Upstream builds `rj-ip-discovery` but has no `install()` rule for it, so the
+image lifts it out of the build tree; both tools are smoke-tested at build
+time, as the vfio-user probe is.
+
 The VMM must share guest RAM through an mmap-able descriptor or the device
 cannot reach it. With QEMU that means a `memory-backend-memfd` with `share=on`
 plus `-machine memory-backend=mem`; `ubuntu-qemu-libvfio-user`'s entrypoint sets
