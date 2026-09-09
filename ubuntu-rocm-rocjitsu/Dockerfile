@@ -15,8 +15,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     libdrm-dev
 
 ARG ROCJITSU_REPO=https://github.com/ROCm/rocm-systems.git
-ARG ROCJITSU_BRANCH=develop
-ARG ROCJITSU_COMMIT=5e9cc7c57d372c0198fd8decb1fe5ceb07038a2b
+ARG ROCJITSU_BRANCH=users/agutierr/gfx1250-vfio-compute-wip
+ARG ROCJITSU_COMMIT=730bc62d60191337a07da50892538475370cb071
 # Which config the vfio-user probe below and the default CMD serve. A build
 # variant pinned to a different upstream ref can point at a renamed or newly
 # added profile from images.yml without editing this file.

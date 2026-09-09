@@ -45,9 +45,9 @@ and pushing of these images.
 - **ubuntu-rocm-rocjitsu**: Ubuntu 24.04 image with rocjitsu built from a
   pinned source commit with `-DROCJITSU_ENABLE_VFIO=ON`. Provides a
   software-emulated AMD GPU vfio-user server for KFD/amdgpu bring-up without
-  real hardware. See `ubuntu-rocm-rocjitsu/` for details. Also published as
-  `…-ubuntu-rocm-rocjitsu-730bc62`, the same Dockerfile built against a newer
-  upstream commit — see [Image Variants](#image-variants).
+  real hardware. Currently tracks the `users/agutierr/gfx1250-vfio-compute-wip`
+  branch rather than `develop`, since the vfio-compute work only exists there.
+  See `ubuntu-rocm-rocjitsu/` for details.
 
 ### rocjitsu vfio-user mode
 
@@ -388,8 +388,8 @@ are told apart without pulling them. The payload half is the *variant*:
 
 | Image | Variant |
 | --- | --- |
-| `ubuntu-cuda-rocm` | `rocm7.14-cuda13.3` |
-| `ubuntu-cuda-rocm-fio` | `rocm7.14-cuda13.3-fio.<sha>` |
+| `ubuntu-cuda-rocm` | `rocm10.0-cuda13.4` |
+| `ubuntu-cuda-rocm-fio` | `rocm10.0-cuda13.4-fio.<sha>` |
 | `ubuntu-rocm-ernic` | `ernic.<sha>-vfu.<sha>` |
 | `ubuntu-rocm-rocjitsu` | `rocjitsu.<sha>` |
 | `ubuntu-rocm-nixl` | `nixl.<sha>-ucx.<sha>` |
@@ -403,9 +403,9 @@ are templates in `images.yml`, so they follow the pins automatically.
 Releasing git tag `v1.1.0` publishes `ubuntu-cuda-rocm` as:
 
 ```text
-1.1.0-rocm7.14-cuda13.3   immutable, fully specified -- pin this in CI
-1.1-rocm7.14-cuda13.3     rolling patch within this variant
-rocm7.14-cuda13.3         rolling latest of this variant
+1.1.0-rocm10.0-cuda13.4   immutable, fully specified -- pin this in CI
+1.1-rocm10.0-cuda13.4     rolling patch within this variant
+rocm10.0-cuda13.4         rolling latest of this variant
 1.1.0                     release alias
 1.1                       rolling minor alias
 latest                    rolling
@@ -414,7 +414,7 @@ sha-<short>               provenance, traceable to a commit
 
 The git tag keeps its `v` prefix; the image tag drops it, per OCI convention.
 A local `ci-images-tool.py build` uses the same scheme with `IMAGE_TAG` as the
-base, so `IMAGE_TAG=auto` yields `20260526-rocm7.14-cuda13.3`.
+base, so `IMAGE_TAG=auto` yields `20260526-rocm10.0-cuda13.4`.
 
 The same facts are recorded as OCI labels, so they can be read without parsing
 a tag:
@@ -441,8 +441,6 @@ racing the default build for them.
 
 | Target | Repository |
 | --- | --- |
-| `ubuntu-rocm-rocjitsu` | `…-ubuntu-rocm-rocjitsu` |
-| `ubuntu-rocm-rocjitsu@730bc62` | `…-ubuntu-rocm-rocjitsu-730bc62` |
 | `ubuntu-cuda-rocm-fio` | `…-ubuntu-cuda-rocm-fio` |
 | `ubuntu-cuda-rocm-fio@async-hipfile` | `…-ubuntu-cuda-rocm-fio-async-hipfile` |
 | `ubuntu-qemu-libvfio-user` | `…-ubuntu-qemu-libvfio-user` |
@@ -453,18 +451,19 @@ takes an image takes a target:
 
 ```bash
 ./ci-images-tool.py targets                   # every target
-./ci-images-tool.py build ubuntu-rocm-rocjitsu@730bc62
-./ci-images-tool.py tags ubuntu-rocm-rocjitsu@730bc62 --tag 1.2.0
+./ci-images-tool.py build ubuntu-cuda-rocm-fio@async-hipfile
+./ci-images-tool.py tags ubuntu-cuda-rocm-fio@async-hipfile --tag 1.2.0
 ```
 
 Declaring one is an overlay on the image's own entry:
 
 ```yaml
     variants:
-      730bc62:
-        suffix: "-730bc62"
+      async-hipfile:
+        suffix: "-async-hipfile"
         vars:
-          rocjitsu_commit: 730bc62d60191337a07da50892538475370cb071
+          fio_repo: https://github.com/ROCm/fio.git
+          fio_commit: c32261752c88b3f7aadfde4d011a028ae954f869
 ```
 
 A variant's pins are deliberately immune to environment overrides, and
