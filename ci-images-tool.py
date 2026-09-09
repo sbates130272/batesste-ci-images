@@ -167,7 +167,7 @@ class Target:
 
     @property
     def key(self) -> str:
-        """Canonical CLI name: ``ubuntu-rocm-rocjitsu@730bc62``."""
+        """Canonical CLI name: ``ubuntu-cuda-rocm-fio@async-hipfile``."""
         return f"{self.image}@{self.variant}" if self.variant else self.image
 
     def __str__(self) -> str:
@@ -599,7 +599,7 @@ def order_targets(cfg: Config, targets: list[Target]) -> list[Target]:
 
 
 def parse_target(cfg: Config, name: str) -> Target:
-    """``ubuntu-rocm-rocjitsu`` or ``ubuntu-rocm-rocjitsu@730bc62``."""
+    """``ubuntu-cuda-rocm-fio`` or ``ubuntu-cuda-rocm-fio@async-hipfile``."""
     image, _, variant = name.partition("@")
     target = Target(image, variant)
     cfg.spec.variant_spec(target)  # validates the variant exists

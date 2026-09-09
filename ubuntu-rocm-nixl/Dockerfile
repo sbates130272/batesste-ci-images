@@ -5,9 +5,9 @@ FROM ${BASE_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive
 
 ARG NIXL_REPO=https://github.com/ai-dynamo/nixl.git
-ARG NIXL_COMMIT=6c352ce2e6396d5f7179e96f5f3bd4eac88b30c4
+ARG NIXL_COMMIT=8585eee0b2a37be52bb5c727f0d21e714518b689
 ARG UCX_REPO=https://github.com/openucx/ucx.git
-ARG UCX_COMMIT=42fc490e469b2f824374357c51227512323d5856
+ARG UCX_COMMIT=5025d2a2e101e30167beebf59512c27ee37fc32b
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
@@ -72,7 +72,7 @@ RUN git init /build/nixl && \
     git -C /build/nixl rev-parse HEAD > /build/nixl-commit.txt
 
 ARG ABSL_REPO=https://github.com/abseil/abseil-cpp.git
-ARG ABSL_TAG=lts_2025_08_14
+ARG ABSL_TAG=20250814.2
 ARG GRPC_REPO=https://github.com/grpc/grpc.git
 ARG GRPC_TAG=v1.73.0
 

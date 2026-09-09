@@ -40,7 +40,7 @@ defaults:
 
   # Shared by more than one image, so they cannot be owned by any single one.
   vars:
-    libvfio_user_commit: 323f4cb6cddc3713fb7aebe44436f28b28b5413a
+    libvfio_user_commit: 803924493a7c787b2ba358751f55f07d5dba64b2
 
 images:
 
@@ -73,16 +73,22 @@ images:
     # No CI artifact: its only consumer wants a registry ref, so the build job
     # pushes it straight to GHCR instead of round-tripping a ~13 GB tarball.
     vars:
-      cuda_version: "13-3"
-      rocm_version: "7.14"
+      cuda_version: "13-4"
+      # On the therock stream this is descriptive, not selective: that apt
+      # source is versionless ("stable"), so the release installed is whatever
+      # stable currently holds and this only names it for the tag and label.
+      # It therefore goes stale silently -- version-scrub.sh reads the actual
+      # amdrocm version back out of the repo index to keep it honest. Only the
+      # legacy stream builds this into a URL and so genuinely pins.
+      rocm_version: "10.0"
       # 'therock' (repo.amd.com, ROCm 7.13+) or 'legacy' (repo.radeon.com, <=7.2)
       rocm_stream: therock
     build_args:
       CUDA_VERSION: "{cuda_version}"
       ROCM_VERSION: "{rocm_version}"
       ROCM_STREAM: "{rocm_stream}"
-    # CUDA_VERSION carries the apt package form (13-3); publish it the way
-    # NVIDIA versions it (13.3).
+    # CUDA_VERSION carries the apt package form (13-4); publish it the way
+    # NVIDIA versions it (13.4).
     variant: "rocm{rocm_version|ver}-cuda{cuda_version|dots|ver}"
     labels:
       "{ns}.rocm.version": "{rocm_version}"
@@ -95,7 +101,7 @@ images:
     vars:
       # Must be a master commit -- the libhipfile engine is not in any fio tag yet
       fio_repo: https://github.com/axboe/fio.git
-      fio_commit: 975ea1856fee9f4c0f01f6f19ba3c61ce24f9bc8
+      fio_commit: e333e45bd1e7503388d71932af047ecfd22c25da
       # Provenance only, and empty here: the default target tracks master HEAD,
       # so it has no branch of its own worth recording. A variant built from a
       # fork branch fills it in and the label appears only there.
@@ -134,18 +140,22 @@ images:
     base: ubuntu-cuda-rocm
     vars:
       nixl_repo: https://github.com/ai-dynamo/nixl.git
-      nixl_commit: 6c352ce2e6396d5f7179e96f5f3bd4eac88b30c4
+      nixl_commit: 8585eee0b2a37be52bb5c727f0d21e714518b689
       # UCX is built from source rather than apt: the packaged build has no
       # ROCm transport, so it cannot register HIP memory.
       ucx_repo: https://github.com/openucx/ucx.git
-      ucx_commit: 42fc490e469b2f824374357c51227512323d5856
+      ucx_commit: 5025d2a2e101e30167beebf59512c27ee37fc32b
       etcd_repo: https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git
       etcd_commit: 7c6e714f188f9576e25e0350cac4181139eec23e
       # Abseil and gRPC are built from source because Ubuntu's libgrpc++-dev
       # drags in an Abseil too old for NIXL. These match the pins upstream
       # NIXL uses in .ci/dockerfiles/Dockerfile.rocm.
       absl_repo: https://github.com/abseil/abseil-cpp.git
-      absl_tag: lts_2025_08_14
+      # Upstream NIXL writes this as lts_2025_08_14, which is a *branch*, not a
+      # tag -- it moves as that LTS line takes patches, despite upstream's
+      # comment calling it immutable. This is the release tag at that branch's
+      # current head, so it is the same tree and actually immutable.
+      absl_tag: "20250814.2"
       grpc_repo: https://github.com/grpc/grpc.git
       grpc_tag: v1.73.0
       # NIXL only uses HIP in its libfabric plugin, so libfabric is what makes
@@ -178,7 +188,7 @@ images:
     base: ubuntu-libvfio-user
     artifact: true
     vars:
-      rocm_ernic_commit: e3ef00c2a0c1ba1df95e6cbbe9362c2a1ad1d2fb
+      rocm_ernic_commit: 7e73889491d8279f0dfed7eedc16834af8f6ea22
     build_args:
       ROCM_ERNIC_COMMIT: "{rocm_ernic_commit}"
     # This image links against libvfio-user, so that pin belongs in the tag:
@@ -196,11 +206,16 @@ images:
       rocjitsu_repo:
         value: https://github.com/ROCm/rocm-systems.git
         env: ROCM_ROCJITSU_REPO
+      # Following the gfx1250 vfio-compute WIP branch rather than develop for
+      # now: the vfio-user compute work only exists there. version-scrub.sh
+      # tracks whichever branch this names, so the pin below follows its HEAD.
+      # Revert both to `develop` once the work lands upstream -- and expect the
+      # scrub to warn rather than bump if the branch is ever rebased away.
       rocjitsu_branch:
-        value: develop
+        value: users/agutierr/gfx1250-vfio-compute-wip
         env: ROCM_ROCJITSU_BRANCH
       rocjitsu_commit:
-        value: 5e9cc7c57d372c0198fd8decb1fe5ceb07038a2b
+        value: 730bc62d60191337a07da50892538475370cb071
         env: ROCM_ROCJITSU_COMMIT
       # Only gfx_target_version 120500 has an IP discovery profile upstream, so
       # this is the only config the vfio-user front end can actually serve. It
@@ -218,23 +233,6 @@ images:
     labels:
       "{ns}.rocjitsu.branch": "{rocjitsu_branch}"
       "{ns}.rocjitsu.commit": "{rocjitsu_commit}"
-    variants:
-      730bc62:
-        suffix: "-730bc62"
-        # Nothing downstream consumes it, so skip the multi-GB CI artifact
-        # round-trip the default target pays for the compose test.
-        artifact: false
-        # A large jump ahead of the default pin, published alongside it rather
-        # than replacing it. version-scrub.sh must not touch this.
-        #
-        # This commit is not on develop -- it is the head of a WIP branch as of
-        # 2026-09-08. The branch is recorded so the image's build.json and
-        # branch label say where the commit came from; it is provenance only,
-        # since the Dockerfile fetches the commit directly. The pin does not
-        # track the branch, so the two will diverge once the branch moves.
-        vars:
-          rocjitsu_commit: 730bc62d60191337a07da50892538475370cb071
-          rocjitsu_branch: users/agutierr/gfx1250-vfio-compute-wip
 
   ubuntu-qemu-libvfio-user:
     job: matrix
@@ -252,7 +250,7 @@ images:
       qemu_commit: v11.1.1
       # Set QEMU_MINIMAL_REPO=none to skip the VM build entirely.
       qemu_minimal_repo: https://github.com/sbates130272/qemu-minimal.git
-      qemu_minimal_commit: 225a81766b87ad2adb4e93d71bb8ed5e4e996466
+      qemu_minimal_commit: 825f1d3fa3055711b9a06cccd8fa6883ca5a9aeb
       username: batesste
       vm_name: ""
       password:

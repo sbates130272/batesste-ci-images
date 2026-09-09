@@ -30,6 +30,20 @@ current_pin() {
     "$TOOL" config "$target" --get "$var" --env-file /dev/null
 }
 
+# GitHub's API, with auth only when we actually have a token. An empty
+# `Authorization: Bearer` header is rejected outright (401), so the header has
+# to be absent rather than empty when GITHUB_TOKEN is unset -- the anonymous
+# rate limit is ample for the handful of calls below. Note that a classic PAT
+# is worse than none for the ROCm org, which 403s them; CI's Actions token is
+# an App token and is fine.
+gh_curl() {
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" "$@"
+    else
+        curl -fsSL "$@"
+    fi
+}
+
 # Abort if a fetched value is empty or null — better to skip than corrupt.
 check_nonempty() {
     local val="$1" label="$2"
@@ -70,6 +84,48 @@ replace_in_yaml() {
     fi
     mv "$tmp" "$IMAGES_YML"
     echo "  updated images.yml: $old -> $new"
+    changed=1
+}
+
+# Rewrite a specific `key: "value"` var in images.yml. The commit pins above go
+# through replace_in_yaml, which is safe because a 40-char SHA cannot collide
+# with anything else in the file; a short version string like "10.0" very much
+# can, so target it by key instead of replacing the literal everywhere.
+replace_yaml_var() {
+    local key="$1" new="$2" old="$3"
+    local tmp
+    tmp="$(mktemp)"
+    awk -v key="$key" -v new="$new" '
+        /^    variants:[[:space:]]*$/ { in_variants = 1; print; next }
+        in_variants && /^[[:space:]]*$/ { print; next }
+        in_variants && !/^     / { in_variants = 0 }
+        !in_variants && !done && $0 ~ "^( +)" key ": " {
+            match($0, /^ +/)
+            printf "%s%s: \"%s\"\n", substr($0, 1, RLENGTH), key, new
+            done = 1
+            next
+        }
+        { print }
+    ' "$IMAGES_YML" > "$tmp"
+    if cmp -s "$tmp" "$IMAGES_YML"; then
+        rm -f "$tmp"
+        echo "  WARNING: could not rewrite $key in images.yml — leaving it alone."
+        return
+    fi
+    mv "$tmp" "$IMAGES_YML"
+    echo "  updated images.yml: $key $old -> $new"
+    changed=1
+}
+
+# Same idea for a Dockerfile `ARG NAME=value` default.
+replace_arg_default() {
+    local name="$1" new="$2" file="$3"
+    if ! grep -qE "^ARG ${name}=" "$file"; then
+        echo "  WARNING: $(basename "$file") has no ARG ${name} — not tracked."
+        return
+    fi
+    sed -i -E "s|^ARG ${name}=.*|ARG ${name}=${new}|" "$file"
+    echo "  updated $(basename "$file"): ARG ${name}=${new}"
     changed=1
 }
 
@@ -119,8 +175,7 @@ if check_nonempty "$LIBVFIO_LATEST" "libvfio-user HEAD" && [[ "$LIBVFIO_CURRENT"
 fi
 
 echo "==> Fetching latest qemu-minimal HEAD..."
-QEMU_MINIMAL_LATEST=$(curl -fsSL \
-    -H "Authorization: Bearer ${GITHUB_TOKEN:-}" \
+QEMU_MINIMAL_LATEST=$(gh_curl \
     "https://api.github.com/repos/sbates130272/qemu-minimal/commits/main" \
     | jq -r '.sha')
 QEMU_MINIMAL_CURRENT=$(current_pin ubuntu-qemu-libvfio-user qemu_minimal_commit)
@@ -131,8 +186,7 @@ if check_nonempty "$QEMU_MINIMAL_LATEST" "qemu-minimal HEAD" \
 fi
 
 echo "==> Fetching latest ROCM_ERNIC HEAD..."
-ERNIC_LATEST=$(curl -fsSL \
-    -H "Authorization: Bearer ${GITHUB_TOKEN:-}" \
+ERNIC_LATEST=$(gh_curl \
     "https://api.github.com/repos/ROCm/rocm-ernic/commits/HEAD" \
     | jq -r '.sha')
 ERNIC_CURRENT=$(current_pin ubuntu-rocm-ernic rocm_ernic_commit)
@@ -147,8 +201,7 @@ echo "==> Fetching latest ROCJITSU HEAD..."
 # Track whichever branch the default target is pinned to rather than
 # hardcoding it here.
 ROCJITSU_BRANCH=$(current_pin ubuntu-rocm-rocjitsu rocjitsu_branch)
-ROCJITSU_LATEST=$(curl -fsSL \
-    -H "Authorization: Bearer ${GITHUB_TOKEN:-}" \
+ROCJITSU_LATEST=$(gh_curl \
     "https://api.github.com/repos/ROCm/rocm-systems/commits/${ROCJITSU_BRANCH}" \
     | jq -r '.sha')
 ROCJITSU_CURRENT=$(current_pin ubuntu-rocm-rocjitsu rocjitsu_commit)
@@ -162,8 +215,7 @@ fi
 
 echo "==> Fetching latest fio HEAD..."
 # fio must track master: the libhipfile engine is not in any release tag yet.
-FIO_LATEST=$(curl -fsSL \
-    -H "Authorization: Bearer ${GITHUB_TOKEN:-}" \
+FIO_LATEST=$(gh_curl \
     "https://api.github.com/repos/axboe/fio/commits/HEAD" \
     | jq -r '.sha')
 FIO_CURRENT=$(current_pin ubuntu-cuda-rocm-fio fio_commit)
@@ -186,6 +238,46 @@ echo "    current: $KEYRING_CURRENT  latest: $KEYRING_LATEST"
 if check_nonempty "$KEYRING_LATEST" "cuda-keyring deb" && [[ "$KEYRING_CURRENT" != "$KEYRING_LATEST" ]]; then
     replace_in_files "$KEYRING_CURRENT" "$KEYRING_LATEST" \
         "$REPO_ROOT/ubuntu-cuda-rocm/Dockerfile"
+fi
+
+echo "==> Fetching latest CUDA toolkit version..."
+# Same query the in-image cuda-latest helper makes, kept here so the scrub does
+# not need a built image to run.
+CUDA_LATEST=$(curl -fsSL \
+    "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/Packages" \
+    | awk '/^Package: cuda-toolkit-[0-9]+-[0-9]+$/{print $2}' \
+    | sed 's/^cuda-toolkit-//' | sort -V | tail -1)
+CUDA_CURRENT=$(current_pin ubuntu-cuda-rocm cuda_version)
+echo "    current: $CUDA_CURRENT  latest: $CUDA_LATEST"
+if check_nonempty "$CUDA_LATEST" "CUDA toolkit version" \
+    && [[ "$CUDA_CURRENT" != "$CUDA_LATEST" ]]; then
+    replace_yaml_var cuda_version "$CUDA_LATEST" "$CUDA_CURRENT"
+    replace_arg_default CUDA_VERSION "$CUDA_LATEST" \
+        "$REPO_ROOT/ubuntu-cuda-rocm/Dockerfile"
+fi
+
+echo "==> Fetching ROCm version on the therock stable stream..."
+# The therock apt source is versionless, so rocm_version only *describes* what
+# stable currently ships -- read it back out of the repo index rather than
+# trusting the checked-in value, which is how it drifted to 7.14 while stable
+# had moved to 10.0. Skipped on the legacy stream, where it is a real pin that
+# selects a repo URL and so must not be auto-bumped.
+ROCM_STREAM_CURRENT=$(current_pin ubuntu-cuda-rocm rocm_stream)
+if [[ "$ROCM_STREAM_CURRENT" == "therock" ]]; then
+    ROCM_LATEST=$(curl -fsSL \
+        "https://stable.repo.amd.com/rocm/core/packages/ubuntu2404/dists/stable/main/binary-amd64/Packages" \
+        | awk '/^Package: amdrocm$/{f=1} f&&/^Version:/{print $2; exit}' \
+        | cut -d- -f1 | cut -d. -f1,2)
+    ROCM_CURRENT=$(current_pin ubuntu-cuda-rocm rocm_version)
+    echo "    current: $ROCM_CURRENT  latest: $ROCM_LATEST"
+    if check_nonempty "$ROCM_LATEST" "ROCm stable version" \
+        && [[ "$ROCM_CURRENT" != "$ROCM_LATEST" ]]; then
+        replace_yaml_var rocm_version "$ROCM_LATEST" "$ROCM_CURRENT"
+        replace_arg_default ROCM_VERSION "$ROCM_LATEST" \
+            "$REPO_ROOT/ubuntu-cuda-rocm/Dockerfile"
+    fi
+else
+    echo "    stream is '$ROCM_STREAM_CURRENT', not therock — rocm_version is a real pin, skipping."
 fi
 
 if [[ "$changed" -eq 0 ]]; then
