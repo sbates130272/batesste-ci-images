@@ -41,6 +41,12 @@ defaults:
   # Shared by more than one image, so they cannot be owned by any single one.
   vars:
     libvfio_user_commit: 803924493a7c787b2ba358751f55f07d5dba64b2
+    # The Ubuntu cloud image every guest qcow2 is built from. Ubuntu 26.04 LTS
+    # "resolute" ships Linux 7.0; guests needing drivers that only landed in
+    # 6.18 or later (ionic RDMA, for one) cannot use noble. A flavour that
+    # needs something else pins its own release var.
+    release: resolute
+    arch: amd64
 
 images:
 
@@ -250,27 +256,25 @@ images:
       qemu_commit: v11.1.1
       # Set QEMU_MINIMAL_REPO=none to skip the VM build entirely.
       qemu_minimal_repo: https://github.com/sbates130272/qemu-minimal.git
-      qemu_minimal_commit: 825f1d3fa3055711b9a06cccd8fa6883ca5a9aeb
+      qemu_minimal_commit: 737f73595b60ab89bd200ce1cb08cee134e2f8bb
       username: batesste
       vm_name: ""
       password:
         value: changeme
         secret: true
-      release: noble
-      arch: amd64
+      # Guest disk size in GB. gen-vm's own default, restated here so the
+      # catalogue is the single source of truth for it.
+      vm_size: 64
     build_args:
       QEMU_REPO: "{qemu_repo}"
       QEMU_COMMIT: "{qemu_commit}"
       QEMU_MINIMAL_REPO: "{qemu_minimal_repo}"
       QEMU_MINIMAL_COMMIT: "{qemu_minimal_commit}"
-      # vm_stage and kvm are decided at build time from /dev/kvm and the
-      # builder's entitlements, not pinned here.
-      VM_STAGE: "{vm_stage}"
-      KVM: "{kvm}"
       USERNAME: "{username}"
       VM_NAME: "{vm_name}"
       RELEASE: "{release}"
       ARCH: "{arch}"
+      VM_SIZE: "{vm_size}"
       PASSWORD: "{password}"
     # A release tag becomes qemu11.1.1; a fork branch or SHA is named rather
     # than dressed up as a version. Not expressible as a template.
@@ -285,3 +289,68 @@ images:
         vars:
           qemu_repo: https://github.com/sbates130272/qemu.git
           qemu_commit: dev/stephen/pci-mmio-bridge-submit
+
+  # Guest qcow2 images. One parameterised Dockerfile, one repository per
+  # flavour: adding a guest is packages/<name>.txt, checks/<name>.sh, an
+  # upstream Ansible playbook name and a variants: entry below. The result is
+  # a FROM scratch payload carrying only /output, so a consumer pulls the disk
+  # without the multi-GB QEMU toolchain that produced it.
+  #
+  # The guest kernel is deliberately absent from the tag: it is not knowable
+  # until the guest is built. It is recorded in vm-info.json instead.
+  ubuntu-qcow2-gen:
+    job: derived
+    base: ubuntu-qemu-libvfio-user
+    artifact: true
+    entitlement: security.insecure
+    # The Dockerfile bind-mounts this; it holds the gitignored cloud-image
+    # downloads and, on the AMD network, amd-root-ca.crt.
+    context_dirs:
+      - common/cloud-image-cache
+    vars:
+      flavour: basic
+      # ubuntu-qcow2-gen/packages/<file> and ubuntu-qcow2-gen/checks/<flavour>.sh
+      vm_packages: base.txt
+      # qemu-minimal ansible/playbooks/<file>; empty means cloud-init only.
+      vm_playbook: ""
+      username: batesste
+      vm_name: ""
+      password:
+        value: changeme
+        secret: true
+    build_args:
+      QEMU_MINIMAL_REPO: "{qemu_minimal_repo}"
+      QEMU_MINIMAL_COMMIT: "{qemu_minimal_commit}"
+      FLAVOUR: "{flavour}"
+      USERNAME: "{username}"
+      VM_NAME: "{vm_name}"
+      PASSWORD: "{password}"
+      RELEASE: "{release}"
+      ARCH: "{arch}"
+      VM_SIZE: "{vm_size}"
+      VM_PACKAGES: "{vm_packages}"
+      VM_PLAYBOOK: "{vm_playbook}"
+    variant: "vm.{release}-{flavour}-qm.{qemu_minimal_commit|short}"
+    labels:
+      "{ns}.vm.release": "{release}"
+      "{ns}.vm.flavour": "{flavour}"
+      "{ns}.vm.packages": "{vm_packages}"
+      "{ns}.vm.playbook": "{vm_playbook}"
+      "{ns}.qemu-minimal.commit": "{qemu_minimal_commit}"
+    variants:
+      # For ROCm/rocm-ernic's ionic RDMA jobs: drivers/infiniband/hw/ionic
+      # merged in Linux 6.18, so noble's 6.8 cannot run them at all. The
+      # toolchain and rdma-core build deps are pre-installed to save the jobs
+      # wall-clock; the ionic-ernic DKMS modules are deliberately *not* built
+      # here, since building them from pinned upstream sources is what those
+      # jobs exist to test.
+      #
+      # vm_playbook stays empty until vm-ionic.yml lands in qemu-minimal: the
+      # source build of rdma-core 62.0 and the pre-seeded /opt/ionic-src
+      # checkout are optimisations, and guest provisioning is owned upstream so
+      # it stays shared with the non-container qemu-tool workflows.
+      ionic:
+        suffix: "-ionic"
+        vars:
+          flavour: ionic
+          vm_packages: ionic.txt

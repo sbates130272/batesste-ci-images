@@ -7,9 +7,10 @@
 # comes from the build ARGs, which reach us as environment
 # variables.  A no-op when qemu-minimal was not cloned.
 #
-# KVM=true asks for hardware acceleration.  That only works in a
-# RUN --security=insecure step (the device node has to be created
-# and opened); anywhere else we warn and fall back to TCG.
+# KVM is mandatory.  It only works in a RUN --security=insecure
+# step (the device node has to be created and opened); anywhere
+# else this script aborts rather than fall back to TCG emulation,
+# which is roughly 10x slower.
 #
 
 set -eu
@@ -24,8 +25,9 @@ fi
 FINAL_USERNAME="${USERNAME:-batesste}"
 FINAL_VM_NAME="${VM_NAME:-${FINAL_USERNAME}-ci-vm}"
 FINAL_PASSWORD="${PASSWORD:-changeme}"
-FINAL_RELEASE="${RELEASE:-noble}"
+FINAL_RELEASE="${RELEASE:-resolute}"
 FINAL_ARCH="${ARCH:-amd64}"
+FINAL_VM_SIZE="${VM_SIZE:-64}"
 KERNEL_VERSION=$(uname -r)
 
 echo "=== VM Build Configuration ==="
@@ -36,6 +38,7 @@ echo "VM_NAME: ${FINAL_VM_NAME}"
 echo "USERNAME: ${FINAL_USERNAME}"
 echo "RELEASE: ${FINAL_RELEASE}"
 echo "ARCH: ${FINAL_ARCH}"
+echo "VM_SIZE: ${FINAL_VM_SIZE}G"
 echo "Kernel version: ${KERNEL_VERSION}"
 
 command -v qemu-tool > /dev/null || {
@@ -46,20 +49,18 @@ command -v qemu-tool > /dev/null || {
 mkdir -p "${QM}/images"
 cp /tmp/cloud-cache/*.img "${QM}/images/" 2>/dev/null || true
 
-# Decide whether KVM is actually usable.  /dev/kvm does not exist
-# in the build sandbox, so create it; both the mknod and the open
-# fail without the insecure entitlement, in which case we warn and
-# carry on with TCG emulation.
-USE_KVM=false
-if [ "${KVM:-true}" = "true" ]; then
-    [ -e /dev/kvm ] || mknod /dev/kvm c 10 232 2>/dev/null || true
-    chmod 666 /dev/kvm 2>/dev/null || true
-    if [ -c /dev/kvm ] && (exec 3<> /dev/kvm) 2>/dev/null; then
-        USE_KVM=true
-    else
-        echo "WARNING: KVM requested but /dev/kvm is unusable;" \
-             "falling back to TCG emulation (much slower)."
-    fi
+# /dev/kvm does not exist in the build sandbox, so create it.  Both
+# the mknod and the open fail without the insecure entitlement, and
+# that is fatal: there is no TCG fallback.
+[ -e /dev/kvm ] || mknod /dev/kvm c 10 232 2>/dev/null || true
+chmod 666 /dev/kvm 2>/dev/null || true
+if ! { [ -c /dev/kvm ] && (exec 3<> /dev/kvm); } 2>/dev/null; then
+    echo "Error: /dev/kvm is unusable inside this build step."
+    echo "  Build the image with 'docker buildx build --allow" \
+         "security.insecure' against a builder created with"
+    echo "  --buildkitd-flags '--allow-insecure-entitlement" \
+         "security.insecure', on an x86 host with KVM enabled."
+    exit 1
 fi
 
 # Extra packages from packages.txt are appended to qemu-minimal's
@@ -80,25 +81,20 @@ if [ -f /build/packages.txt ]; then
     PACKAGES_FILE="${COMBINED}"
 fi
 
-if [ "${USE_KVM}" = "true" ]; then
-    KVM_FLAG=--kvm
-else
-    KVM_FLAG=--no-kvm
-fi
-
-echo "Running qemu-tool gen-vm ${KVM_FLAG}..."
+echo "Running qemu-tool gen-vm --kvm..."
 qemu-tool gen-vm \
     --vm-name "${FINAL_VM_NAME}" \
     --username "${FINAL_USERNAME}" \
     --password "${FINAL_PASSWORD}" \
     --release "${FINAL_RELEASE}" \
     --arch "${FINAL_ARCH}" \
+    --size "${FINAL_VM_SIZE}" \
     --images "${QM}/images" \
     --qemu-path /opt/qemu/bin/ \
     --ssh-key-file /root/.ssh/id_rsa.pub \
     --packages "${PACKAGES_FILE}" \
     --no-backing \
-    "${KVM_FLAG}"
+    --kvm
 
 [ -f "${QM}/images/${FINAL_VM_NAME}.qcow2" ] || {
     echo "Error: VM image not created!"
@@ -134,7 +130,7 @@ cat > /output/vm-info.json <<EOF
   "release": "${FINAL_RELEASE}",
   "architecture": "${FINAL_ARCH}",
   "qemu_path": "/opt/qemu/bin/",
-  "kvm_enabled": ${USE_KVM},
+  "kvm_enabled": true,
   "backing_file": false,
   "ssh_keys": {
     "private_key_path": "/output/id_rsa",

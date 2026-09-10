@@ -1,10 +1,5 @@
 # syntax=docker/dockerfile:1-labs
 
-# Selects which VM build stage the final image is assembled
-# from: vm-kvm needs the security.insecure entitlement, vm-tcg
-# does not.  ci-images-tool.py picks one; see README.md.
-ARG VM_STAGE=vm-kvm
-
 # libvfio-user is already built and installed under /usr/local by the base
 # image, which pins the same SHA this image used to build for itself.
 ARG BASE_IMAGE=docker.io/sbates130272/batesste-ci-images-ubuntu-libvfio-user:latest
@@ -32,12 +27,12 @@ ARG QEMU_COMMIT=v11.1.1
 # Accept qemu-minimal configuration as build arguments
 ARG QEMU_MINIMAL_REPO=
 ARG QEMU_MINIMAL_COMMIT=
-ARG KVM=true
 ARG USERNAME=batesste
 ARG VM_NAME=
 ARG PASSWORD=changeme
-ARG RELEASE=noble
+ARG RELEASE=resolute
 ARG ARCH=amd64
+ARG VM_SIZE=64
 ARG CACHE_BUST=
 
 WORKDIR /build
@@ -84,6 +79,30 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     wget \
     openssh-client
 
+# Docker CLI (no daemon): qemu-tool's "compose" subcommand shells out to
+# "docker compose", and CI jobs running inside this image drive the host's
+# daemon over a bind-mounted /var/run/docker.sock.  Ubuntu's docker.io package
+# would pull in the engine, so take the CLI-only packages from Docker's own
+# repository instead.
+# apt reads an ASCII-armoured key directly from a .asc, so there is no need to
+# pull gnupg in just to dearmor it.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    . /etc/os-release && \
+    install -m 0755 -d /etc/apt/keyrings && \
+    curl -fsSL -o /etc/apt/keyrings/docker.asc \
+        https://download.docker.com/linux/ubuntu/gpg && \
+    chmod a+r /etc/apt/keyrings/docker.asc && \
+    printf 'Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: %s\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n' \
+        "${VERSION_CODENAME}" > /etc/apt/sources.list.d/docker.sources && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        docker-ce-cli \
+        docker-buildx-plugin \
+        docker-compose-plugin && \
+    docker --version && \
+    docker compose version
+
 # Python packaging tooling. setuptools is no longer implicit on 3.12, and pipx
 # installs CLI tools without hand-rolling a venv for each one.
 # pipx defaults to ~/.local/bin, which is not on PATH here, so point it at
@@ -98,6 +117,16 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get install -y -qq \
     pipx \
     python3-setuptools
+
+# Ansible provisions guest images beyond what cloud-init can express (source
+# builds, git checkouts, systemd units).  qemu-tool's --ansible-playbook needs
+# both ansible-playbook and ansible-galaxy on PATH; PIPX_BIN_DIR above puts
+# them there.  Installed here rather than in ubuntu-qcow2-gen so every guest
+# flavour shares one layer.
+ARG ANSIBLE_CORE_VERSION=2.21.4
+RUN pipx install "ansible-core==${ANSIBLE_CORE_VERSION}" && \
+    ansible-playbook --version && \
+    ansible-galaxy --version
 
 # Create output directory and copy packages file
 RUN mkdir -p /output
@@ -147,43 +176,27 @@ RUN chmod +x /usr/local/bin/build-vm
 # is what lets the step create and open /dev/kvm, so this stage
 # needs "buildx build --allow security.insecure" against a builder
 # started with --allow-insecure-entitlement=security.insecure.
+# There is no TCG fallback: emulation is ~10x slower, so a missing
+# /dev/kvm is a build failure rather than a silent slowdown.
 # The --mount binds common/cloud-image-cache/ from the build
 # context; pre-downloaded images land where gen-vm looks so it
 # can skip the download.
-FROM base AS vm-kvm
+FROM base AS vm
 ARG QEMU_MINIMAL_REPO=
 ARG QEMU_MINIMAL_COMMIT=
 ARG USERNAME=batesste
 ARG VM_NAME=
 ARG PASSWORD=changeme
-ARG RELEASE=noble
+ARG RELEASE=resolute
 ARG ARCH=amd64
+ARG VM_SIZE=64
 ARG CACHE_BUST=
-ARG KVM=true
 # hadolint ignore=DL3059
 RUN --security=insecure \
     --mount=type=bind,source=common/cloud-image-cache,target=/tmp/cloud-cache \
     build-vm
 
-# Same VM build without the insecure entitlement: no /dev/kvm, so
-# gen-vm runs under TCG emulation.  Used when the builder cannot
-# grant security.insecure.
-FROM base AS vm-tcg
-ARG QEMU_MINIMAL_REPO=
-ARG QEMU_MINIMAL_COMMIT=
-ARG USERNAME=batesste
-ARG VM_NAME=
-ARG PASSWORD=changeme
-ARG RELEASE=noble
-ARG ARCH=amd64
-ARG CACHE_BUST=
-ARG KVM=false
-# hadolint ignore=DL3059
-RUN --mount=type=bind,source=common/cloud-image-cache,target=/tmp/cloud-cache \
-    build-vm
-
-# hadolint ignore=DL3006
-FROM ${VM_STAGE} AS final
+FROM vm AS final
 
 # Copy scripts
 COPY ubuntu-qemu-libvfio-user/entrypoint.sh /build/entrypoint.sh

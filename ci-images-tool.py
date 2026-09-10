@@ -17,8 +17,10 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,13 +46,19 @@ DEFAULT_REGISTRY = "docker.io"
 DEFAULT_REGISTRY_IMAGE = "batesste-ci-images"
 DEFAULT_IMAGE_TAG = "latest"
 DEFAULT_LABEL_NS = "io.batesste.ci-images"
-DEFAULT_KVM = True
 
 _SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 _VERSION_RE = re.compile(r"^\d+(\.\d+)*$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 BUILDER_NAME = "builder"
+
+# Media types for the bare qcow2 artifact. Custom rather than an OCI image
+# layer type, so `oras discover` and registry UIs can tell a disk from a
+# container without pulling it.
+VM_ARTIFACT_TYPE = "application/vnd.batesste.vm-image.v1"
+VM_LAYER_MEDIA_TYPE = "application/vnd.batesste.vm-image.layer.v1+zstd"
+VM_INFO_ARTIFACT_TYPE = "application/vnd.batesste.vm-info.v1"
 BUILDKITD_FLAGS = (
     "--allow-insecure-entitlement=security.insecure "
     "--allow-insecure-entitlement=network.host"
@@ -295,7 +303,6 @@ class Config:
     # VM guest is built from.
     ubuntu_version: str = DEFAULT_UBUNTU_VERSION
 
-    kvm: bool = DEFAULT_KVM
     # Retained for compatibility: FIO_BASE_IMAGE predates BASE_IMAGE_FOR_*.
     fio_base_image: str = ""
 
@@ -361,13 +368,6 @@ def _env_or_default(name: str, default: str) -> str:
     return val
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    val = os.environ.get(name, "").strip().lower()
-    if not val:
-        return default
-    return val in {"1", "true", "yes", "on"}
-
-
 def load_config(
     env_file: str | None = None,
     password_file: str | None = None,
@@ -420,7 +420,6 @@ def load_config(
         registry_password=os.environ.get("REGISTRY_PASSWORD", ""),
         workdir=workdir,
         ubuntu_version=_ubuntu_version_from_base(workdir),
-        kvm=_env_bool("KVM", DEFAULT_KVM),
         fio_base_image=os.environ.get("FIO_BASE_IMAGE", ""),
     )
 
@@ -751,7 +750,6 @@ def base_image_for(cfg: Config, target: Target) -> str:
 def build_args_for(
     cfg: Config,
     target: Target,
-    kvm_build: bool = False,
     include_secrets: bool = True,
 ) -> list[str]:
     """Every ``--build-arg`` this target needs, as ``KEY=value`` strings.
@@ -769,14 +767,7 @@ def build_args_for(
     if base:
         args.append(f"BASE_IMAGE={base}")
 
-    values = resolve_vars(
-        cfg,
-        target,
-        extra={
-            "vm_stage": "vm-kvm" if kvm_build else "vm-tcg",
-            "kvm": "true" if kvm_build else "false",
-        },
-    )
+    values = resolve_vars(cfg, target)
     secrets = secret_vars(cfg, target)
 
     for key, template in (
@@ -935,6 +926,35 @@ def has_credentials(cfg: Config) -> bool:
     return bool(cfg.registry_username and cfg.registry_password)
 
 
+def require_kvm(insecure_ok: bool) -> None:
+    """Abort unless a KVM-accelerated VM build is actually possible.
+
+    Guest images boot a real VM to provision themselves.  Emulation is not a
+    usable substitute -- it is 10x slower, not degraded-but-fine -- so the
+    absence of KVM is an error that names its own remedy rather than a warning
+    nobody reads.
+    """
+
+    problems: list[str] = []
+    if not Path("/dev/kvm").exists():
+        problems.append(
+            "this host has no /dev/kvm. KVM is required to build guest "
+            "images: use an x86 host with hardware virtualisation enabled "
+            "(GitHub-hosted x86 'ubuntu-latest' runners do have it)."
+        )
+    if not insecure_ok:
+        problems.append(
+            "the buildx builder cannot grant the security.insecure "
+            "entitlement. Recreate it with: docker buildx create --name "
+            f"{BUILDER_NAME} --driver docker-container "
+            "--buildkitd-flags '--allow-insecure-entitlement security.insecure'"
+        )
+    if problems:
+        for p in problems:
+            console.print(f"[red]Error:[/] {p}")
+        sys.exit(1)
+
+
 # ── subcommands ────────────────────────────────────────
 
 
@@ -954,17 +974,11 @@ def cmd_build(args: argparse.Namespace) -> None:
         insecure_ok = ensure_builder()
         docker_login(cfg)
 
-    kvm_build = cfg.kvm and insecure_ok and Path("/dev/kvm").exists()
-    if cfg.kvm and not kvm_build:
-        reason = (
-            "the buildx builder cannot grant the security.insecure entitlement"
-            if not insecure_ok
-            else "this host has no /dev/kvm"
-        )
-        console.print(
-            f"[yellow]Warning:[/] KVM requested but {reason}; the VM "
-            "build will fall back to TCG emulation (much slower)."
-        )
+    # Guest images are built by booting QEMU, so KVM is a precondition rather
+    # than a preference: without it a minutes-long build silently becomes an
+    # hours-long one, on exactly the runs nobody is watching.
+    if not dry_run and any(needs_entitlement(cfg, t) for t in targets):
+        require_kvm(insecure_ok)
 
     # A base built earlier in this same run only exists in the local daemon,
     # which the docker-container builder cannot see.
@@ -975,35 +989,35 @@ def cmd_build(args: argparse.Namespace) -> None:
         if base_target(cfg, t) in selected and not args.base_from_registry
     }
 
-    # The VM image is the only one needing an entitlement the 'default' builder
-    # cannot grant, so it is the only one for which being pushed off the buildx
-    # builder actually costs anything. Targets are built in dependency order and
-    # each is pushed as soon as it is built, so when we have credentials its base
+    # Entitlement-needing images are the only ones for which being pushed off
+    # the buildx builder actually costs anything -- the 'default' builder cannot
+    # grant security.insecure at all. Targets are built in dependency order and
+    # each is pushed as soon as it is built, so when we have credentials the base
     # is already published by the time we get here: point at that and keep the
     # builder, rather than trading KVM for a local image reference. Only worth it
     # for entitlement-needing images -- routing ubuntu-cuda-rocm-fio the same way
     # would re-pull a 28 GB base for no gain.
-    if has_credentials(cfg) and kvm_build:
+    if has_credentials(cfg):
         local_bases -= {t for t in local_bases if needs_entitlement(cfg, t)}
 
-    for t in local_bases:
-        if needs_entitlement(cfg, t) and kvm_build:
+    for t in sorted(local_bases, key=lambda x: x.key):
+        if needs_entitlement(cfg, t):
             console.print(
-                f"[yellow]Warning:[/] {base_target(cfg, t)} is being built in "
-                f"this run and no registry credentials are set, so {t.key} must "
-                "build on the 'default' builder, which cannot grant "
-                "security.insecure; its VM stage falls back to TCG emulation. "
+                f"[red]Error:[/] {base_target(cfg, t)} is being built in this "
+                f"run and no registry credentials are set, so {t.key} would have "
+                "to build on the 'default' builder, which cannot grant "
+                "security.insecure -- and its VM build needs /dev/kvm.\n"
                 "Pass --base-from-registry to build against the published base "
-                "and keep KVM."
+                "and keep KVM, or set registry credentials."
             )
+            sys.exit(1)
 
     for target in targets:
         refs = [tagged_ref(cfg, target, tag=x) for x in tag_set(cfg, target)]
         local_base = target in local_bases
         entitlement = needs_entitlement(cfg, target)
-        target_kvm = kvm_build and not (entitlement and local_base)
 
-        build_args = build_args_for(cfg, target, kvm_build=target_kvm)
+        build_args = build_args_for(cfg, target)
         if args.cache_bust:
             build_args.append(f"CACHE_BUST={args.cache_bust}")
 
@@ -1014,10 +1028,9 @@ def cmd_build(args: argparse.Namespace) -> None:
         # driver) builder instead, which still has a full local layer cache.
         if local_base:
             cmd += ["--builder", "default"]
-        # The vm-kvm stage runs QEMU against /dev/kvm, which only
-        # an insecure-entitlement RUN can reach.  vm-tcg does not
-        # need (and must not request) the entitlement.
-        if entitlement and target_kvm:
+        # The VM build stage runs QEMU against /dev/kvm, which only
+        # an insecure-entitlement RUN can reach.
+        if entitlement:
             cmd += ["--allow", entitlement]
         for ba in build_args:
             cmd += ["--build-arg", ba]
@@ -1035,7 +1048,7 @@ def cmd_build(args: argparse.Namespace) -> None:
         cmd.append(str(cfg.workdir))
 
         console.rule(f"[bold]Building {target.key}[/]")
-        _print_build_summary(cfg, target, args, target_kvm)
+        _print_build_summary(cfg, target, args)
 
         # Declared in images.yml: the Dockerfile bind-mounts these, and
         # buildx fails if one is missing (they hold gitignored downloads).
@@ -1063,7 +1076,6 @@ def _print_build_summary(
     cfg: Config,
     target: Target,
     args: argparse.Namespace,
-    kvm_build: bool = False,
 ) -> None:
     """Pretty-print the build configuration."""
     tags = tag_set(cfg, target)
@@ -1092,7 +1104,7 @@ def _print_build_summary(
             continue
         table.add_row(name, values[name] or "-")
     if needs_entitlement(cfg, target):
-        table.add_row("KVM", "true" if kvm_build else "false (TCG emulation)")
+        table.add_row("KVM", "true (required)")
 
     if args.cache_bust:
         table.add_row("Cache Bust", args.cache_bust)
@@ -1120,6 +1132,141 @@ def cmd_push(args: argparse.Namespace) -> None:
             ref = tagged_ref(cfg, target, tag=tag)
             subprocess.run(["docker", "push", ref], check=True)
             console.print(f"[green]Pushed[/] {ref}")
+
+
+def extract_vm_payload(image_ref: str, dest: Path) -> dict:
+    """Copy ``/output`` out of a guest payload image; return its vm-info.json.
+
+    The payload images are ``FROM scratch``, so there is nothing to run and
+    nothing to mount -- ``docker create`` plus ``docker cp`` is the only way in.
+    """
+
+    created = subprocess.run(
+        ["docker", "create", image_ref],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    cid = created.stdout.strip()
+    try:
+        subprocess.run(
+            ["docker", "cp", f"{cid}:/output/.", str(dest)],
+            check=True,
+        )
+    finally:
+        subprocess.run(["docker", "rm", cid], check=True, capture_output=True)
+
+    info = dest / "vm-info.json"
+    if not info.exists():
+        console.print(
+            f"[red]Error:[/] {image_ref} has no /output/vm-info.json, so it is "
+            "not a guest image payload."
+        )
+        sys.exit(1)
+    return json.loads(info.read_text())
+
+
+def cmd_push_artifact(args: argparse.Namespace) -> None:
+    """Publish a guest qcow2 as a bare ORAS artifact.
+
+    The scratch image is the low-friction path, but it is still a container:
+    pulling it needs a container runtime, and the qcow2 inside it is not
+    addressable on its own. This pushes the compressed disk under its own
+    artifact type, with vm-info.json attached as a referrer, so a libvirt or
+    bare-metal consumer can ``oras pull`` a disk and nothing else.
+
+    Artifact tags carry a suffix so they can share the flavour's repository
+    with the scratch image instead of overwriting it.
+    """
+
+    cfg = load_config(
+        env_file=args.env_file,
+        password_file=args.password_file,
+    )
+    if args.tag:
+        cfg.image_tag = resolve_image_tag(args.tag)
+
+    target = parse_target(cfg, args.image)
+
+    for tool in ("oras", "zstd"):
+        if shutil.which(tool) is None:
+            console.print(f"[red]Error:[/] {tool} is not on PATH")
+            sys.exit(1)
+    if not has_credentials(cfg):
+        console.print(
+            "[red]Error:[/] registry credentials are required for push-artifact"
+        )
+        sys.exit(1)
+
+    # oras reads the same ~/.docker/config.json docker login writes.
+    docker_login(cfg)
+
+    base_tags = tag_set(cfg, target)
+    tags = [
+        f"{t}{args.tag_suffix}" for t in dict.fromkeys(base_tags + list(args.extra_tag))
+    ]
+    repo = f"{cfg.registry}/{full_image_ref(cfg, target)}"
+    source = args.from_image or tagged_ref(cfg, target, tag=base_tags[0])
+
+    console.rule(f"[bold]Pushing {target.key} qcow2 artifact[/]")
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        info = extract_vm_payload(source, work)
+        qcow2 = work / Path(info["image_path"]).name
+        if not qcow2.exists():
+            console.print(f"[red]Error:[/] {qcow2.name} is missing from /output")
+            sys.exit(1)
+
+        console.print(f"Compressing {qcow2.name} ({qcow2.stat().st_size} bytes)")
+        subprocess.run(
+            ["zstd", "-T0", "-19", "--rm", "-q", "-f", str(qcow2)],
+            check=True,
+        )
+        blob = qcow2.with_suffix(qcow2.suffix + ".zst")
+
+        annotations = [
+            f"vm.release={info.get('release', '')}",
+            f"vm.flavour={info.get('flavour', '')}",
+            f"vm.kernel_release={info.get('kernel_release', '')}",
+            f"vm.username={info.get('username', '')}",
+            f"org.opencontainers.image.title={blob.name}",
+        ]
+        annotation_args = [a for pair in annotations for a in ("--annotation", pair)]
+
+        if args.dry_run:
+            for tag in tags:
+                console.print(f"[yellow]Would push[/] {repo}:{tag}")
+            return
+
+        # One push carries every tag; the referrer attaches to the first.
+        subprocess.run(
+            [
+                "oras",
+                "push",
+                "--artifact-type",
+                VM_ARTIFACT_TYPE,
+                *annotation_args,
+                f"{repo}:{','.join(tags)}",
+                f"{blob.name}:{VM_LAYER_MEDIA_TYPE}",
+            ],
+            cwd=work,
+            check=True,
+        )
+        subprocess.run(
+            [
+                "oras",
+                "attach",
+                "--artifact-type",
+                VM_INFO_ARTIFACT_TYPE,
+                f"{repo}:{tags[0]}",
+                "vm-info.json:application/json",
+            ],
+            cwd=work,
+            check=True,
+        )
+
+    for tag in tags:
+        console.print(f"[green]Pushed[/] {repo}:{tag}")
 
 
 def cmd_list(args: argparse.Namespace) -> None:
@@ -1219,7 +1366,6 @@ def cmd_validate(args: argparse.Namespace) -> None:
         image_variant(cfg, t)
         image_labels(cfg, t)
         build_args_for(cfg, t)
-        build_args_for(cfg, t, kvm_build=True)
 
     if errors:
         for e in errors:
@@ -1269,7 +1415,6 @@ def cmd_build_args(args: argparse.Namespace) -> None:
             build_args_for(
                 cfg,
                 parse_target(cfg, args.image),
-                kvm_build=args.kvm,
                 include_secrets=False,
             )
         )
@@ -1544,8 +1689,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Layer on the published base images rather than ones built in "
-            "this run; keeps every image on the buildx builder, so the VM "
-            "stage can still use KVM"
+            "this run; keeps every image on the buildx builder, which the VM "
+            "build needs for KVM"
         ),
     )
     p_build.add_argument(
@@ -1573,6 +1718,53 @@ def build_parser() -> argparse.ArgumentParser:
         help="File containing registry password",
     )
     _add_common_args(p_push)
+
+    # ── push-artifact ──
+    p_artifact = sub.add_parser(
+        "push-artifact",
+        help="Push a target's guest qcow2 as a bare ORAS artifact",
+    )
+    p_artifact.add_argument("image", metavar="TARGET", help=TARGET_HELP)
+    p_artifact.add_argument(
+        "--tag",
+        metavar="TAG",
+        help="Base tag to expand (defaults to IMAGE_TAG), as for `tags`",
+    )
+    p_artifact.add_argument(
+        "--extra-tag",
+        action="append",
+        default=[],
+        metavar="TAG",
+        help="Additional tag to emit verbatim (repeatable)",
+    )
+    p_artifact.add_argument(
+        "--tag-suffix",
+        default="-qcow2",
+        metavar="TEXT",
+        help=(
+            "Appended to every artifact tag so the bare disk can share the "
+            "flavour's repository with the scratch image (default: -qcow2)"
+        ),
+    )
+    p_artifact.add_argument(
+        "--from-image",
+        metavar="REF",
+        help=(
+            "Payload image to extract /output from (defaults to the target's "
+            "first published tag)"
+        ),
+    )
+    p_artifact.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Extract and compress, but print the refs instead of pushing",
+    )
+    p_artifact.add_argument(
+        "--password-file",
+        metavar="FILE",
+        help="File containing registry password",
+    )
+    _add_common_args(p_artifact)
 
     # ── list ──
     p_list = sub.add_parser(
@@ -1658,11 +1850,6 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="TAG",
         help=("Base tag being published; sets the BASE_IMAGE reference emitted"),
     )
-    p_build_args.add_argument(
-        "--kvm",
-        action="store_true",
-        help="Select the vm-kvm stage for the VM image",
-    )
     _add_common_args(p_build_args)
 
     # ── labels ──
@@ -1741,6 +1928,7 @@ def build_parser() -> argparse.ArgumentParser:
 DISPATCH = {
     "build": cmd_build,
     "push": cmd_push,
+    "push-artifact": cmd_push_artifact,
     "list": cmd_list,
     "targets": cmd_targets,
     "validate": cmd_validate,

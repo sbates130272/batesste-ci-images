@@ -1,0 +1,89 @@
+#!/bin/sh
+#
+# probe-guest.sh
+#
+# Boot a freshly built guest qcow2, run a script inside it over SSH and print
+# that script's stdout.  Used at build time to read facts out of the guest that
+# are not knowable beforehand (the kernel version, above all) and to run the
+# per-flavour checks, so a guest that cannot boot or is missing what it
+# promised fails the build rather than the consumer.
+#
+#   probe-guest <image.qcow2> <username> <script>
+#
+# The guest boots from a throwaway overlay, so the published image is byte-for
+# byte what gen-vm produced -- probing must not be why an image differs.
+#
+
+set -eu
+
+IMAGE=$1
+GUEST_USER=$2
+SCRIPT=$3
+
+PORT="${PROBE_SSH_PORT:-2222}"
+BOOT_TIMEOUT="${PROBE_BOOT_TIMEOUT:-300}"
+QEMU="${QEMU_PATH:-/opt/qemu/bin/}qemu-system-x86_64"
+OVERLAY=/tmp/probe-overlay.qcow2
+SERIAL=/tmp/probe-serial.log
+PIDFILE=/tmp/probe-qemu.pid
+
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+-o LogLevel=ERROR -o ConnectTimeout=5 -i /root/.ssh/id_rsa -p ${PORT}"
+
+# shellcheck disable=SC2317  # invoked via trap
+cleanup() {
+    if [ -f "${PIDFILE}" ]; then
+        kill "$(cat "${PIDFILE}")" 2>/dev/null || true
+    fi
+    rm -f "${OVERLAY}" "${PIDFILE}"
+}
+trap cleanup EXIT
+
+rm -f "${OVERLAY}"
+/opt/qemu/bin/qemu-img create -q -f qcow2 -F qcow2 -b "${IMAGE}" "${OVERLAY}"
+
+echo "probe-guest: booting ${IMAGE}" >&2
+"${QEMU}" \
+    -machine q35,accel=kvm \
+    -cpu host \
+    -m 2048 \
+    -smp 2 \
+    -drive "if=virtio,format=qcow2,file=${OVERLAY}" \
+    -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:${PORT}-:22" \
+    -device virtio-net-pci,netdev=n0 \
+    -display none \
+    -serial "file:${SERIAL}" \
+    -daemonize \
+    -pidfile "${PIDFILE}"
+
+waited=0
+# shellcheck disable=SC2086
+until ssh ${SSH_OPTS} "${GUEST_USER}@127.0.0.1" true 2>/dev/null; do
+    waited=$((waited + 5))
+    if [ "${waited}" -ge "${BOOT_TIMEOUT}" ]; then
+        echo "probe-guest: guest did not answer SSH within ${BOOT_TIMEOUT}s" >&2
+        echo "--- serial console ---" >&2
+        tail -n 100 "${SERIAL}" >&2 || true
+        exit 1
+    fi
+    sleep 5
+done
+echo "probe-guest: SSH up after ${waited}s" >&2
+
+status=0
+# shellcheck disable=SC2086
+ssh ${SSH_OPTS} "${GUEST_USER}@127.0.0.1" 'bash -s' < "${SCRIPT}" || status=$?
+
+# shellcheck disable=SC2086
+ssh ${SSH_OPTS} "${GUEST_USER}@127.0.0.1" 'sudo -n poweroff' 2>/dev/null || true
+waited=0
+while [ -f "${PIDFILE}" ] && kill -0 "$(cat "${PIDFILE}")" 2>/dev/null; do
+    waited=$((waited + 2))
+    [ "${waited}" -ge 60 ] && break
+    sleep 2
+done
+
+if [ "${status}" -ne 0 ]; then
+    echo "probe-guest: script failed with status ${status}" >&2
+fi
+exit "${status}"

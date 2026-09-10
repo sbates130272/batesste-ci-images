@@ -1,0 +1,16 @@
+# cloud-init packages for the "basic" guest flavour, appended to qemu-minimal's
+# default manifest.  ${KERNEL_VERSION} expands to the *host* kernel, so name the
+# -generic metapackages here: they track whatever kernel the guest booted.
+build-essential
+cmake
+ninja-build
+pkg-config
+dkms
+git
+linux-headers-generic
+linux-modules-extra-generic
+rdma-core
+ibverbs-utils
+libibverbs-dev
+pipx
+python3-venv

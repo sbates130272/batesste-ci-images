@@ -1,0 +1,32 @@
+# cloud-init packages for the "ionic" guest flavour: everything needed to build
+# rdma-core from source and the ionic-ernic DKMS modules against the guest
+# kernel.  The modules themselves are not built here -- building them is what
+# the consuming jobs exist to test.
+#
+# ${KERNEL_VERSION} expands to the *host* kernel, so name the -generic
+# metapackages: they track whatever kernel the guest booted.
+build-essential
+cmake
+ninja-build
+pkg-config
+dkms
+git
+linux-headers-generic
+linux-modules-extra-generic
+
+# rdma-core build dependencies (upstream v62 wants all of these).
+libnl-3-dev
+libnl-route-3-dev
+libudev-dev
+libsystemd-dev
+python3-docutils
+
+# Distro rdma-core, for ibv_devinfo and friends.  Note that 26.04's package
+# predates providers/ionic (upstream v61), so a job needing libionic must still
+# build rdma-core from source over the top.
+rdma-core
+ibverbs-utils
+libibverbs-dev
+
+pipx
+python3-venv
