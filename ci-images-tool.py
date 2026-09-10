@@ -1192,14 +1192,18 @@ def cmd_push_artifact(args: argparse.Namespace) -> None:
         if shutil.which(tool) is None:
             console.print(f"[red]Error:[/] {tool} is not on PATH")
             sys.exit(1)
-    if not has_credentials(cfg):
-        console.print(
-            "[red]Error:[/] registry credentials are required for push-artifact"
-        )
-        sys.exit(1)
 
-    # oras reads the same ~/.docker/config.json docker login writes.
-    docker_login(cfg)
+    # A dry run extracts and compresses but never reaches the registry, so it
+    # must not demand credentials -- that is the mode for checking what would
+    # be pushed from a machine that cannot push.
+    if not args.dry_run:
+        if not has_credentials(cfg):
+            console.print(
+                "[red]Error:[/] registry credentials are required for push-artifact"
+            )
+            sys.exit(1)
+        # oras reads the same ~/.docker/config.json docker login writes.
+        docker_login(cfg)
 
     base_tags = tag_set(cfg, target)
     tags = [
@@ -1218,8 +1222,22 @@ def cmd_push_artifact(args: argparse.Namespace) -> None:
             sys.exit(1)
 
         console.print(f"Compressing {qcow2.name} ({qcow2.stat().st_size} bytes)")
+        # --long=27 (128 MiB window) is what pays on a disk image: the same
+        # page repeats far apart, further than the default window reaches.
+        # Level 12 rather than 19 -- on a multi-GB qcow2 the top levels cost
+        # several times the wall clock for a few percent of size, and this
+        # runs on a 4-vCPU runner.
         subprocess.run(
-            ["zstd", "-T0", "-19", "--rm", "-q", "-f", str(qcow2)],
+            [
+                "zstd",
+                "-T0",
+                f"-{args.zstd_level}",
+                "--long=27",
+                "--rm",
+                "-q",
+                "-f",
+                str(qcow2),
+            ],
             check=True,
         )
         blob = qcow2.with_suffix(qcow2.suffix + ".zst")
@@ -1755,9 +1773,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_artifact.add_argument(
+        "--zstd-level",
+        type=int,
+        default=12,
+        metavar="N",
+        help="zstd compression level for the disk image (default: 12)",
+    )
+    p_artifact.add_argument(
         "--dry-run",
         action="store_true",
-        help="Extract and compress, but print the refs instead of pushing",
+        help=(
+            "Extract and compress, but print the refs instead of pushing; "
+            "needs no registry credentials"
+        ),
     )
     p_artifact.add_argument(
         "--password-file",
