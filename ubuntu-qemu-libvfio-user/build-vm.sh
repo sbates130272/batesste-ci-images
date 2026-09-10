@@ -108,7 +108,10 @@ cp /root/.ssh/id_rsa.pub /output/id_rsa.pub 2>/dev/null || true
 
 QEMU_COMMIT_INFO=$(cat /build/qemu-commit.txt 2>/dev/null \
     || echo "unknown")
-LIBVFIO_USER_COMMIT_INFO=$(cat /build/libvfio-user-commit.txt \
+# Written by the ubuntu-libvfio-user image under /usr/local/share, not
+# /build like the two pins above -- reading the wrong path here is why this
+# was "unknown" in every vm-info.json before.
+LIBVFIO_USER_COMMIT_INFO=$(cat /usr/local/share/libvfio-user-commit.txt \
     2>/dev/null || echo "unknown")
 QEMU_MINIMAL_COMMIT_INFO=$(cat /build/qemu-minimal-commit.txt \
     2>/dev/null || echo "unknown")

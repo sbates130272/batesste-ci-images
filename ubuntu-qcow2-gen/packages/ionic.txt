@@ -12,7 +12,10 @@ pkg-config
 dkms
 git
 linux-headers-generic
-linux-modules-extra-generic
+# No linux-modules-extra: 26.04 has no such package at all.  It was folded
+# back into linux-modules-<ver>-<flavour>, which ships ib_core, ib_uverbs,
+# rdma_ucm and both halves of ionic -- so the RDMA stack this flavour exists
+# for is already there once the guest boots, with nothing extra to install.
 
 # rdma-core build dependencies (upstream v62 wants all of these).
 libnl-3-dev

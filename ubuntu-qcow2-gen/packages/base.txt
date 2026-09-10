@@ -8,7 +8,10 @@ pkg-config
 dkms
 git
 linux-headers-generic
-linux-modules-extra-generic
+# No linux-modules-extra here: 26.04 has no such package at all -- the split
+# was folded back into linux-modules-<ver>-<flavour>, which the booted kernel
+# already pulls in.  Asking for it does not get you more modules, it gets you
+# "Unable to locate package".
 rdma-core
 ibverbs-utils
 libibverbs-dev

@@ -163,9 +163,11 @@ RUN set -eux; \
             > /build/qemu-minimal-commit.txt; \
     fi
 
-# Install the qemu-tool CLI (gen-vm/run-vm subcommands)
-# from the qemu-minimal checkout.  It supersedes the
-# deprecated gen-vm/run-vm bash scripts.
+# Install the qemu-tool CLI from the qemu-minimal
+# checkout.  Guest builds and boots go through its
+# "gen-vm" and "run-vm" subcommands; the standalone
+# bash scripts of those names are obsolete and are
+# being removed upstream, so nothing may call them.
 RUN set -eux; \
     if [ -d /build/qemu-minimal/qemu ]; then \
         python3 -m venv /opt/qemu-tool; \
@@ -187,8 +189,8 @@ RUN chmod +x /usr/local/bin/build-vm
 # There is no TCG fallback: emulation is ~10x slower, so a missing
 # /dev/kvm is a build failure rather than a silent slowdown.
 # The --mount binds common/cloud-image-cache/ from the build
-# context; pre-downloaded images land where gen-vm looks so it
-# can skip the download.
+# context; pre-downloaded images land where "qemu-tool
+# gen-vm" looks so it can skip the download.
 FROM base AS vm
 ARG QEMU_MINIMAL_REPO=
 ARG QEMU_MINIMAL_COMMIT=

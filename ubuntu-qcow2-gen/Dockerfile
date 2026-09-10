@@ -65,7 +65,14 @@ RUN python3 -m venv /opt/qemu-tool --clear && \
 COPY ubuntu-qcow2-gen/packages/ /build/packages/
 COPY ubuntu-qcow2-gen/checks/ /build/checks/
 
-RUN mkdir -p /output /root/.ssh && \
+# The base image ships its own guest in /output and its own keypair in
+# /root/.ssh.  Both must go: the final stage copies /output wholesale, so an
+# inherited qcow2 would be published as this flavour's payload -- and under a
+# different VM_NAME it would ship alongside it rather than be overwritten.
+# Clearing /root/.ssh also stops ssh-keygen prompting to overwrite, which is
+# what fails the build rather than reusing the key silently.
+RUN rm -rf /output /root/.ssh && \
+    mkdir -p /output /root/.ssh && \
     ssh-keygen -t rsa -b 4096 -f /root/.ssh/id_rsa -N "" -q
 
 COPY ubuntu-qcow2-gen/build-vm.sh /usr/local/bin/build-vm
@@ -78,8 +85,8 @@ RUN chmod +x /usr/local/bin/build-vm /usr/local/bin/probe-guest
 # emulation is ~10x slower, so a missing /dev/kvm fails the build.
 #
 # The bind mount exposes common/ from the build context: pre-downloaded cloud
-# images land where gen-vm looks, and the AMD root CA (gitignored, absent in
-# CI) is injected into the guest trust store when present.
+# images land where "qemu-tool gen-vm" looks, and the AMD root CA (gitignored,
+# absent in CI) is injected into the guest trust store when present.
 FROM base AS built
 ARG QEMU_MINIMAL_REPO=
 ARG QEMU_MINIMAL_COMMIT=

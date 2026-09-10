@@ -11,7 +11,8 @@
 #   probe-guest <image.qcow2> <username> <script>
 #
 # The guest boots from a throwaway overlay, so the published image is byte-for
-# byte what gen-vm produced -- probing must not be why an image differs.
+# byte what "qemu-tool gen-vm" produced -- probing must not be why an image
+# differs.
 #
 
 set -eu

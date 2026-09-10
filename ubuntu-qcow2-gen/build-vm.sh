@@ -159,6 +159,29 @@ printf 'PROBE_KERNEL=%s\n' "$(uname -r)"
 sudo -n true
 PROBE_EOF
 
+# Every package the flavour asked for must actually be installed.  cloud-init
+# logs an unlocatable package and carries on, so without this a manifest naming
+# a package that does not exist in the release ships a guest quietly missing
+# what it promised -- which is exactly how linux-modules-extra-generic, absent
+# from 26.04 entirely, survived a green build here.
+if [ -n "${FINAL_PACKAGES}" ] && [ "${FINAL_PACKAGES}" != "none" ]; then
+    REQUESTED=$(sed "s/\${KERNEL_VERSION}/${KERNEL_VERSION}/g" "${EXTRA}" |
+        grep -v '^#' | grep -v '^$' | tr '\n' ' ')
+    printf 'MISSING=""\n' >> "${PROBE}"
+    printf 'for p in %s; do\n' "${REQUESTED}" >> "${PROBE}"
+    cat >> "${PROBE}" <<'PKG_EOF'
+    if ! dpkg-query -W -f='${Status}' "$p" 2>/dev/null |
+            grep -q '^install ok installed$'; then
+        MISSING="${MISSING} ${p}"
+    fi
+done
+if [ -n "${MISSING}" ]; then
+    echo "Error: requested packages missing from guest:${MISSING}" >&2
+    exit 1
+fi
+PKG_EOF
+fi
+
 CHECKS="/build/checks/${FLAVOUR}.sh"
 if [ -f "${CHECKS}" ]; then
     printf 'echo "Running %s checks" >&2\n' "${FLAVOUR}" >> "${PROBE}"
@@ -179,7 +202,10 @@ GUEST_KERNEL=$(echo "${PROBE_OUT}" | sed -n 's/^PROBE_KERNEL=//p')
 echo "Guest kernel: ${GUEST_KERNEL}"
 
 QEMU_COMMIT_INFO=$(cat /build/qemu-commit.txt 2>/dev/null || echo "unknown")
-LIBVFIO_USER_COMMIT_INFO=$(cat /build/libvfio-user-commit.txt \
+# Written by the ubuntu-libvfio-user image under /usr/local/share, not
+# /build like the two pins above -- reading the wrong path here is why this
+# was "unknown" in every vm-info.json before.
+LIBVFIO_USER_COMMIT_INFO=$(cat /usr/local/share/libvfio-user-commit.txt \
     2>/dev/null || echo "unknown")
 QEMU_MINIMAL_COMMIT_INFO=$(cat /build/qemu-minimal-commit.txt \
     2>/dev/null || echo "unknown")

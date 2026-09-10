@@ -61,6 +61,17 @@ jobs:
       - name: Check all image directories are documented
         run: bash scripts/check-readme-structure.sh
 
+  qemu-tool-only:
+    name: qemu-tool CLI Only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The standalone gen-vm / run-vm scripts are being removed upstream, so
+      # a call to one breaks on the next qemu_minimal_commit bump rather than
+      # when it is written. Catch it at review time instead.
+      - name: Check nothing calls gen-vm / run-vm directly
+        run: bash scripts/check-qemu-tool.sh
+
   dockerfile-lint:
     name: Dockerfile Linting
     runs-on: ubuntu-latest

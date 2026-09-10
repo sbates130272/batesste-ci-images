@@ -262,7 +262,7 @@ images:
       password:
         value: changeme
         secret: true
-      # Guest disk size in GB. gen-vm's own default, restated here so the
+      # Guest disk size in GB. "qemu-tool gen-vm"'s own default, restated so the
       # catalogue is the single source of truth for it.
       vm_size: 64
     build_args:

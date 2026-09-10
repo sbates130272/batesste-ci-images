@@ -727,6 +727,11 @@ Adding a flavour is a `packages/<name>.txt`, a `checks/<name>.sh` and a
 `variants:` entry in `images.yml`. Repository, tag set, labels, CI matrix row
 and verification all follow; no workflow or Python change.
 
+Where a flavour exists for a specific downstream consumer, what that consumer
+needs and how it will use the image is written down in
+`ubuntu-qcow2-gen/consumers/<name>.md`, so the reason a flavour exists outlives
+the conversation that created it.
+
 `vm-info.json` is `schema_version` 2 here: every v1 key above is unchanged, and
 `flavour`, `kernel_release` and a `provisioning` object (`vm_packages`,
 `packages_digest`, `vm_playbook`) are added.
