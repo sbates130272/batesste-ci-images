@@ -8,11 +8,20 @@
 # per-flavour checks, so a guest that cannot boot or is missing what it
 # promised fails the build rather than the consumer.
 #
-#   probe-guest <image.qcow2> <username> <script>
+#   probe-guest <image.qcow2> <username> <script> [payload-dir]
 #
 # The guest boots from a throwaway overlay, so the published image is byte-for
 # byte what "qemu-tool gen-vm" produced -- probing must not be why an image
 # differs.
+#
+# PROBE_PERSIST=1 boots the image itself instead, turning the same primitive
+# into a provisioning pass: anything the script changes is kept.  Only for
+# steps cloud-init cannot express, and never for the verification boot, which
+# has to see the image a consumer will get.
+#
+# payload-dir, if given, is copied to /tmp/payload in the guest before the
+# script runs.  Fetching on the host rather than in the guest keeps proxy and
+# CA handling in one place and puts the download in the build log.
 #
 
 set -eu
@@ -20,7 +29,9 @@ set -eu
 IMAGE=$1
 GUEST_USER=$2
 SCRIPT=$3
+PAYLOAD="${4:-}"
 
+PERSIST="${PROBE_PERSIST:-0}"
 PORT="${PROBE_SSH_PORT:-2222}"
 BOOT_TIMEOUT="${PROBE_BOOT_TIMEOUT:-300}"
 QEMU="${QEMU_PATH:-/opt/qemu/bin/}qemu-system-x86_64"
@@ -30,6 +41,8 @@ PIDFILE=/tmp/probe-qemu.pid
 
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
 -o LogLevel=ERROR -o ConnectTimeout=5 -i /root/.ssh/id_rsa -p ${PORT}"
+SCP_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+-o LogLevel=ERROR -o ConnectTimeout=5 -i /root/.ssh/id_rsa -P ${PORT}"
 
 # shellcheck disable=SC2317  # invoked via trap
 cleanup() {
@@ -41,7 +54,14 @@ cleanup() {
 trap cleanup EXIT
 
 rm -f "${OVERLAY}"
-/opt/qemu/bin/qemu-img create -q -f qcow2 -F qcow2 -b "${IMAGE}" "${OVERLAY}"
+if [ "${PERSIST}" = "1" ]; then
+    DISK="${IMAGE}"
+    echo "probe-guest: PROBE_PERSIST=1, changes will be kept" >&2
+else
+    DISK="${OVERLAY}"
+    /opt/qemu/bin/qemu-img create -q -f qcow2 -F qcow2 -b "${IMAGE}" \
+        "${OVERLAY}"
+fi
 
 echo "probe-guest: booting ${IMAGE}" >&2
 "${QEMU}" \
@@ -49,7 +69,7 @@ echo "probe-guest: booting ${IMAGE}" >&2
     -cpu host \
     -m 2048 \
     -smp 2 \
-    -drive "if=virtio,format=qcow2,file=${OVERLAY}" \
+    -drive "if=virtio,format=qcow2,file=${DISK}" \
     -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:${PORT}-:22" \
     -device virtio-net-pci,netdev=n0 \
     -display none \
@@ -70,6 +90,14 @@ until ssh ${SSH_OPTS} "${GUEST_USER}@127.0.0.1" true 2>/dev/null; do
     sleep 5
 done
 echo "probe-guest: SSH up after ${waited}s" >&2
+
+if [ -n "${PAYLOAD}" ]; then
+    echo "probe-guest: copying ${PAYLOAD} to /tmp/payload in the guest" >&2
+    # shellcheck disable=SC2086
+    ssh ${SSH_OPTS} "${GUEST_USER}@127.0.0.1" 'rm -rf /tmp/payload'
+    # shellcheck disable=SC2086
+    scp ${SCP_OPTS} -r "${PAYLOAD}" "${GUEST_USER}@127.0.0.1:/tmp/payload"
+fi
 
 status=0
 # shellcheck disable=SC2086

@@ -42,9 +42,11 @@ defaults:
   vars:
     libvfio_user_commit: 803924493a7c787b2ba358751f55f07d5dba64b2
     # The Ubuntu cloud image every guest qcow2 is built from. Ubuntu 26.04 LTS
-    # "resolute" ships Linux 7.0; guests needing drivers that only landed in
-    # 6.18 or later (ionic RDMA, for one) cannot use noble. A flavour that
-    # needs something else pins its own release var.
+    # "resolute" ships Linux 7.0. This chooses the *userspace* only: the guest
+    # kernel is whatever the release ships unless the flavour sets kernel_ref,
+    # and the Ubuntu mainline builds are one set of .debs for all releases, so
+    # a newer kernel is not a reason to move off a release. A flavour that
+    # needs different userspace pins its own release var.
     release: resolute
     arch: amd64
 
@@ -313,6 +315,12 @@ images:
       vm_packages: base.txt
       # qemu-minimal ansible/playbooks/<file>; empty means cloud-init only.
       vm_playbook: ""
+      # An Ubuntu mainline build tag (kernel.ubuntu.com/mainline/<ref>/), or
+      # empty to keep the kernel the release ships. Set it when a flavour needs
+      # a kernel no Ubuntu archive has: the mainline .debs depend only on a
+      # handful of base packages and are built once per version rather than
+      # per release, so this is orthogonal to the release var above.
+      kernel_ref: ""
       username: batesste
       vm_name: ""
       password:
@@ -330,20 +338,32 @@ images:
       VM_SIZE: "{vm_size}"
       VM_PACKAGES: "{vm_packages}"
       VM_PLAYBOOK: "{vm_playbook}"
+      KERNEL_REF: "{kernel_ref}"
+    # kernel_ref is deliberately not in the tag: the flavour name already
+    # distinguishes the images, and the resolved kernel goes in vm-info.json
+    # and the label below, where it can carry the full build stamp.
     variant: "vm.{release}-{flavour}-qm.{qemu_minimal_commit|short}"
     labels:
       "{ns}.vm.release": "{release}"
       "{ns}.vm.flavour": "{flavour}"
       "{ns}.vm.packages": "{vm_packages}"
       "{ns}.vm.playbook": "{vm_playbook}"
+      "{ns}.vm.kernel-ref": "{kernel_ref}"
       "{ns}.qemu-minimal.commit": "{qemu_minimal_commit}"
     variants:
       # For ROCm/rocm-ernic's ionic RDMA jobs: drivers/infiniband/hw/ionic
-      # merged in Linux 6.18, so noble's 6.8 cannot run them at all. The
-      # toolchain and rdma-core build deps are pre-installed to save the jobs
-      # wall-clock; the ionic-ernic DKMS modules are deliberately *not* built
-      # here, since building them from pinned upstream sources is what those
-      # jobs exist to test.
+      # merged in Linux 6.18. The toolchain and rdma-core build deps are
+      # pre-installed to save the jobs wall-clock; the ionic-ernic DKMS modules
+      # are deliberately *not* built here, since building them from pinned
+      # upstream sources is what those jobs exist to test.
+      #
+      # noble + mainline v7.2.3 reproduces the configuration rocm-ernic's
+      # self-hosted golden image is already running and passing on, down to the
+      # 202609030700 build stamp. It was put there by hand and written down
+      # nowhere, which is why the two guests have since drifted; pinning it
+      # here is the point of the exercise. Do not "upgrade" either half without
+      # a green ionic-ernic DKMS build against it -- v7.2.4 sources needed
+      # ib_umem_get_va, which 7.0 does not have.
       #
       # vm_playbook stays empty until vm-ionic.yml lands in qemu-minimal: the
       # source build of rdma-core 62.0 and the pre-seeded /opt/ionic-src
@@ -354,3 +374,5 @@ images:
         vars:
           flavour: ionic
           vm_packages: ionic.txt
+          release: noble
+          kernel_ref: v7.2.3

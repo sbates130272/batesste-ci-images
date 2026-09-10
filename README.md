@@ -706,9 +706,10 @@ COPY --from=sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic:latest /outpu
 ```
 
 Guests default to Ubuntu 26.04 LTS "resolute" (Linux 7.0), set once in
-`defaults.vars.release`; a flavour needing something else pins its own.
+`defaults.vars.release`; a flavour needing something else pins its own. That
+chooses the *userspace* only — see `kernel_ref` below.
 
-Each flavour is provisioned in two layers:
+Each flavour is provisioned in three layers:
 
 - `ubuntu-qcow2-gen/packages/<flavour>.txt` — extra cloud-init packages,
   appended to qemu-minimal's default manifest.
@@ -716,6 +717,14 @@ Each flavour is provisioned in two layers:
   for what cloud-init cannot express (source builds, git checkouts, units).
   Playbook *content* lives upstream, so it stays shared with the non-container
   `qemu-tool` workflows.
+- `kernel_ref` — an [Ubuntu mainline](https://kernel.ubuntu.com/mainline/)
+  build tag, for a kernel no Ubuntu archive has. Mainline publishes one build
+  per version rather than one per release and depends on only a handful of base
+  packages, so this is orthogonal to `release`: `ionic` is noble userspace with
+  a 7.2.3 kernel. The `.deb`s are loose files in no apt repository and
+  cloud-init has no hook to run a command, so they are installed in a
+  provisioning boot of its own, after cloud-init and before verification. The
+  build fails if the guest then boots anything other than the pinned kernel.
 
 The build then boots the finished qcow2 from a throwaway overlay and runs
 `ubuntu-qcow2-gen/checks/<flavour>.sh` inside it over SSH. That reads the guest
@@ -734,7 +743,9 @@ the conversation that created it.
 
 `vm-info.json` is `schema_version` 2 here: every v1 key above is unchanged, and
 `flavour`, `kernel_release` and a `provisioning` object (`vm_packages`,
-`packages_digest`, `vm_playbook`) are added.
+`packages_digest`, `vm_playbook`, `kernel_ref`, `kernel_debs`) are added.
+`kernel_debs` carries the resolved filenames, upstream build stamp included,
+because a mainline tag alone does not identify a build.
 
 Like every VM build, this needs KVM — see [KVM is required](#kvm-is-required).
 

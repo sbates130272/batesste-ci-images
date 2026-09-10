@@ -12,6 +12,11 @@ test "$(printf '6.18\n%s\n' "$(uname -r)" | sort -V | head -1)" = "6.18"
 # Headers matching the running kernel, so DKMS can build against them.
 test -d /lib/modules/"$(uname -r)"/build
 
+# The 6.18 floor is necessary and not sufficient: ionic-ernic v7.2.4 calls
+# ib_umem_get_va, added after 7.0, and a guest without it fails at compile time
+# in the consumer's job rather than here. Assert the symbol, not just a number.
+grep -q ib_umem_get_va /lib/modules/"$(uname -r)"/build/include/rdma/ib_umem.h
+
 # The toolchain and rdma-core build dependencies the consuming jobs skip
 # installing because they are pre-baked here.
 command -v gcc make cmake ninja dkms git

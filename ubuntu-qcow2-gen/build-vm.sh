@@ -6,11 +6,13 @@
 # Run from the Dockerfile; configuration comes from the build ARGs, which reach
 # us as environment variables.
 #
-# Two provisioning layers, matching how the container images work:
+# Three provisioning layers, matching how the container images work:
 #   packages/<VM_PACKAGES>  cloud-init packages, appended to qemu-minimal's
 #                           default manifest
 #   <VM_PLAYBOOK>           an Ansible playbook from the qemu-minimal checkout,
 #                           for anything cloud-init cannot express
+#   <KERNEL_REF>            an Ubuntu mainline kernel, installed in a boot of
+#                           its own because it is loose .debs in no repository
 #
 # KVM is mandatory.  It only works in a RUN --security=insecure step (the
 # device node has to be created and opened); anywhere else this script aborts
@@ -31,6 +33,7 @@ FINAL_ARCH="${ARCH:-amd64}"
 FINAL_VM_SIZE="${VM_SIZE:-64}"
 FINAL_PACKAGES="${VM_PACKAGES:-base.txt}"
 FINAL_PLAYBOOK="${VM_PLAYBOOK:-}"
+FINAL_KERNEL_REF="${KERNEL_REF:-}"
 KERNEL_VERSION=$(uname -r)
 
 echo "=== Guest Image Build Configuration ==="
@@ -45,6 +48,7 @@ echo "ARCH: ${FINAL_ARCH}"
 echo "VM_SIZE: ${FINAL_VM_SIZE}G"
 echo "VM_PACKAGES: ${FINAL_PACKAGES}"
 echo "VM_PLAYBOOK: ${FINAL_PLAYBOOK:-none}"
+echo "KERNEL_REF: ${FINAL_KERNEL_REF:-none (release kernel)}"
 
 command -v qemu-tool > /dev/null || {
     echo "Error: qemu-tool not installed!"
@@ -142,6 +146,63 @@ cp /root/.ssh/id_rsa /output/id_rsa
 cp /root/.ssh/id_rsa.pub /output/id_rsa.pub
 chmod 600 /output/id_rsa
 
+# An Ubuntu mainline kernel, when the flavour pins one.  Not expressible as
+# cloud-init packages -- these are loose .debs, in no apt repository -- and
+# gen-vm's cloud-config has no hook to run a command, so it is a provisioning
+# boot of its own: PROBE_PERSIST keeps what it changes, and the verification
+# boot that follows sees the guest a consumer will get.
+#
+# Mainline publishes one build per version rather than one per release, with
+# only a handful of base dependencies, so this is independent of RELEASE.  The
+# .debs are fetched here rather than in the guest so the proxy and CA setup
+# stay on the host side and the exact filenames land in the build log; the
+# build stamp is part of them, which is how a "same version" rebuild upstream
+# becomes visible instead of silent.
+KERNEL_DEBS=none
+if [ -n "${FINAL_KERNEL_REF}" ]; then
+    MAINLINE="https://kernel.ubuntu.com/mainline/${FINAL_KERNEL_REF}/${FINAL_ARCH}"
+    DEBDIR=/tmp/mainline-debs
+    rm -rf "${DEBDIR}"
+    mkdir -p "${DEBDIR}"
+
+    # -64k is the arm64 page-size variant; taking both would install two
+    # kernels and leave grub picking between them.
+    NAMES=$(curl -fsSL "${MAINLINE}/" |
+        grep -oE 'linux-[a-z-]+-[0-9][^"]*\.deb' |
+        grep -v -- '-64k' | sort -u)
+    [ -n "${NAMES}" ] || {
+        echo "Error: no kernel .debs at ${MAINLINE}/"
+        echo "  KERNEL_REF must be a tag published under" \
+             "https://kernel.ubuntu.com/mainline/"
+        exit 1
+    }
+    echo "Fetching mainline kernel ${FINAL_KERNEL_REF}:"
+    for n in ${NAMES}; do
+        echo "  ${n}"
+        curl -fsSL -o "${DEBDIR}/${n}" "${MAINLINE}/${n}"
+    done
+    KERNEL_DEBS=$(echo "${NAMES}" | tr '\n' ' ' | sed 's/ $//')
+
+    KINSTALL=/tmp/install-kernel.sh
+    cat > "${KINSTALL}" <<'KERNEL_EOF'
+set -eu
+# apt rather than dpkg -i so the base dependencies (linux-base, kmod,
+# wireless-regdb, an initramfs tool) are resolved from the archive instead of
+# leaving dpkg half-configured.
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/payload/*.deb
+sudo update-grub
+rm -rf /tmp/payload
+# Nothing here has run on the new kernel yet: grub picks the highest version at
+# the next boot, and the verification boot is what confirms it did.
+dpkg-query -W -f='${Package}\n' 'linux-image-*' | sed 's/^/installed: /'
+KERNEL_EOF
+
+    echo "Installing mainline kernel into the guest"
+    PROBE_PERSIST=1 probe-guest "/output/${FINAL_VM_NAME}.qcow2" \
+        "${FINAL_USERNAME}" "${KINSTALL}" "${DEBDIR}"
+    rm -rf "${DEBDIR}"
+fi
+
 # Boot the finished guest once, to read its kernel out of it and to run the
 # flavour's checks.  The kernel version is not knowable before the build --
 # which is why it is not in the image tag -- and consumers that need a minimum
@@ -158,6 +219,18 @@ printf 'PROBE_KERNEL=%s\n' "$(uname -r)"
 # are asserted here rather than repeated in each checks file.
 sudo -n true
 PROBE_EOF
+
+# A pinned kernel that did not end up being the one that boots is the failure
+# this whole layer exists to prevent, and it is invisible from the host: grub
+# choosing an older entry, or the .debs installing but the initramfs not being
+# rebuilt, both leave a guest that looks fine and is not.
+if [ -n "${FINAL_KERNEL_REF}" ]; then
+    printf 'case "$(uname -r)" in %s-*) ;; *)\n' \
+        "${FINAL_KERNEL_REF#v}" >> "${PROBE}"
+    printf '  echo "Error: pinned kernel %s but booted $(uname -r)" >&2\n' \
+        "${FINAL_KERNEL_REF}" >> "${PROBE}"
+    printf '  exit 1 ;;\nesac\n' >> "${PROBE}"
+fi
 
 # Every package the flavour asked for must actually be installed.  cloud-init
 # logs an unlocatable package and carries on, so without this a manifest naming
@@ -215,9 +288,10 @@ IMAGE_FORMAT=$(/opt/qemu/bin/qemu-img info \
     grep -i "file format" | cut -d: -f2 | xargs || echo "qcow2")
 BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# schema_version 2 adds flavour/kernel_release/vm_playbook/packages_digest on
-# top of the v1 keys, all of which are kept so existing consumers are
-# unaffected.
+# schema_version 2 adds flavour/kernel_release/vm_playbook/packages_digest and
+# the kernel pin on top of the v1 keys, all of which are kept so existing
+# consumers are unaffected.  kernel_debs carries the resolved filenames, build
+# stamp included, because kernel_ref alone does not identify a build.
 cat > /output/vm-info.json <<EOF
 {
   "schema_version": 2,
@@ -241,7 +315,9 @@ cat > /output/vm-info.json <<EOF
   "provisioning": {
     "vm_packages": "${FINAL_PACKAGES}",
     "packages_digest": "${PACKAGES_DIGEST}",
-    "vm_playbook": "${FINAL_PLAYBOOK}"
+    "vm_playbook": "${FINAL_PLAYBOOK}",
+    "kernel_ref": "${FINAL_KERNEL_REF}",
+    "kernel_debs": "${KERNEL_DEBS}"
   },
   "build_info": {
     "qemu_commit": "${QEMU_COMMIT_INFO}",
