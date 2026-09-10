@@ -1,4 +1,11 @@
 # syntax=docker/dockerfile:1-labs
+# check=skip=SecretsUsedInArgOrEnv
+#
+# PASSWORD is the guest VM's console login, not a credential for anything
+# outside the qcow2.  It is published in /output/vm-info.json by design, so a
+# secret mount would hide it from the build history and then ship it in the
+# payload anyway.  images.yml marks it secret: true, which keeps it out of
+# `build-args` output and therefore out of CI logs.
 #
 # Guest qcow2 generator.  One parameterised Dockerfile, one flavour per
 # images.yml variant: the build boots a real VM with "qemu-tool gen-vm",

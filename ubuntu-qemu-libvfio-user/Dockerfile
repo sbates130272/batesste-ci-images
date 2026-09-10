@@ -1,4 +1,12 @@
 # syntax=docker/dockerfile:1-labs
+# check=skip=SecretsUsedInArgOrEnv
+#
+# PASSWORD is the guest VM's console login, not a credential for anything
+# outside the qcow2.  It has to be knowable by whoever boots the image, which
+# is why build-vm.sh publishes it in /output/vm-info.json -- so hiding it from
+# the build history via a secret mount would buy nothing.  images.yml still
+# marks it secret: true, which keeps the value out of `build-args` output and
+# therefore out of CI logs.
 
 # libvfio-user is already built and installed under /usr/local by the base
 # image, which pins the same SHA this image used to build for itself.
