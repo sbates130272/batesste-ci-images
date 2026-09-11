@@ -303,9 +303,20 @@ images:
       - common/cloud-image-cache
     vars:
       flavour: basic
-      # Guest disk size in GB. "qemu-tool gen-vm"'s own default, restated so the
-      # catalogue is the single source of truth for it.
-      vm_size: 64
+      # Guest disk size in GB. The qcow2 is sparse, so this is a ceiling the
+      # guest filesystem can grow into rather than an allocation: the published
+      # payload is the size of what is actually written, not this number.
+      vm_size: 512
+      # Resources for the build-time boots only -- gen-vm's provisioning boot
+      # and probe-guest's verification boot. Not a property of the artifact:
+      # a consumer running the finished qcow2 picks its own. gen-vm defaults to
+      # 2/4096; 4 is the vCPU count a standard GitHub-hosted runner has, and
+      # going past it on CI only adds scheduling overhead.
+      #
+      # Override per-host with VM_VCPUS / VM_VMEM in the environment or .env --
+      # a local box with more cores than a runner is the case that wants it.
+      vm_vcpus: 4
+      vm_vmem: 4096
       # ubuntu-qcow2-gen/packages/<file> and ubuntu-qcow2-gen/checks/<flavour>.sh
       vm_packages: base.txt
       # qemu-minimal ansible/playbooks/<file>; empty means cloud-init only.
@@ -331,6 +342,8 @@ images:
       RELEASE: "{release}"
       ARCH: "{arch}"
       VM_SIZE: "{vm_size}"
+      VM_VCPUS: "{vm_vcpus}"
+      VM_VMEM: "{vm_vmem}"
       VM_PACKAGES: "{vm_packages}"
       VM_PLAYBOOK: "{vm_playbook}"
       KERNEL_REF: "{kernel_ref}"

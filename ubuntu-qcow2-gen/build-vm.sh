@@ -30,7 +30,14 @@ FINAL_VM_NAME="${VM_NAME:-${FINAL_USERNAME}-ci-vm}"
 FINAL_PASSWORD="${PASSWORD:-changeme}"
 FINAL_RELEASE="${RELEASE:-resolute}"
 FINAL_ARCH="${ARCH:-amd64}"
-FINAL_VM_SIZE="${VM_SIZE:-64}"
+FINAL_VM_SIZE="${VM_SIZE:-512}"
+# Build-time only: what gen-vm's provisioning boot and probe-guest's
+# verification boot get.  probe-guest reads these out of the environment, so
+# both boots are sized the same without threading them through its arguments.
+FINAL_VM_VCPUS="${VM_VCPUS:-4}"
+FINAL_VM_VMEM="${VM_VMEM:-4096}"
+export VM_VCPUS="${FINAL_VM_VCPUS}"
+export VM_VMEM="${FINAL_VM_VMEM}"
 FINAL_PACKAGES="${VM_PACKAGES:-base.txt}"
 FINAL_PLAYBOOK="${VM_PLAYBOOK:-}"
 FINAL_KERNEL_REF="${KERNEL_REF:-}"
@@ -45,7 +52,9 @@ echo "VM_NAME: ${FINAL_VM_NAME}"
 echo "USERNAME: ${FINAL_USERNAME}"
 echo "RELEASE: ${FINAL_RELEASE}"
 echo "ARCH: ${FINAL_ARCH}"
-echo "VM_SIZE: ${FINAL_VM_SIZE}G"
+echo "VM_SIZE: ${FINAL_VM_SIZE}G (sparse)"
+echo "VM_VCPUS: ${FINAL_VM_VCPUS} (build-time boots only)"
+echo "VM_VMEM: ${FINAL_VM_VMEM} MiB (build-time boots only)"
 echo "VM_PACKAGES: ${FINAL_PACKAGES}"
 echo "VM_PLAYBOOK: ${FINAL_PLAYBOOK:-none}"
 echo "KERNEL_REF: ${FINAL_KERNEL_REF:-none (release kernel)}"
@@ -107,6 +116,8 @@ set -- \
     --release "${FINAL_RELEASE}" \
     --arch "${FINAL_ARCH}" \
     --size "${FINAL_VM_SIZE}" \
+    --vcpus "${FINAL_VM_VCPUS}" \
+    --vmem "${FINAL_VM_VMEM}" \
     --images "${QM}/images" \
     --qemu-path /opt/qemu/bin/ \
     --ssh-key-file /root/.ssh/id_rsa.pub \

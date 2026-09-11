@@ -118,3 +118,5 @@ cd
 mainline
 userspace
 initramfs
+vCPU
+MiB

@@ -23,6 +23,9 @@
 # script runs.  Fetching on the host rather than in the guest keeps proxy and
 # CA handling in one place and puts the download in the build log.
 #
+# VM_VCPUS and VM_VMEM size the boot, and build-vm exports the same values it
+# gave gen-vm.  They affect how fast the probe runs, never what it observes.
+#
 
 set -eu
 
@@ -34,6 +37,11 @@ PAYLOAD="${4:-}"
 PERSIST="${PROBE_PERSIST:-0}"
 PORT="${PROBE_SSH_PORT:-2222}"
 BOOT_TIMEOUT="${PROBE_BOOT_TIMEOUT:-300}"
+# Matched to the gen-vm boot rather than fixed here, so one knob sizes every
+# build-time boot.  The defaults stand alone: probe-guest is runnable by hand
+# against any qcow2, not only from build-vm.
+VCPUS="${VM_VCPUS:-4}"
+VMEM="${VM_VMEM:-4096}"
 QEMU="${QEMU_PATH:-/opt/qemu/bin/}qemu-system-x86_64"
 OVERLAY=/tmp/probe-overlay.qcow2
 SERIAL=/tmp/probe-serial.log
@@ -67,8 +75,8 @@ echo "probe-guest: booting ${IMAGE}" >&2
 "${QEMU}" \
     -machine q35,accel=kvm \
     -cpu host \
-    -m 2048 \
-    -smp 2 \
+    -m "${VMEM}" \
+    -smp "${VCPUS}" \
     -drive "if=virtio,format=qcow2,file=${DISK}" \
     -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:${PORT}-:22" \
     -device virtio-net-pci,netdev=n0 \

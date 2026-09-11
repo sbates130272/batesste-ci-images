@@ -51,6 +51,7 @@ jobs:
       targets: ${{ steps.find-images.outputs.targets }}
       keys: ${{ steps.find-images.outputs.keys }}
       derived: ${{ steps.find-images.outputs.derived }}
+      derived_keys: ${{ steps.find-images.outputs.derived_keys }}
       derived_bases: ${{ steps.find-images.outputs.derived_bases }}
     steps:
       - uses: actions/checkout@v7
@@ -77,6 +78,12 @@ jobs:
           echo "$TARGETS" | jq .
           DERIVED=$(./ci-images-tool.py targets --job derived --json)
           echo "derived=$DERIVED" >> $GITHUB_OUTPUT
+          # keys above covers the matrix tier only. A job gated on a derived
+          # target -- test-compose needs a guest, and every guest is derived --
+          # has to look here, or its `contains` is false forever and the job
+          # silently never runs.
+          echo "derived_keys=$(echo "$DERIVED" | jq -c 'map(.key)')" \
+            >> $GITHUB_OUTPUT
           echo "$DERIVED" | jq .
           # Which matrix images build-derived needs to resolve from GHCR. Derived
           # from the catalogue rather than named here, so adding a derived entry
@@ -849,13 +856,16 @@ jobs:
     name: Test Docker Compose Stack
     runs-on: ubuntu-latest
     needs: [discover-images, build, build-derived]
+    # The guest comes from the derived tier and the three containers from the
+    # matrix tier, so this reads both key lists. Checking ubuntu-qcow2-gen
+    # against `keys` is why this job did not run at all: `keys` is matrix-only.
     if: >-
       contains(
         fromJson(needs.discover-images.outputs.keys),
         'ubuntu-qemu-libvfio-user'
       ) &&
       contains(
-        fromJson(needs.discover-images.outputs.keys),
+        fromJson(needs.discover-images.outputs.derived_keys),
         'ubuntu-qcow2-gen'
       ) &&
       contains(

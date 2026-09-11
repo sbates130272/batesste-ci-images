@@ -385,6 +385,13 @@ host has `/dev/kvm`, and the knobs `compose` and `entrypoint.sh` read when a
 container *runs* (`SSH_PORT`, `VCPUS`, `VMEM`, `VFIO_USER_SOCKET`), which are
 not build inputs at all.
 
+`VM_VCPUS` and `VM_VMEM` are the one pair that is a build input and still
+belongs here: they size the boots `ubuntu-qcow2-gen` performs while building a
+guest, so the right value is a property of the build host rather than of the
+image. The catalogue defaults to 4 vCPU / 4096 MiB, which is what a standard
+GitHub-hosted runner has; a local machine with more cores can raise them. They
+change how fast a guest builds, never what it contains.
+
 Copy `env.example` to get started. Pinned versions are not duplicated there,
 and neither are values `images.yml` already owns: entries are left blank
 because an empty value means "unset", so the `images.yml` default applies.
