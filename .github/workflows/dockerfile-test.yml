@@ -609,6 +609,13 @@ jobs:
           allow: security.insecure
           push: false
           load: true
+          # Guest targets export /output to the host as well as loading the
+          # payload image, so the verification below and the artifact upload
+          # read files rather than shelling out to docker create.
+          outputs: >-
+            ${{ matrix.target.publish == 'artifact'
+              && format('type=local,dest=output/{0}', matrix.target.scope)
+              || '' }}
           tags: >-
             batesste-ci-images-${{ matrix.target.scope }}:test
           build-args: ${{ steps.buildargs.outputs.args }}
@@ -621,36 +628,36 @@ jobs:
 
       # The in-guest assertions already ran during the build (build-vm.sh boots
       # the finished qcow2 and runs checks/<flavour>.sh), so what is left is to
-      # prove the scratch payload is extractable and self-describing -- the
-      # only interface consumers have to this image.
+      # prove the payload is complete and self-describing -- the only interface
+      # consumers have to this target.
+      #
+      # The extra output/ level is the payload stage still nesting under
+      # /output, which it must while the scratch image is published too.
       - name: Verify guest image payload
-        if: matrix.target.entitlement != ''
+        if: matrix.target.publish == 'artifact'
         run: |
-          cid=$(docker create \
-            "batesste-ci-images-${{ matrix.target.scope }}:test")
-          trap 'docker rm "$cid" > /dev/null' EXIT
-          docker cp "$cid:/output/." ./vm-payload
-          ls -l ./vm-payload
-          jq . ./vm-payload/vm-info.json
-          IMG=$(jq -r .image_path ./vm-payload/vm-info.json | xargs basename)
-          test -s "./vm-payload/${IMG}"
-          test -s ./vm-payload/id_rsa
-          test -s ./vm-payload/id_rsa.pub
+          DIR="output/${{ matrix.target.scope }}/output"
+          ls -l "$DIR"
+          jq . "$DIR/vm-info.json"
+          IMG=$(jq -r .image_path "$DIR/vm-info.json" | xargs basename)
+          test -s "$DIR/${IMG}"
+          test -s "$DIR/id_rsa"
+          test -s "$DIR/id_rsa.pub"
           jq -e '.kernel_release | test("^[0-9]")' \
-            ./vm-payload/vm-info.json > /dev/null
+            "$DIR/vm-info.json" > /dev/null
 
       # test-compose bind-mounts a guest rather than pulling one: the qemu
       # image is toolchain-only now. zstd for the same reason as the image
       # tarballs above -- the qcow2 is multi-GB and upload is the bottleneck.
       - name: Export guest image payload
-        if: matrix.target.entitlement != ''
+        if: matrix.target.publish == 'artifact'
         run: |
-          tar -C ./vm-payload -cf - . \
+          tar -C "output/${{ matrix.target.scope }}/output" -cf - . \
             | zstd -T0 -3 \
             > "/tmp/vm-payload-${{ matrix.target.scope }}.tar.zst"
 
       - uses: actions/upload-artifact@v7
-        if: matrix.target.entitlement != ''
+        if: matrix.target.publish == 'artifact'
         with:
           name: >-
             vm-payload-${{ matrix.target.scope }}

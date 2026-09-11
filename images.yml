@@ -282,16 +282,20 @@ images:
 
   # Guest qcow2 images. One parameterised Dockerfile, one repository per
   # flavour: adding a guest is packages/<name>.txt, checks/<name>.sh, an
-  # upstream Ansible playbook name and a variants: entry below. The result is
-  # a FROM scratch payload carrying only /output, so a consumer pulls the disk
-  # without the multi-GB QEMU toolchain that produced it.
+  # upstream Ansible playbook name and a variants: entry below.
+  #
+  # publish: artifact makes the disk itself the published thing -- an ORAS
+  # artifact a libvirt or bare-metal consumer can pull with no container
+  # runtime -- and exports /output to the gitignored output/<scope>/ on every
+  # build. A FROM scratch payload image carrying /output is still published
+  # alongside it until the ORAS path has proven itself on a real release.
   #
   # The guest kernel is deliberately absent from the tag: it is not knowable
   # until the guest is built. It is recorded in vm-info.json instead.
   ubuntu-qcow2-gen:
     job: derived
     base: ubuntu-qemu-libvfio-user
-    artifact: true
+    publish: artifact
     entitlement: security.insecure
     # The Dockerfile bind-mounts this; it holds the gitignored cloud-image
     # downloads and, on the AMD network, amd-root-ca.crt.

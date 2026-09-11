@@ -20,3 +20,7 @@ __pycache__/
 
 # pyspelling compiled dictionary (.spellcheck.yaml output)
 wordlist.dic
+
+# Guest payloads exported by `ci-images-tool.py build` (qcow2, SSH keys,
+# vm-info.json). Multi-GB; published as ORAS artifacts, never committed.
+output/

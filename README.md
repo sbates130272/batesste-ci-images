@@ -131,6 +131,7 @@ batesste-ci-images/
 │   ├── probe-guest.sh
 │   ├── packages/              # cloud-init package manifests per flavour
 │   └── checks/                # In-guest assertions run at build time
+├── output/                    # Guest payloads from local builds (gitignored)
 ├── common/                    # Shared build-context assets
 │   └── amd-root-ca.crt
 ├── compose/                   # Docker Compose stacks
@@ -713,6 +714,19 @@ jq . vm/vm-info.json
 COPY --from=sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic:latest /output /output
 ```
 
+A build also drops the payload on the host, so a local build leaves a usable
+disk behind rather than one buried in image layers. `output/` is gitignored:
+
+```bash
+./ci-images-tool.py build ubuntu-qcow2-gen@ionic
+ls output/ubuntu-qcow2-gen-ionic/output/    # qcow2, id_rsa{,.pub}, vm-info.json
+```
+
+That directory is what `push-artifact --from-dir` publishes; see
+[Bare qcow2 artifacts (ORAS)](#bare-qcow2-artifacts-oras). The scratch image
+is the container-shaped path to the same bytes, and the ORAS artifact is the
+one that needs no container runtime.
+
 Guests default to Ubuntu 26.04 LTS "resolute" (Linux 7.0), set once in
 `defaults.vars.release`; a flavour needing something else pins its own. That
 chooses the *userspace* only — see `kernel_ref` below.
@@ -769,11 +783,16 @@ and address it by its own digest:
 ./ci-images-tool.py push-artifact ubuntu-qcow2-gen@ionic --tag 1.2.0
 ```
 
-It extracts `/output` from the published scratch image, compresses the qcow2
-with zstd, pushes it under `application/vnd.batesste.vm-image.v1`, and attaches
-`vm-info.json` as a referrer. Artifact tags carry a `-qcow2` suffix
-(`--tag-suffix`) so they share the flavour's repository with the scratch image
-instead of overwriting it. Requires `oras` and `zstd` on `PATH`.
+It compresses the qcow2 with zstd, pushes it under
+`application/vnd.batesste.vm-image.v1`, and attaches `vm-info.json` as a
+referrer. Artifact tags carry a `-qcow2` suffix (`--tag-suffix`) so they share
+the flavour's repository with the scratch image instead of overwriting it.
+Requires `oras` and `zstd` on `PATH`.
+
+`--from-dir` names a payload directory on the host — what a guest build exports
+to `output/<scope>/output/` — and is how CI pushes, so the release job never
+pulls back the multi-GB image it just published. Without it the payload is
+extracted from the published scratch image instead.
 
 ```bash
 oras pull docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic:latest-qcow2

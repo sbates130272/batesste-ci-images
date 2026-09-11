@@ -59,6 +59,10 @@ BUILDER_NAME = "builder"
 VM_ARTIFACT_TYPE = "application/vnd.batesste.vm-image.v1"
 VM_LAYER_MEDIA_TYPE = "application/vnd.batesste.vm-image.layer.v1+zstd"
 VM_INFO_ARTIFACT_TYPE = "application/vnd.batesste.vm-info.v1"
+# Artifact tags are suffixed so the bare disk can share the flavour's
+# repository with the scratch image instead of overwriting it. Drops to "" once
+# the scratch image is gone and the repository is the artifact's alone.
+DEFAULT_ARTIFACT_TAG_SUFFIX = "-qcow2"
 BUILDKITD_FLAGS = (
     "--allow-insecure-entitlement=security.insecure "
     "--allow-insecure-entitlement=network.host"
@@ -541,6 +545,40 @@ def target_attr(cfg: Config, target: Target, key: str, default: object = "") -> 
 
 def needs_entitlement(cfg: Config, target: Target) -> str:
     return str(target_attr(cfg, target, "entitlement", "") or "")
+
+
+def publish_mode(cfg: Config, target: Target) -> str:
+    """How this target reaches the registry: ``image`` or ``artifact``.
+
+    Deliberately separate from ``entitlement``: needing /dev/kvm to build and
+    being published as a bare qcow2 rather than an OCI image are two different
+    questions, even though every guest target currently answers yes to both.
+    """
+    return str(target_attr(cfg, target, "publish", "image") or "image")
+
+
+def publishes_artifact(cfg: Config, target: Target) -> bool:
+    return publish_mode(cfg, target) == "artifact"
+
+
+def payload_dir(cfg: Config, target: Target) -> Path:
+    """Where a guest build's /output lands on the host.
+
+    Gitignored, and written on every build so a local build leaves a usable
+    qcow2 behind instead of burying it in image layers.
+    """
+    return cfg.workdir / "output" / target_scope(cfg, target)
+
+
+def payload_files(cfg: Config, target: Target) -> Path:
+    """The directory inside the export that actually holds vm-info.json.
+
+    The payload stage is still ``COPY --from=built /output/ /output/`` -- it has
+    to be while the scratch image is also published, since that is the /output
+    contract consumers extract -- so the local exporter reproduces the nesting.
+    Flattening the stage collapses this back onto payload_dir().
+    """
+    return payload_dir(cfg, target) / "output"
 
 
 def base_target(cfg: Config, target: Target) -> Target | None:
@@ -1041,6 +1079,13 @@ def cmd_build(args: argparse.Namespace) -> None:
         for key, value in image_labels(cfg, target).items():
             cmd += ["--label", f"{key}={value}"]
         cmd += ["--load"]
+        # Guest targets also export /output onto the host, so a local build
+        # leaves a usable qcow2 behind rather than one buried in image layers,
+        # and so the artifact push has something to read without re-pulling a
+        # multi-GB image it just built.
+        dest = payload_dir(cfg, target) if publishes_artifact(cfg, target) else None
+        if dest is not None:
+            cmd += ["--output", f"type=local,dest={dest}"]
         cmd += [
             "-f",
             str(cfg.workdir / target.image / "Dockerfile"),
@@ -1059,6 +1104,12 @@ def cmd_build(args: argparse.Namespace) -> None:
             console.print("[yellow]dry-run:[/] " + " ".join(cmd))
             continue
 
+        # The local exporter merges into whatever is already there, so a stale
+        # qcow2 from an earlier build under a different vm_name would survive
+        # and confuse every consumer that globs for *.qcow2.
+        if dest is not None and dest.exists():
+            shutil.rmtree(dest)
+
         subprocess.run(cmd, check=True)
 
         if has_credentials(cfg):
@@ -1066,6 +1117,13 @@ def cmd_build(args: argparse.Namespace) -> None:
             for ref in refs:
                 subprocess.run(["docker", "push", ref], check=True)
                 console.print(f"[green]Pushed[/] {ref}")
+            if publishes_artifact(cfg, target):
+                push_artifact(
+                    cfg,
+                    target,
+                    payload_files(cfg, target),
+                    [f"{t}{DEFAULT_ARTIFACT_TAG_SUFFIX}" for t in tag_set(cfg, target)],
+                )
         else:
             console.print("[dim]Registry credentials not provided, skipping push[/]")
 
@@ -1156,11 +1214,17 @@ def extract_vm_payload(image_ref: str, dest: Path) -> dict:
     finally:
         subprocess.run(["docker", "rm", cid], check=True, capture_output=True)
 
-    info = dest / "vm-info.json"
+    return load_vm_info(dest, image_ref)
+
+
+def load_vm_info(src: Path, what: str | None = None) -> dict:
+    """Read and validate a payload's vm-info.json."""
+
+    info = src / "vm-info.json"
     if not info.exists():
         console.print(
-            f"[red]Error:[/] {image_ref} has no /output/vm-info.json, so it is "
-            "not a guest image payload."
+            f"[red]Error:[/] {what or src} has no vm-info.json, so it is not a "
+            "guest image payload."
         )
         sys.exit(1)
     return json.loads(info.read_text())
@@ -1188,6 +1252,43 @@ def cmd_push_artifact(args: argparse.Namespace) -> None:
 
     target = parse_target(cfg, args.image)
 
+    if args.from_dir and args.from_image:
+        console.print("[red]Error:[/] --from-dir and --from-image are exclusive")
+        sys.exit(1)
+
+    base_tags = tag_set(cfg, target)
+    tags = [
+        f"{t}{args.tag_suffix}" for t in dict.fromkeys(base_tags + list(args.extra_tag))
+    ]
+
+    push_artifact(
+        cfg,
+        target,
+        Path(args.from_dir) if args.from_dir else None,
+        tags,
+        from_image=args.from_image,
+        zstd_level=args.zstd_level,
+        dry_run=args.dry_run,
+    )
+
+
+def push_artifact(
+    cfg: Config,
+    target: Target,
+    src_dir: Path | None,
+    tags: list[str],
+    from_image: str | None = None,
+    zstd_level: int = 12,
+    dry_run: bool = False,
+) -> None:
+    """Compress a guest payload and push it to *cfg.registry* under *tags*.
+
+    *src_dir* is a payload directory on the host -- what a guest build exports.
+    Falling back to *from_image* (or the target's first published tag) extracts
+    the same files out of the scratch image instead, which costs a pull of a
+    multi-GB image and goes away with that image.
+    """
+
     for tool in ("oras", "zstd"):
         if shutil.which(tool) is None:
             console.print(f"[red]Error:[/] {tool} is not on PATH")
@@ -1196,7 +1297,7 @@ def cmd_push_artifact(args: argparse.Namespace) -> None:
     # A dry run extracts and compresses but never reaches the registry, so it
     # must not demand credentials -- that is the mode for checking what would
     # be pushed from a machine that cannot push.
-    if not args.dry_run:
+    if not dry_run:
         if not has_credentials(cfg):
             console.print(
                 "[red]Error:[/] registry credentials are required for push-artifact"
@@ -1205,20 +1306,24 @@ def cmd_push_artifact(args: argparse.Namespace) -> None:
         # oras reads the same ~/.docker/config.json docker login writes.
         docker_login(cfg)
 
-    base_tags = tag_set(cfg, target)
-    tags = [
-        f"{t}{args.tag_suffix}" for t in dict.fromkeys(base_tags + list(args.extra_tag))
-    ]
     repo = f"{cfg.registry}/{full_image_ref(cfg, target)}"
-    source = args.from_image or tagged_ref(cfg, target, tag=base_tags[0])
 
     console.rule(f"[bold]Pushing {target.key} qcow2 artifact[/]")
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
-        info = extract_vm_payload(source, work)
+        if src_dir is not None:
+            # Copied rather than compressed in place: zstd --rm below would
+            # otherwise eat the qcow2 out of the caller's output directory.
+            info = load_vm_info(src_dir)
+            for name in ("vm-info.json", Path(info["image_path"]).name):
+                if (src_dir / name).exists():
+                    shutil.copy2(src_dir / name, work / name)
+        else:
+            source = from_image or tagged_ref(cfg, target, tag=tag_set(cfg, target)[0])
+            info = extract_vm_payload(source, work)
         qcow2 = work / Path(info["image_path"]).name
         if not qcow2.exists():
-            console.print(f"[red]Error:[/] {qcow2.name} is missing from /output")
+            console.print(f"[red]Error:[/] {qcow2.name} is missing from the payload")
             sys.exit(1)
 
         console.print(f"Compressing {qcow2.name} ({qcow2.stat().st_size} bytes)")
@@ -1231,7 +1336,7 @@ def cmd_push_artifact(args: argparse.Namespace) -> None:
             [
                 "zstd",
                 "-T0",
-                f"-{args.zstd_level}",
+                f"-{zstd_level}",
                 "--long=27",
                 "--rm",
                 "-q",
@@ -1251,7 +1356,7 @@ def cmd_push_artifact(args: argparse.Namespace) -> None:
         ]
         annotation_args = [a for pair in annotations for a in ("--annotation", pair)]
 
-        if args.dry_run:
+        if dry_run:
             for tag in tags:
                 console.print(f"[yellow]Would push[/] {repo}:{tag}")
             return
@@ -1339,6 +1444,7 @@ def cmd_targets(args: argparse.Namespace) -> None:
                 "scope": target_scope(cfg, t),
                 "job": job,
                 "artifact": bool(target_attr(cfg, t, "artifact", False)),
+                "publish": publish_mode(cfg, t),
                 "entitlement": needs_entitlement(cfg, t),
                 # Lets the derived CI job point BASE_IMAGE at the copy of its
                 # base built earlier in the same run without naming any image.
@@ -1757,11 +1863,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_artifact.add_argument(
         "--tag-suffix",
-        default="-qcow2",
+        default=DEFAULT_ARTIFACT_TAG_SUFFIX,
         metavar="TEXT",
         help=(
             "Appended to every artifact tag so the bare disk can share the "
-            "flavour's repository with the scratch image (default: -qcow2)"
+            "flavour's repository with the scratch image "
+            f"(default: {DEFAULT_ARTIFACT_TAG_SUFFIX})"
+        ),
+    )
+    p_artifact.add_argument(
+        "--from-dir",
+        metavar="DIR",
+        help=(
+            "Payload directory to push (what a guest build exports to "
+            "output/<scope>/); avoids pulling the payload image back"
         ),
     )
     p_artifact.add_argument(

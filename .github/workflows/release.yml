@@ -508,6 +508,13 @@ jobs:
           file: ${{ matrix.target.image }}/Dockerfile
           allow: security.insecure
           push: true
+          # Guest targets also export /output to the host, so the artifact push
+          # below reads files instead of pulling back the multi-GB image this
+          # step has just pushed.
+          outputs: >-
+            ${{ matrix.target.publish == 'artifact'
+              && format('type=local,dest=output/{0}', matrix.target.scope)
+              || '' }}
           tags: ${{ steps.tags.outputs.refs }}
           cache-from: >-
             type=registry,ref=${{ env.CACHE_REGISTRY }}:${{
@@ -532,15 +539,19 @@ jobs:
       # a libvirt or bare-metal consumer can oras pull a disk with no
       # container runtime, addressed by its own digest.
       - name: Set up ORAS
-        if: matrix.target.entitlement != ''
+        if: matrix.target.publish == 'artifact'
         uses: oras-project/setup-oras@v1
 
+      # --from-dir is the export the build step above wrote. The extra output/
+      # level is the payload stage still nesting under /output, which it must
+      # while the scratch image is published too.
       - name: Push guest qcow2 as an ORAS artifact
-        if: matrix.target.entitlement != ''
+        if: matrix.target.publish == 'artifact'
         env:
           REGISTRY_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           ./ci-images-tool.py push-artifact "${{ matrix.target.key }}" \
+            --from-dir "output/${{ matrix.target.scope }}/output" \
             --tag "${{ steps.version.outputs.version }}" \
             --extra-tag "sha-${GITHUB_SHA:0:7}" \
             --extra-tag "${{ steps.version.outputs.tag }}"
