@@ -720,8 +720,9 @@ Each flavour is provisioned in three layers:
 - `kernel_ref` — an [Ubuntu mainline](https://kernel.ubuntu.com/mainline/)
   build tag, for a kernel no Ubuntu archive has. Mainline publishes one build
   per version rather than one per release and depends on only a handful of base
-  packages, so this is orthogonal to `release`: `ionic` is noble userspace with
-  a 7.2.3 kernel. The `.deb`s are loose files in no apt repository and
+  packages, so this is orthogonal to `release`: `ionic` is resolute userspace,
+  whose GA kernel is 7.0, running a mainline 7.2.3 kernel instead. The `.deb`s
+  are loose files in no apt repository and
   cloud-init has no hook to run a command, so they are installed in a
   provisioning boot of its own, after cloud-init and before verification. The
   build fails if the guest then boots anything other than the pinned kernel.

@@ -357,13 +357,20 @@ images:
       # are deliberately *not* built here, since building them from pinned
       # upstream sources is what those jobs exist to test.
       #
-      # noble + mainline v7.2.3 reproduces the configuration rocm-ernic's
-      # self-hosted golden image is already running and passing on, down to the
-      # 202609030700 build stamp. It was put there by hand and written down
-      # nowhere, which is why the two guests have since drifted; pinning it
-      # here is the point of the exercise. Do not "upgrade" either half without
-      # a green ionic-ernic DKMS build against it -- v7.2.4 sources needed
-      # ib_umem_get_va, which 7.0 does not have.
+      # The kernel is mainline v7.2.3, the build rocm-ernic's self-hosted
+      # guests are already passing on, stamp 202609030700. No Ubuntu release
+      # ships it -- resolute GA is 7.0.0-31 -- so kernel_ref installs it on top
+      # and the release only decides how painful that is. resolute makes it a
+      # plain dpkg operation; noble needs a run-parts shim, because its
+      # debianutils 5.17 takes one directory and the mainline preinst passes
+      # two, and a third-party PPA for gcc-15, which 7.x headers require and
+      # noble's gcc-13 cannot provide. Both are hand-modifications invisible to
+      # dpkg -V, and both are how the existing guests were built.
+      #
+      # Do not move either pin without a green ionic-ernic DKMS build against
+      # it: v7.2.4 sources call ib_umem_get_va, which 7.0 does not have. The
+      # two are pinned separately here and in rocm-ernic, with nothing
+      # asserting they stay compatible beyond checks/ionic.sh.
       #
       # vm_playbook stays empty until vm-ionic.yml lands in qemu-minimal: the
       # source build of rdma-core 62.0 and the pre-seeded /opt/ionic-src
@@ -374,5 +381,4 @@ images:
         vars:
           flavour: ionic
           vm_packages: ionic.txt
-          release: noble
           kernel_ref: v7.2.3
