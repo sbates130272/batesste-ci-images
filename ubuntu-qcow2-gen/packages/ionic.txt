@@ -1,0 +1,46 @@
+# cloud-init packages for the "ionic" guest flavour: everything needed to build
+# rdma-core from source and the ionic-ernic DKMS modules against the guest
+# kernel.  The modules themselves are not built here -- building them is what
+# the consuming jobs exist to test.
+#
+# Nothing here may be kernel-versioned: cloud-init runs before the mainline
+# kernel is installed, and ${KERNEL_VERSION} would expand to the *host* kernel
+# in any case.
+build-essential
+cmake
+ninja-build
+pkg-config
+dkms
+git
+# No linux-headers-generic and no linux-modules-extra.  This flavour boots a
+# mainline kernel (kernel_ref in images.yml), not the 7.0 the release ships, so
+# the -generic metapackages would pull headers DKMS must not build against.
+# The matching linux-headers-<ver>-generic comes with the mainline .debs, as
+# does linux-modules-<ver>-generic, which carries ib_core, ib_uverbs, rdma_ucm
+# and both halves of ionic -- the RDMA stack this flavour exists for is
+# therefore present at first boot with nothing extra to install.
+#
+# Dependencies of those .debs, pre-seeded so the kernel install is a local
+# dpkg operation rather than a second round of archive resolution.
+linux-base
+kmod
+initramfs-tools
+wireless-regdb
+
+# rdma-core build dependencies (upstream v62 wants all of these).
+libnl-3-dev
+libnl-route-3-dev
+libudev-dev
+libsystemd-dev
+python3-docutils
+
+# Distro rdma-core, for ibv_devinfo and friends.  26.04's package still
+# predates providers/ionic (upstream v61), so a job needing libionic must still
+# build rdma-core from source over the top -- and nothing holds the packaged
+# copy, so an apt upgrade in a long-lived guest will revert libionic*.so.
+rdma-core
+ibverbs-utils
+libibverbs-dev
+
+pipx
+python3-venv

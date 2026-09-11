@@ -212,26 +212,30 @@ jobs:
           df -h /
 
       # x86 GitHub-hosted runners do expose /dev/kvm, but as root:kvm 0660,
-      # and BuildKit's RUN step is not in the kvm group. Widen it rather than
-      # fall back to TCG, which turns a minutes-long VM boot into an hour.
-      # ARM Linux, macOS, Windows and ubuntu-slim runners have no /dev/kvm at
-      # all; the build-args step below detects that and selects vm-tcg.
-      - name: Enable KVM for the VM build
-        if: matrix.target.image == 'ubuntu-qemu-libvfio-user'
+      # and BuildKit's RUN step is not in the kvm group, so widen it. There is
+      # no TCG fallback: a runner without /dev/kvm (ARM Linux, macOS, Windows,
+      # ubuntu-slim) cannot build guest images and fails here rather than
+      # spending an hour emulating one.
+      - name: Enable KVM for guest image builds
+        if: matrix.target.entitlement != ''
         run: |
-          if [ -e /dev/kvm ]; then
-            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-              | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-            sudo udevadm control --reload-rules
-            sudo udevadm trigger --name-match=kvm
+          if [ ! -e /dev/kvm ]; then
+            echo "::error::no /dev/kvm on this runner; guest images need KVM"
+            exit 1
           fi
-          ls -l /dev/kvm || echo "no /dev/kvm on this runner"
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
         with:
-          # The VM build stage needs /dev/kvm, reachable only
-          # from a RUN --security=insecure step.
+          # Guest builds reach /dev/kvm only from a RUN --security=insecure
+          # step. No matrix-tier target needs this today -- the guests are all
+          # `job: derived` -- but the gating below is on the entitlement, not on
+          # an image name, so a matrix guest would work without a workflow edit.
           buildkitd-flags: >-
             --allow-insecure-entitlement security.insecure
             --allow-insecure-entitlement network.host
@@ -270,10 +274,6 @@ jobs:
       - name: Compute image tags, labels and build args
         id: tags
         run: |
-          # --kvm only means anything to ubuntu-qemu-libvfio-user, so gate it
-          # on the device rather than on the image name.
-          KVM_FLAG=
-          [ -w /dev/kvm ] && KVM_FLAG=--kvm
           {
             echo 'refs<<TAGS_EOF'
             ./ci-images-tool.py tags "${{ matrix.target.key }}" \
@@ -287,30 +287,42 @@ jobs:
             echo LABELS_EOF
             echo 'args<<ARGS_EOF'
             ./ci-images-tool.py build-args "${{ matrix.target.key }}" \
-              --tag "${{ steps.version.outputs.version }}" ${KVM_FLAG}
+              --tag "${{ steps.version.outputs.version }}"
             echo ARGS_EOF
           } >> "$GITHUB_OUTPUT"
 
       - name: Ensure cloud image cache dir exists
         run: mkdir -p common/cloud-image-cache
 
+      # The guest release is pinned in images.yml, not here, so bumping it
+      # there moves the cache key and the download URL with it.
+      - name: Resolve guest Ubuntu release
+        id: guest
+        if: matrix.target.entitlement != ''
+        run: |
+          RELEASE=$(./ci-images-tool.py build-args "${{ matrix.target.key }}" \
+            | sed -n 's/^RELEASE=//p')
+          [ -n "$RELEASE" ] || { echo "::error::no RELEASE build arg"; exit 1; }
+          echo "release=${RELEASE}" >> "$GITHUB_OUTPUT"
+
       - name: Cache Ubuntu cloud image
-        if: matrix.target.image == 'ubuntu-qemu-libvfio-user'
+        if: matrix.target.entitlement != ''
         uses: actions/cache@v6
         with:
           path: common/cloud-image-cache
-          key: cloud-image-noble-amd64
-          restore-keys: cloud-image-noble-
+          key: cloud-image-${{ steps.guest.outputs.release }}-amd64
+          restore-keys: cloud-image-${{ steps.guest.outputs.release }}-
 
       - name: Pre-download cloud image
-        if: matrix.target.image == 'ubuntu-qemu-libvfio-user'
+        if: matrix.target.entitlement != ''
         run: |
           DIR="common/cloud-image-cache"
-          IMG="${DIR}/noble-server-cloudimg-amd64.img"
+          REL="${{ steps.guest.outputs.release }}"
+          IMG="${DIR}/${REL}-server-cloudimg-amd64.img"
           if [ ! -f "$IMG" ]; then
             wget --progress=dot:giga --timeout=30 --tries=5 \
               --retry-connrefused -O "$IMG" \
-              "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+              "https://cloud-images.ubuntu.com/${REL}/current/${REL}-server-cloudimg-amd64.img"
           fi
 
       - name: Build and push Docker image
@@ -378,8 +390,16 @@ jobs:
             /usr/share/swift
           df -h /
 
+      # Same flags as the matrix job: a derived target that builds a guest
+      # qcow2 needs security.insecure to reach /dev/kvm. Granting the
+      # entitlement to the builder is not the same as using it -- the build
+      # step still has to ask for it via `allow:`.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+        with:
+          buildkitd-flags: >-
+            --allow-insecure-entitlement security.insecure
+            --allow-insecure-entitlement network.host
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
@@ -410,6 +430,55 @@ jobs:
       - name: Install tool dependencies
         run: pip install -r requirements.txt
 
+      # ── guest-image support, gated on the entitlement rather than on an
+      # image name, so a new `job: derived` guest flavour picks all of this up
+      # from its images.yml entry alone. Mirrors the matrix job's steps.
+
+      - name: Ensure cloud image cache dir exists
+        run: mkdir -p common/cloud-image-cache
+
+      - name: Resolve guest Ubuntu release
+        id: guest
+        if: matrix.target.entitlement != ''
+        run: |
+          RELEASE=$(./ci-images-tool.py build-args "${{ matrix.target.key }}" \
+            | sed -n 's/^RELEASE=//p')
+          [ -n "$RELEASE" ] || { echo "::error::no RELEASE build arg"; exit 1; }
+          echo "release=${RELEASE}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Ubuntu cloud image
+        if: matrix.target.entitlement != ''
+        uses: actions/cache@v6
+        with:
+          path: common/cloud-image-cache
+          key: cloud-image-${{ steps.guest.outputs.release }}-amd64
+          restore-keys: cloud-image-${{ steps.guest.outputs.release }}-
+
+      - name: Pre-download cloud image
+        if: matrix.target.entitlement != ''
+        run: |
+          DIR="common/cloud-image-cache"
+          REL="${{ steps.guest.outputs.release }}"
+          IMG="${DIR}/${REL}-server-cloudimg-amd64.img"
+          if [ ! -f "$IMG" ]; then
+            wget --progress=dot:giga --timeout=30 --tries=5 \
+              --retry-connrefused -O "$IMG" \
+              "https://cloud-images.ubuntu.com/${REL}/current/${REL}-server-cloudimg-amd64.img"
+          fi
+
+      - name: Enable KVM for guest image builds
+        if: matrix.target.entitlement != ''
+        run: |
+          if [ ! -e /dev/kvm ]; then
+            echo "::error::no /dev/kvm on this runner; guest images need KVM"
+            exit 1
+          fi
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
       # BASE_IMAGE resolves to the first line of the base's tag set: the
       # immutable, fully specified tag build-and-push just published.
       - name: Compute image tags, labels and build args
@@ -437,7 +506,15 @@ jobs:
         with:
           context: .
           file: ${{ matrix.target.image }}/Dockerfile
+          allow: security.insecure
           push: true
+          # Guest targets also export /output to the host, so the artifact push
+          # below reads files instead of pulling back the multi-GB image this
+          # step has just pushed.
+          outputs: >-
+            ${{ matrix.target.publish == 'artifact'
+              && format('type=local,dest=output/{0}.export', matrix.target.scope)
+              || '' }}
           tags: ${{ steps.tags.outputs.refs }}
           cache-from: >-
             type=registry,ref=${{ env.CACHE_REGISTRY }}:${{
@@ -456,6 +533,38 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+
+      # The scratch image is the low-friction path; this is what makes "qcow2
+      # as an artifact" true rather than a container-shaped approximation --
+      # a libvirt or bare-metal consumer can oras pull a disk with no
+      # container runtime, addressed by its own digest.
+      # The payload stage copies to /output/, which the local exporter
+      # faithfully reproduces; renaming the inner directory into place strips a
+      # level nobody wants. Same move ci-images-tool.py makes for local builds,
+      # and free -- both paths are on one filesystem.
+      - name: Unnest guest image payload
+        if: matrix.target.publish == 'artifact'
+        run: |
+          SCOPE="${{ matrix.target.scope }}"
+          mv "output/${SCOPE}.export/output" "output/${SCOPE}"
+          rmdir "output/${SCOPE}.export"
+
+      - name: Set up ORAS
+        if: matrix.target.publish == 'artifact'
+        uses: oras-project/setup-oras@v1
+
+      # --from-dir is the export the build step above wrote, so the release
+      # never pulls back the multi-GB image it has just pushed.
+      - name: Push guest qcow2 as an ORAS artifact
+        if: matrix.target.publish == 'artifact'
+        env:
+          REGISTRY_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          ./ci-images-tool.py push-artifact "${{ matrix.target.key }}" \
+            --from-dir "output/${{ matrix.target.scope }}" \
+            --tag "${{ steps.version.outputs.version }}" \
+            --extra-tag "sha-${GITHUB_SHA:0:7}" \
+            --extra-tag "${{ steps.version.outputs.tag }}"
 
   github-release:
     name: Create GitHub Release

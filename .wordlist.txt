@@ -115,3 +115,8 @@ COMPAT
 DEV
 yml
 cd
+mainline
+userspace
+initramfs
+vCPU
+MiB

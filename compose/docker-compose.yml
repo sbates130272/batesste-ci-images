@@ -1,10 +1,23 @@
 services:
+  # The qemu image is the toolchain only; it carries no guest. Extract one from
+  # a published ubuntu-qcow2-gen payload into compose/vm/ before "up":
+  #
+  #   cid=$(docker create \
+  #     sbates130272/batesste-ci-images-ubuntu-qcow2-gen:latest)
+  #   docker cp "$cid:/output/." compose/vm && docker rm "$cid"
+  #
+  # VM_NAME below must match the payload's vm-info.json: the disk is named
+  # after it, and entrypoint.sh looks for /output/${VM_NAME}.qcow2.
+  #
+  # Mounted read-write, not :ro -- QEMU opens the qcow2 read-write, so the
+  # stack writes back into compose/vm/. Re-extract for a pristine guest.
   qemu:
     image: batesste-ci-images-ubuntu-qemu-libvfio-user:latest
     cap_add:
       - NET_ADMIN
     volumes:
       - vfio-sockets:/tmp/vfio-sockets
+      - ./vm:/output
     environment:
       USERNAME: batesste
       VM_NAME: batesste-ci-vm

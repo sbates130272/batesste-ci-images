@@ -1,0 +1,19 @@
+# cloud-init packages for the "basic" guest flavour, appended to qemu-minimal's
+# default manifest.  ${KERNEL_VERSION} expands to the *host* kernel, so name the
+# -generic metapackages here: they track whatever kernel the guest booted.
+build-essential
+cmake
+ninja-build
+pkg-config
+dkms
+git
+linux-headers-generic
+# No linux-modules-extra here: 26.04 has no such package at all -- the split
+# was folded back into linux-modules-<ver>-<flavour>, which the booted kernel
+# already pulls in.  Asking for it does not get you more modules, it gets you
+# "Unable to locate package".
+rdma-core
+ibverbs-utils
+libibverbs-dev
+pipx
+python3-venv
