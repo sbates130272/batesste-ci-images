@@ -59,6 +59,7 @@ BUILDER_NAME = "builder"
 VM_ARTIFACT_TYPE = "application/vnd.batesste.vm-image.v1"
 VM_LAYER_MEDIA_TYPE = "application/vnd.batesste.vm-image.layer.v1+zstd"
 VM_INFO_ARTIFACT_TYPE = "application/vnd.batesste.vm-info.v1"
+VM_SSH_KEY_MEDIA_TYPE = "application/vnd.batesste.vm-ssh-key.v1"
 # Artifact tags are suffixed so the bare disk can share the flavour's
 # repository with the scratch image instead of overwriting it. Drops to "" once
 # the scratch image is gone and the repository is the artifact's alone.
@@ -570,15 +571,24 @@ def payload_dir(cfg: Config, target: Target) -> Path:
     return cfg.workdir / "output" / target_scope(cfg, target)
 
 
-def payload_files(cfg: Config, target: Target) -> Path:
-    """The directory inside the export that actually holds vm-info.json.
+def export_payload(dest: Path, staging: Path) -> None:
+    """Move a freshly exported payload from *staging* to *dest*, unnested.
 
-    The payload stage is still ``COPY --from=built /output/ /output/`` -- it has
-    to be while the scratch image is also published, since that is the /output
-    contract consumers extract -- so the local exporter reproduces the nesting.
-    Flattening the stage collapses this back onto payload_dir().
+    The payload stage copies to ``/output/`` -- it has to while the scratch
+    image is published too, since that is the contract consumers extract -- so
+    the local exporter faithfully reproduces a directory nobody wants on the
+    host. Renaming the inner directory into place strips it without copying:
+    both live under output/, so this is a metadata operation even on a
+    multi-GB payload.
     """
-    return payload_dir(cfg, target) / "output"
+
+    inner = staging / "output"
+    src = inner if inner.is_dir() else staging
+    if dest.exists():
+        shutil.rmtree(dest)
+    os.replace(src, dest)
+    if staging.exists():
+        shutil.rmtree(staging)
 
 
 def base_target(cfg: Config, target: Target) -> Target | None:
@@ -1084,8 +1094,11 @@ def cmd_build(args: argparse.Namespace) -> None:
         # and so the artifact push has something to read without re-pulling a
         # multi-GB image it just built.
         dest = payload_dir(cfg, target) if publishes_artifact(cfg, target) else None
-        if dest is not None:
-            cmd += ["--output", f"type=local,dest={dest}"]
+        # Exported to a staging directory and renamed into place afterwards,
+        # so the payload stage's /output nesting never reaches the host.
+        staging = dest.with_name(dest.name + ".export") if dest else None
+        if staging is not None:
+            cmd += ["--output", f"type=local,dest={staging}"]
         cmd += [
             "-f",
             str(cfg.workdir / target.image / "Dockerfile"),
@@ -1107,10 +1120,14 @@ def cmd_build(args: argparse.Namespace) -> None:
         # The local exporter merges into whatever is already there, so a stale
         # qcow2 from an earlier build under a different vm_name would survive
         # and confuse every consumer that globs for *.qcow2.
-        if dest is not None and dest.exists():
-            shutil.rmtree(dest)
+        if staging is not None and staging.exists():
+            shutil.rmtree(staging)
 
         subprocess.run(cmd, check=True)
+
+        if dest is not None and staging is not None:
+            export_payload(dest, staging)
+            console.print(f"[green]Payload[/] {dest}")
 
         if has_credentials(cfg):
             console.rule("[bold]Pushing to registry[/]")
@@ -1121,7 +1138,7 @@ def cmd_build(args: argparse.Namespace) -> None:
                 push_artifact(
                     cfg,
                     target,
-                    payload_files(cfg, target),
+                    payload_dir(cfg, target),
                     [f"{t}{DEFAULT_ARTIFACT_TAG_SUFFIX}" for t in tag_set(cfg, target)],
                 )
         else:
@@ -1230,6 +1247,22 @@ def load_vm_info(src: Path, what: str | None = None) -> dict:
     return json.loads(info.read_text())
 
 
+def vm_info_key_names(info: dict) -> list[str]:
+    """Filenames of the SSH keypair a payload carries, per its vm-info.json.
+
+    The recorded paths are absolute inside the payload (``/output/id_rsa``), so
+    only the basenames are usable once the files have been unpacked anywhere
+    else.
+    """
+
+    keys = info.get("ssh_keys") or {}
+    return [
+        Path(keys[k]).name
+        for k in ("private_key_path", "public_key_path")
+        if keys.get(k)
+    ]
+
+
 def cmd_push_artifact(args: argparse.Namespace) -> None:
     """Publish a guest qcow2 as a bare ORAS artifact.
 
@@ -1315,7 +1348,11 @@ def push_artifact(
             # Copied rather than compressed in place: zstd --rm below would
             # otherwise eat the qcow2 out of the caller's output directory.
             info = load_vm_info(src_dir)
-            for name in ("vm-info.json", Path(info["image_path"]).name):
+            for name in (
+                "vm-info.json",
+                Path(info["image_path"]).name,
+                *vm_info_key_names(info),
+            ):
                 if (src_dir / name).exists():
                     shutil.copy2(src_dir / name, work / name)
         else:
@@ -1356,9 +1393,21 @@ def push_artifact(
         ]
         annotation_args = [a for pair in annotations for a in ("--annotation", pair)]
 
+        # The keypair rides with vm-info.json in the referrer rather than in the
+        # image artifact: it is metadata about how to reach the guest, it is
+        # kilobytes next to gigabytes, and keeping it out of the main artifact
+        # means a consumer can fetch credentials without pulling the disk.
+        metadata_files = [
+            f"{name}:{VM_SSH_KEY_MEDIA_TYPE}"
+            for name in vm_info_key_names(info)
+            if (work / name).exists()
+        ]
+
         if dry_run:
             for tag in tags:
                 console.print(f"[yellow]Would push[/] {repo}:{tag}")
+            attached = ["vm-info.json"] + [f.split(":", 1)[0] for f in metadata_files]
+            console.print("[yellow]Would attach[/] " + ", ".join(attached))
             return
 
         # One push carries every tag; the referrer attaches to the first.
@@ -1383,6 +1432,7 @@ def push_artifact(
                 VM_INFO_ARTIFACT_TYPE,
                 f"{repo}:{tags[0]}",
                 "vm-info.json:application/json",
+                *metadata_files,
             ],
             cwd=work,
             check=True,

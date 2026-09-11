@@ -719,7 +719,7 @@ disk behind rather than one buried in image layers. `output/` is gitignored:
 
 ```bash
 ./ci-images-tool.py build ubuntu-qcow2-gen@ionic
-ls output/ubuntu-qcow2-gen-ionic/output/    # qcow2, id_rsa{,.pub}, vm-info.json
+ls output/ubuntu-qcow2-gen-ionic/    # qcow2, id_rsa{,.pub}, vm-info.json
 ```
 
 That directory is what `push-artifact --from-dir` publishes; see
@@ -783,14 +783,29 @@ and address it by its own digest:
 ./ci-images-tool.py push-artifact ubuntu-qcow2-gen@ionic --tag 1.2.0
 ```
 
-It compresses the qcow2 with zstd, pushes it under
-`application/vnd.batesste.vm-image.v1`, and attaches `vm-info.json` as a
-referrer. Artifact tags carry a `-qcow2` suffix (`--tag-suffix`) so they share
-the flavour's repository with the scratch image instead of overwriting it.
-Requires `oras` and `zstd` on `PATH`.
+It compresses the qcow2 with zstd and pushes it under
+`application/vnd.batesste.vm-image.v1`. Everything needed to *use* the disk —
+`vm-info.json` plus the guest's `id_rsa` and `id_rsa.pub` — is attached as a
+referrer of type `application/vnd.batesste.vm-info.v1`, so a consumer can fetch
+the login credentials without pulling the multi-GB disk:
+
+```bash
+REPO=docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic
+DIGEST=$(oras discover --format json "$REPO:latest-qcow2" \
+  | jq -r '.manifests[0].digest')
+oras pull "$REPO@$DIGEST"   # vm-info.json, id_rsa, id_rsa.pub
+chmod 600 id_rsa
+```
+
+The keypair is generated per build for a disposable test VM and is public by
+construction; it is a convenience credential, never a secret.
+
+Artifact tags carry a `-qcow2` suffix (`--tag-suffix`) so they share the
+flavour's repository with the scratch image instead of overwriting it. Requires
+`oras` and `zstd` on `PATH`.
 
 `--from-dir` names a payload directory on the host — what a guest build exports
-to `output/<scope>/output/` — and is how CI pushes, so the release job never
+to `output/<scope>/` — and is how CI pushes, so the release job never
 pulls back the multi-GB image it just published. Without it the payload is
 extracted from the published scratch image instead.
 

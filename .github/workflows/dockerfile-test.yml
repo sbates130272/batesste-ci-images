@@ -614,7 +614,7 @@ jobs:
           # read files rather than shelling out to docker create.
           outputs: >-
             ${{ matrix.target.publish == 'artifact'
-              && format('type=local,dest=output/{0}', matrix.target.scope)
+              && format('type=local,dest=output/{0}.export', matrix.target.scope)
               || '' }}
           tags: >-
             batesste-ci-images-${{ matrix.target.scope }}:test
@@ -626,17 +626,25 @@ jobs:
               env.CACHE_REGISTRY
             }}:${{ matrix.target.scope }}
 
+      # The payload stage copies to /output/, which the local exporter
+      # faithfully reproduces; renaming the inner directory into place strips a
+      # level nobody wants. Same move ci-images-tool.py makes for local builds,
+      # and free -- both paths are on one filesystem.
+      - name: Unnest guest image payload
+        if: matrix.target.publish == 'artifact'
+        run: |
+          SCOPE="${{ matrix.target.scope }}"
+          mv "output/${SCOPE}.export/output" "output/${SCOPE}"
+          rmdir "output/${SCOPE}.export"
+
       # The in-guest assertions already ran during the build (build-vm.sh boots
       # the finished qcow2 and runs checks/<flavour>.sh), so what is left is to
       # prove the payload is complete and self-describing -- the only interface
       # consumers have to this target.
-      #
-      # The extra output/ level is the payload stage still nesting under
-      # /output, which it must while the scratch image is published too.
       - name: Verify guest image payload
         if: matrix.target.publish == 'artifact'
         run: |
-          DIR="output/${{ matrix.target.scope }}/output"
+          DIR="output/${{ matrix.target.scope }}"
           ls -l "$DIR"
           jq . "$DIR/vm-info.json"
           IMG=$(jq -r .image_path "$DIR/vm-info.json" | xargs basename)
@@ -652,7 +660,7 @@ jobs:
       - name: Export guest image payload
         if: matrix.target.publish == 'artifact'
         run: |
-          tar -C "output/${{ matrix.target.scope }}/output" -cf - . \
+          tar -C "output/${{ matrix.target.scope }}" -cf - . \
             | zstd -T0 -3 \
             > "/tmp/vm-payload-${{ matrix.target.scope }}.tar.zst"
 
