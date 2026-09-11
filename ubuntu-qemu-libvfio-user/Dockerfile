@@ -1,13 +1,19 @@
 # syntax=docker/dockerfile:1-labs
 #
 # The QEMU builder/runner toolchain: QEMU with libvfio-user and slirp, the
-# qemu-tool CLI, ansible-core and the Docker CLI.  It builds no guest image of
-# its own -- that is ubuntu-qcow2-gen's job, one repository per flavour -- so
-# /output ships empty and a guest is supplied at run time:
+# qemu-tool CLI, ansible-core, the Docker CLI and oras.  It builds no guest
+# image of its own -- that is ubuntu-qcow2-gen's job, one repository per flavour
+# -- so /output ships empty and a guest is supplied at run time.  Guests are
+# published as bare OCI artifacts, so no container runtime is needed to fetch
+# one:
 #
-#   cid=$(docker create sbates130272/batesste-ci-images-ubuntu-qcow2-gen:latest)
-#   docker cp "$cid:/output/." ./vm && docker rm "$cid"
-#   docker run -v "$PWD/vm:/output" ...   # rw: QEMU opens the disk rw
+#   REPO=sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic
+#   mkdir vm && cd vm
+#   oras pull "$REPO:latest-qcow2" && zstd -d --long=27 --rm ./*.qcow2.zst
+#   # vm-info.json and the SSH keypair ride in a referrer, not in the artifact:
+#   oras pull "$REPO@$(oras discover --format json "$REPO:latest-qcow2" \
+#       | jq -r '.referrers[0].digest')" && chmod 600 id_rsa
+#   docker run -v "$PWD:/output" ...   # rw: QEMU opens the disk rw
 #
 # entrypoint.sh also accepts a guest under /build/qemu-minimal/images.
 
@@ -109,6 +115,27 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         docker-compose-plugin && \
     docker --version && \
     docker compose version
+
+# oras and zstd: guest disks are published as bare OCI artifacts, and this is
+# the image that consumes them.  Without these a consuming CI job installs both
+# on every run, on the critical path, before it can fetch a guest.
+#
+# zstd comes from the archive; oras does not ship in Ubuntu, so take the
+# upstream static binary.  amd64 only, matching the rest of this image, and the
+# checksum is pinned alongside the version -- bump both together.
+ARG ORAS_VERSION=1.3.4
+ARG ORAS_SHA256=f27adb935022d94df8dc77719c322dda592c78a0d57a6f7dcdd8d900b248c454
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    apt-get install -y --no-install-recommends zstd && \
+    curl -fsSL -o /tmp/oras.tar.gz \
+        "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz" && \
+    echo "${ORAS_SHA256}  /tmp/oras.tar.gz" | sha256sum -c - && \
+    tar -xzf /tmp/oras.tar.gz -C /usr/local/bin oras && \
+    rm -f /tmp/oras.tar.gz && \
+    oras version && \
+    zstd --version
 
 # Python packaging tooling. setuptools is no longer implicit on 3.12, and pipx
 # installs CLI tools without hand-rolling a venv for each one.

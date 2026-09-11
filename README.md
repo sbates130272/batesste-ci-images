@@ -25,7 +25,8 @@ and pushing of these images.
   `ubuntu-libvfio-user/` for details.
 - **ubuntu-qemu-libvfio-user**: QEMU built with libvfio-user support, plus the
   `qemu-tool` CLI and ansible-core — the builder/runner toolchain. It carries no
-  guest disk of its own; supply one from `ubuntu-qcow2-gen`. See
+  guest disk of its own; supply one from `ubuntu-qcow2-gen`, which `oras` and
+  `zstd` (both preinstalled) fetch without a container runtime. See
   `ubuntu-qemu-libvfio-user/` for details.
 - **ubuntu-kernel-build**: Ubuntu-based image with tools for building Linux
   kernels and out-of-tree kernel modules. See `ubuntu-kernel-build/` for
@@ -792,7 +793,7 @@ the login credentials without pulling the multi-GB disk:
 ```bash
 REPO=docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic
 DIGEST=$(oras discover --format json "$REPO:latest-qcow2" \
-  | jq -r '.manifests[0].digest')
+  | jq -r '.referrers[] | select(.artifactType=="application/vnd.batesste.vm-info.v1") | .digest')
 oras pull "$REPO@$DIGEST"   # vm-info.json, id_rsa, id_rsa.pub
 chmod 600 id_rsa
 ```
