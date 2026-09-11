@@ -1,12 +1,15 @@
 # syntax=docker/dockerfile:1-labs
-# check=skip=SecretsUsedInArgOrEnv
 #
-# PASSWORD is the guest VM's console login, not a credential for anything
-# outside the qcow2.  It has to be knowable by whoever boots the image, which
-# is why build-vm.sh publishes it in /output/vm-info.json -- so hiding it from
-# the build history via a secret mount would buy nothing.  images.yml still
-# marks it secret: true, which keeps the value out of `build-args` output and
-# therefore out of CI logs.
+# The QEMU builder/runner toolchain: QEMU with libvfio-user and slirp, the
+# qemu-tool CLI, ansible-core and the Docker CLI.  It builds no guest image of
+# its own -- that is ubuntu-qcow2-gen's job, one repository per flavour -- so
+# /output ships empty and a guest is supplied at run time:
+#
+#   cid=$(docker create sbates130272/batesste-ci-images-ubuntu-qcow2-gen:latest)
+#   docker cp "$cid:/output/." ./vm && docker rm "$cid"
+#   docker run -v "$PWD/vm:/output" ...   # rw: QEMU opens the disk rw
+#
+# entrypoint.sh also accepts a guest under /build/qemu-minimal/images.
 
 # libvfio-user is already built and installed under /usr/local by the base
 # image, which pins the same SHA this image used to build for itself.
@@ -32,15 +35,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 ARG QEMU_REPO=https://gitlab.com/qemu-project/qemu.git
 ARG QEMU_COMMIT=v11.1.1
 
-# Accept qemu-minimal configuration as build arguments
+# The qemu-minimal checkout the qemu-tool CLI is installed from.  Guest
+# provisioning parameters (release, size, packages, playbook, kernel) are not
+# here: they belong to ubuntu-qcow2-gen, which builds the guests.
 ARG QEMU_MINIMAL_REPO=
 ARG QEMU_MINIMAL_COMMIT=
-ARG USERNAME=batesste
-ARG VM_NAME=
-ARG PASSWORD=changeme
-ARG RELEASE=resolute
-ARG ARCH=amd64
-ARG VM_SIZE=64
 ARG CACHE_BUST=
 
 WORKDIR /build
@@ -136,17 +135,12 @@ RUN pipx install "ansible-core==${ANSIBLE_CORE_VERSION}" && \
     ansible-playbook --version && \
     ansible-galaxy --version
 
-# Create output directory and copy packages file
+# The mount point a guest payload is supplied at.  Empty in the image: nothing
+# here generates one, and entrypoint.sh errors clearly when nothing is mounted.
 RUN mkdir -p /output
-COPY ubuntu-qemu-libvfio-user/packages.txt /build/packages.txt
-
-# Generate SSH keys for VM access
-RUN mkdir -p /root/.ssh && \
-    ssh-keygen -t rsa -b 4096 \
-        -f /root/.ssh/id_rsa -N "" -q
 
 # Clone qemu-minimal if repo is provided (separate
-# layer so it is cached independently of VM build)
+# layer so it caches independently of the QEMU build)
 WORKDIR /build
 RUN set -eux; \
     if [ -z "${QEMU_MINIMAL_REPO}" ]; then \
@@ -168,6 +162,11 @@ RUN set -eux; \
 # "gen-vm" and "run-vm" subcommands; the standalone
 # bash scripts of those names are obsolete and are
 # being removed upstream, so nothing may call them.
+#
+# The checkout is deleted afterwards.  ubuntu-qcow2-gen re-clones it (it needs
+# the ansible/ tree, which the wheel does not carry) and `git clone` refuses a
+# non-empty target, so leaving it here breaks every guest build.  It also frees
+# /build/qemu-minimal/images for the runtime guest mount entrypoint.sh accepts.
 RUN set -eux; \
     if [ -d /build/qemu-minimal/qemu ]; then \
         python3 -m venv /opt/qemu-tool; \
@@ -176,37 +175,10 @@ RUN set -eux; \
         ln -sf /opt/qemu-tool/bin/qemu-tool \
             /usr/local/bin/qemu-tool; \
         qemu-tool --version; \
-    fi
+    fi; \
+    rm -rf /build/qemu-minimal
 
-# The VM build script is shared by both VM stages below.
-COPY ubuntu-qemu-libvfio-user/build-vm.sh /usr/local/bin/build-vm
-RUN chmod +x /usr/local/bin/build-vm
-
-# Build the VM image with KVM acceleration.  --security=insecure
-# is what lets the step create and open /dev/kvm, so this stage
-# needs "buildx build --allow security.insecure" against a builder
-# started with --allow-insecure-entitlement=security.insecure.
-# There is no TCG fallback: emulation is ~10x slower, so a missing
-# /dev/kvm is a build failure rather than a silent slowdown.
-# The --mount binds common/cloud-image-cache/ from the build
-# context; pre-downloaded images land where "qemu-tool
-# gen-vm" looks so it can skip the download.
-FROM base AS vm
-ARG QEMU_MINIMAL_REPO=
-ARG QEMU_MINIMAL_COMMIT=
-ARG USERNAME=batesste
-ARG VM_NAME=
-ARG PASSWORD=changeme
-ARG RELEASE=resolute
-ARG ARCH=amd64
-ARG VM_SIZE=64
-ARG CACHE_BUST=
-# hadolint ignore=DL3059
-RUN --security=insecure \
-    --mount=type=bind,source=common/cloud-image-cache,target=/tmp/cloud-cache \
-    build-vm
-
-FROM vm AS final
+FROM base AS final
 
 # Copy scripts
 COPY ubuntu-qemu-libvfio-user/entrypoint.sh /build/entrypoint.sh

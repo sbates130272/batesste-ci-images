@@ -850,8 +850,8 @@ def ensure_builder() -> bool:
 
     flags = _builder_daemon_flags(BUILDER_NAME)
     if flags is not None and "security.insecure" not in flags:
-        # The VM build stage needs the insecure entitlement for
-        # /dev/kvm; an old builder without it must be replaced.
+        # Guest builds need the insecure entitlement for /dev/kvm;
+        # an old builder without it must be replaced.
         console.print(
             "[yellow]Warning:[/] recreating buildx builder "
             f"'{BUILDER_NAME}' to add the security.insecure "

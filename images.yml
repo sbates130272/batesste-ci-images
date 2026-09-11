@@ -242,42 +242,30 @@ images:
       "{ns}.rocjitsu.branch": "{rocjitsu_branch}"
       "{ns}.rocjitsu.commit": "{rocjitsu_commit}"
 
+  # The builder/runner toolchain, and only that: QEMU, the qemu-tool CLI,
+  # ansible-core, libvfio-user. It builds no guest of its own -- ubuntu-qcow2-gen
+  # below does that -- so it needs neither KVM, nor the insecure entitlement,
+  # nor the cloud-image cache, and /output ships empty for a guest payload to be
+  # mounted over.
   ubuntu-qemu-libvfio-user:
     job: matrix
     base: ubuntu-libvfio-user
     artifact: true
-    entitlement: security.insecure
-    # The Dockerfile bind-mounts this; buildx fails if it is missing (it holds
-    # only gitignored *.img downloads).
-    context_dirs:
-      - common/cloud-image-cache
     vars:
       qemu_repo: https://gitlab.com/qemu-project/qemu.git
       # A release tag (e.g. v11.1.1) or a commit hash; tags are typically
       # stable but not as strictly immutable as a full SHA.
       qemu_commit: v11.1.1
-      # Set QEMU_MINIMAL_REPO=none to skip the VM build entirely.
+      # Where the qemu-tool CLI is installed from, and -- inherited by
+      # ubuntu-qcow2-gen -- the ansible/ tree its guest builds are driven by, so
+      # the CLI and the playbooks always come from one commit.
       qemu_minimal_repo: https://github.com/sbates130272/qemu-minimal.git
       qemu_minimal_commit: 737f73595b60ab89bd200ce1cb08cee134e2f8bb
-      username: batesste
-      vm_name: ""
-      password:
-        value: changeme
-        secret: true
-      # Guest disk size in GB. "qemu-tool gen-vm"'s own default, restated so the
-      # catalogue is the single source of truth for it.
-      vm_size: 64
     build_args:
       QEMU_REPO: "{qemu_repo}"
       QEMU_COMMIT: "{qemu_commit}"
       QEMU_MINIMAL_REPO: "{qemu_minimal_repo}"
       QEMU_MINIMAL_COMMIT: "{qemu_minimal_commit}"
-      USERNAME: "{username}"
-      VM_NAME: "{vm_name}"
-      RELEASE: "{release}"
-      ARCH: "{arch}"
-      VM_SIZE: "{vm_size}"
-      PASSWORD: "{password}"
     # A release tag becomes qemu11.1.1; a fork branch or SHA is named rather
     # than dressed up as a version. Not expressible as a template.
     variant: "!qemu_variant"
@@ -311,6 +299,9 @@ images:
       - common/cloud-image-cache
     vars:
       flavour: basic
+      # Guest disk size in GB. "qemu-tool gen-vm"'s own default, restated so the
+      # catalogue is the single source of truth for it.
+      vm_size: 64
       # ubuntu-qcow2-gen/packages/<file> and ubuntu-qcow2-gen/checks/<flavour>.sh
       vm_packages: base.txt
       # qemu-minimal ansible/playbooks/<file>; empty means cloud-init only.

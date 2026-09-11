@@ -10,7 +10,6 @@ on:
     paths:
       - '**/Dockerfile'
       - '**/entrypoint.sh'
-      - '**/packages.txt'
       - '**/packages/**'
       - '**/checks/**'
       - '**/patches/**'
@@ -25,7 +24,6 @@ on:
     paths:
       - '**/Dockerfile'
       - '**/entrypoint.sh'
-      - '**/packages.txt'
       - '**/packages/**'
       - '**/checks/**'
       - '**/patches/**'
@@ -251,7 +249,7 @@ jobs:
       # no TCG fallback: a runner without /dev/kvm (ARM Linux, macOS, Windows,
       # ubuntu-slim) cannot build guest images and fails here rather than
       # spending an hour emulating one.
-      - name: Enable KVM for the VM build
+      - name: Enable KVM for guest image builds
         if: matrix.target.entitlement != ''
         run: |
           if [ ! -e /dev/kvm ]; then
@@ -267,8 +265,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
         with:
-          # The VM build stage needs /dev/kvm, reachable only
-          # from a RUN --security=insecure step.
+          # Guest builds reach /dev/kvm only from a RUN --security=insecure
+          # step. No matrix-tier target needs this today -- the guests are all
+          # `job: derived` -- but the gating below is on the entitlement, not on
+          # an image name, so a matrix guest would work without a workflow edit.
           buildkitd-flags: >-
             --allow-insecure-entitlement security.insecure
             --allow-insecure-entitlement network.host
@@ -464,126 +464,6 @@ jobs:
           compression-level: 0
           retention-days: 1
 
-  test-vm-packages:
-    name: Test VM Packages
-    runs-on: ubuntu-latest
-    needs: [discover-images, build]
-    if: >-
-      contains(
-        fromJson(needs.discover-images.outputs.keys),
-        'ubuntu-qemu-libvfio-user'
-      )
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Download Docker image artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: docker-image-ubuntu-qemu-libvfio-user
-
-      - name: Load Docker image
-        run: |
-          zstd -dc ubuntu-qemu-libvfio-user.tar.zst \
-            | docker load
-
-      - name: Check packages.txt exists
-        run: |
-          if [ ! -f "ubuntu-qemu-libvfio-user/packages.txt" ]; then
-            echo "packages.txt not found, skipping"
-            exit 0
-          fi
-
-      - name: Start VM and wait for boot
-        id: start-vm
-        run: |
-          docker run -d --name test-vm-packages \
-            --cap-add NET_ADMIN \
-            batesste-ci-images-ubuntu-qemu-libvfio-user:test
-          echo "Waiting for VM to boot..."
-          for i in $(seq 1 90); do
-            if docker exec test-vm-packages bash -c \
-              "chmod 600 /output/id_rsa && \
-               timeout 5 ssh \
-               -o StrictHostKeyChecking=no \
-               -o UserKnownHostsFile=/dev/null \
-               -o ConnectTimeout=3 \
-               -p 2222 -i /output/id_rsa \
-               batesste@localhost \
-               'echo OK' 2>&1" \
-              | grep -q "OK"; then
-              echo "VM booted after ~$((i * 2))s"
-              break
-            fi
-            if [ "$i" -eq 90 ]; then
-              echo "ERROR: VM failed to boot in 180s"
-              docker logs test-vm-packages
-              exit 1
-            fi
-            sleep 2
-          done
-
-      - name: Verify packages are installed in VM
-        run: |
-          KERNEL_VERSION=$(docker exec \
-            test-vm-packages uname -r \
-            2>/dev/null || echo "")
-          echo "Container kernel: ${KERNEL_VERSION}"
-          MISSING_PACKAGES=""
-          for PKG in build-essential rdma-core ibverbs-utils libibverbs-dev cmake ninja-build pkg-config; do
-            echo "Checking for ${PKG}..."
-            if docker exec test-vm-packages bash -c \
-              "chmod 600 /output/id_rsa && \
-               timeout 10 ssh \
-               -o StrictHostKeyChecking=no \
-               -o UserKnownHostsFile=/dev/null \
-               -o ConnectTimeout=10 \
-               -p 2222 -i /output/id_rsa \
-               batesste@localhost \
-               'dpkg -l | grep -E \"^ii.*${PKG}\"' \
-               2>&1" | \
-              grep -q "^ii"; then
-              echo "OK ${PKG} is installed"
-            else
-              echo "FAIL ${PKG} is NOT installed"
-              MISSING_PACKAGES="${MISSING_PACKAGES} ${PKG}"
-            fi
-          done
-          if [ -n "${KERNEL_VERSION}" ]; then
-            KERNEL_MAJOR=$(echo "${KERNEL_VERSION}" \
-              | cut -d. -f1-2)
-            echo "Checking linux-headers ~${KERNEL_MAJOR}"
-            if docker exec test-vm-packages bash -c \
-              "chmod 600 /output/id_rsa && \
-               timeout 10 ssh \
-               -o StrictHostKeyChecking=no \
-               -o UserKnownHostsFile=/dev/null \
-               -o ConnectTimeout=10 \
-               -p 2222 -i /output/id_rsa \
-               batesste@localhost \
-               'dpkg -l | grep linux-headers' \
-               2>&1" | \
-              grep -q "linux-headers"; then
-              echo "OK linux-headers is installed"
-            else
-              echo "FAIL linux-headers is NOT installed"
-              MISSING_PACKAGES="${MISSING_PACKAGES} linux-headers"
-            fi
-          fi
-          if [ -n "${MISSING_PACKAGES}" ]; then
-            echo "ERROR: Missing:${MISSING_PACKAGES}"
-            exit 1
-          else
-            echo "All expected packages are installed!"
-          fi
-
-      - name: Cleanup
-        if: always()
-        run: |
-          docker stop test-vm-packages 2>/dev/null \
-            || true
-          docker rm test-vm-packages 2>/dev/null \
-            || true
-
   build-derived:
     name: Build ${{ matrix.target.key }}
     runs-on: ubuntu-latest
@@ -692,7 +572,7 @@ jobs:
               "https://cloud-images.ubuntu.com/${REL}/current/${REL}-server-cloudimg-amd64.img"
           fi
 
-      - name: Enable KVM for the VM build
+      - name: Enable KVM for guest image builds
         if: matrix.target.entitlement != ''
         run: |
           if [ ! -e /dev/kvm ]; then
@@ -758,6 +638,26 @@ jobs:
           test -s ./vm-payload/id_rsa.pub
           jq -e '.kernel_release | test("^[0-9]")' \
             ./vm-payload/vm-info.json > /dev/null
+
+      # test-compose bind-mounts a guest rather than pulling one: the qemu
+      # image is toolchain-only now. zstd for the same reason as the image
+      # tarballs above -- the qcow2 is multi-GB and upload is the bottleneck.
+      - name: Export guest image payload
+        if: matrix.target.entitlement != ''
+        run: |
+          tar -C ./vm-payload -cf - . \
+            | zstd -T0 -3 \
+            > "/tmp/vm-payload-${{ matrix.target.scope }}.tar.zst"
+
+      - uses: actions/upload-artifact@v7
+        if: matrix.target.entitlement != ''
+        with:
+          name: >-
+            vm-payload-${{ matrix.target.scope }}
+          path: >-
+            /tmp/vm-payload-${{ matrix.target.scope }}.tar.zst
+          compression-level: 0
+          retention-days: 1
 
       # ── per-image checks, gated by scope so a variant of one of these
       # images does not silently inherit another's assertions.
@@ -933,11 +833,15 @@ jobs:
   test-compose:
     name: Test Docker Compose Stack
     runs-on: ubuntu-latest
-    needs: [discover-images, build]
+    needs: [discover-images, build, build-derived]
     if: >-
       contains(
         fromJson(needs.discover-images.outputs.keys),
         'ubuntu-qemu-libvfio-user'
+      ) &&
+      contains(
+        fromJson(needs.discover-images.outputs.keys),
+        'ubuntu-qcow2-gen'
       ) &&
       contains(
         fromJson(needs.discover-images.outputs.keys),
@@ -983,11 +887,43 @@ jobs:
             batesste-ci-images-ubuntu-rocm-rocjitsu:test \
             batesste-ci-images-ubuntu-rocm-rocjitsu:latest
 
+      # The qemu service carries no guest of its own; compose/docker-compose.yml
+      # bind-mounts ./vm over /output, so the stack cannot boot without this.
+      - name: Download guest image payload
+        uses: actions/download-artifact@v8
+        with:
+          name: vm-payload-ubuntu-qcow2-gen
+
+      - name: Unpack guest image payload
+        run: |
+          mkdir -p compose/vm
+          zstd -dc vm-payload-ubuntu-qcow2-gen.tar.zst \
+            | tar -C compose/vm -xf -
+          ls -l compose/vm
+          jq -r .vm_name compose/vm/vm-info.json
+
       - name: Start compose stack
         run: |
           docker compose \
             -f compose/docker-compose.yml \
             up -d
+
+      # The bind mount is the only thing that puts a guest in front of QEMU
+      # now, so assert entrypoint.sh actually found one -- a VM_NAME that does
+      # not match the payload would otherwise just show up as a dead service.
+      - name: Verify qemu found the mounted guest
+        run: |
+          for i in $(seq 1 30); do
+            if docker compose -f compose/docker-compose.yml logs qemu \
+              | grep -q "VM image found at /output/"; then
+              echo "qemu picked up the mounted guest after ~${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::qemu never reported a VM image under /output"
+          docker compose -f compose/docker-compose.yml logs qemu
+          exit 1
 
       - name: Wait for rocm-ernic to start
         run: |

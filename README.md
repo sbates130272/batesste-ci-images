@@ -23,8 +23,10 @@ and pushing of these images.
   pinned commit. Shared by `ubuntu-qemu-libvfio-user` and `ubuntu-rocm-ernic`,
   which each used to build it separately from the same SHA. See
   `ubuntu-libvfio-user/` for details.
-- **ubuntu-qemu-libvfio-user**: QEMU build with libvfio-user support for VM images
-  using qemu-minimal. See `ubuntu-qemu-libvfio-user/` for details.
+- **ubuntu-qemu-libvfio-user**: QEMU built with libvfio-user support, plus the
+  `qemu-tool` CLI and ansible-core — the builder/runner toolchain. It carries no
+  guest disk of its own; supply one from `ubuntu-qcow2-gen`. See
+  `ubuntu-qemu-libvfio-user/` for details.
 - **ubuntu-kernel-build**: Ubuntu-based image with tools for building Linux
   kernels and out-of-tree kernel modules. See `ubuntu-kernel-build/` for
   details.
@@ -101,7 +103,7 @@ batesste-ci-images/
 │   └── Dockerfile
 ├── ubuntu-libvfio-user/       # ubuntu-base + libvfio-user at the pinned SHA
 │   └── Dockerfile
-├── ubuntu-qemu-libvfio-user/  # QEMU libvfio-user image
+├── ubuntu-qemu-libvfio-user/  # QEMU + qemu-tool toolchain (no guest disk)
 │   ├── Dockerfile
 │   └── entrypoint.sh
 ├── ubuntu-kernel-build/       # Kernel build environment
@@ -200,7 +202,7 @@ The images form a chain rather than eight independent builds:
 ubuntu-base ─┬─ ubuntu-cuda-rocm ── ubuntu-cuda-rocm-fio
              ├─ ubuntu-kernel-build
              ├─ ubuntu-rocm-rocjitsu
-             └─ ubuntu-libvfio-user ─┬─ ubuntu-qemu-libvfio-user
+             └─ ubuntu-libvfio-user ─┬─ ubuntu-qemu-libvfio-user ── ubuntu-qcow2-gen
                                      └─ ubuntu-rocm-ernic
 ```
 
@@ -210,7 +212,7 @@ dependants. Each Dockerfile takes a `BASE_IMAGE` build arg that defaults to the
 rebuilds the chain above it. That default only resolves for someone who has not
 run `docker login` if the base repositories are public, so all of them are. When a base *is* built in the same run, the
 dependant falls back to the `default` builder, which cannot grant
-`security.insecure` — so `ubuntu-qemu-libvfio-user`, whose VM build needs
+`security.insecure` — so `ubuntu-qcow2-gen`, whose guest build needs
 `/dev/kvm`, errors out rather than building without it. Pass
 `--base-from-registry` to keep every image on the buildx builder and retain
 KVM, or set registry credentials so the base is published before its dependant
@@ -409,8 +411,9 @@ The `ci-images-tool.py` CLI also supports:
   directory, or `/etc/batesste-ci-images/.env` (in order)
 
 Image-specific variables are documented in each image's directory and declared
-in `images.yml`. For example, the `ubuntu-qemu-libvfio-user` image may use
-variables like `QEMU_COMMIT`, `VM_NAME`, `USERNAME`, etc.
+in `images.yml`. For example, `ubuntu-qemu-libvfio-user` uses `QEMU_COMMIT` and
+`QEMU_MINIMAL_COMMIT`, while the guest pins (`RELEASE`, `VM_NAME`, `USERNAME`,
+`KERNEL_REF`, …) belong to `ubuntu-qcow2-gen`.
 
 ### Image Tags
 
@@ -606,22 +609,39 @@ Each image directory contains its own documentation and may have different:
 Refer to the README or documentation in each image directory for specific
 details.
 
-### ubuntu-qemu-libvfio-user VM Image Output
+### Guest VM Image Output
 
-The `ubuntu-qemu-libvfio-user` build creates a VM disk image during the Docker
-build process, using `qemu-tool gen-vm` from the pinned `QEMU_MINIMAL_REPO`
-checkout. Set `QEMU_MINIMAL_REPO=none` in `.env` to skip the VM build.
-The VM image, SSH keys, and metadata are stored in `/output/` within the container:
+Guest disks are built by `ubuntu-qcow2-gen`, never by `ubuntu-qemu-libvfio-user`
+— that image is the toolchain only, and its `/output` ships empty. A guest
+payload has the same three parts wherever it is mounted:
 
 - **VM Disk Image**: `/output/{VM_NAME}.qcow2` - The QEMU disk image file
 - **SSH Keys**: `/output/id_rsa` and `/output/id_rsa.pub` - SSH private and public
-  keys generated during VM build
+  keys generated during the guest build
 - **VM Metadata**: `/output/vm-info.json` - JSON file containing VM configuration
   and build information
 
+To run a guest, extract a payload and bind-mount it over `/output` in the
+toolchain image:
+
+```bash
+cid=$(docker create sbates130272/batesste-ci-images-ubuntu-qcow2-gen:latest)
+docker cp "$cid:/output/." ./vm && docker rm "$cid"
+docker run --rm --cap-add NET_ADMIN -v "$PWD/vm:/output" \
+  -e VM_NAME="$(jq -r .vm_name vm/vm-info.json)" \
+  sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
+```
+
+`VM_NAME` must match the qcow2 in the payload; `entrypoint.sh` looks for
+`/output/${VM_NAME}.qcow2` (or the same name under
+`/build/qemu-minimal/images`) and errors if neither exists. The mount is
+read-write because QEMU opens the disk read-write: the guest writes back into
+`./vm`, so re-extract the payload when a pristine disk is wanted.
+`compose/docker-compose.yml` does exactly this — see its header comment.
+
 #### KVM is required
 
-The VM build boots a real guest, so it needs `/dev/kvm` on the build host and a
+A guest build boots a real VM, so it needs `/dev/kvm` on the build host and a
 BuildKit builder started with
 `--allow-insecure-entitlement=security.insecure`; `ci-images-tool.py` creates
 (or recreates) its `builder` that way automatically.
@@ -673,24 +693,12 @@ This metadata file can be used by automation tools or scripts to programmaticall
 access VM configuration without needing to parse environment variables or inspect
 the image directly.
 
-To access the VM image and metadata from a built container:
-
-```bash
-docker run --rm \
-  -v /path/to/output:/output \
-  your-registry/ubuntu-qemu-libvfio-user:latest \
-  cat /output/vm-info.json
-```
-
-Or mount the `/output` directory when running the container to access both the
-VM image and metadata file.
-
 ### Guest VM images (ubuntu-qcow2-gen)
 
-`ubuntu-qemu-libvfio-user` bakes in one guest as a side effect of building the
-QEMU toolchain. `ubuntu-qcow2-gen` makes guests a first-class artefact family
-instead: one parameterised Dockerfile, one catalogue entry per flavour, one
-Docker Hub repository each.
+Guests are a first-class artefact family: one parameterised Dockerfile, one
+catalogue entry per flavour, one Docker Hub repository each. They are built and
+versioned independently of the QEMU toolchain that boots them, so bumping a
+guest pin does not republish QEMU and vice versa.
 
 The published image is `FROM scratch` — a pure payload with no runtime, nothing
 to patch and no CVE surface. Consume it either way:
@@ -748,7 +756,8 @@ the conversation that created it.
 `kernel_debs` carries the resolved filenames, upstream build stamp included,
 because a mainline tag alone does not identify a build.
 
-Like every VM build, this needs KVM — see [KVM is required](#kvm-is-required).
+Like every guest build, this needs KVM — see
+[KVM is required](#kvm-is-required).
 
 #### Bare qcow2 artifacts (ORAS)
 

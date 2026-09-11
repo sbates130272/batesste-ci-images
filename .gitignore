@@ -9,6 +9,8 @@ images.local.yml
 .venv/
 # Cached cloud images (downloaded in CI)
 **/cloud-image-cache/*.img
+# Guest payload extracted from ubuntu-qcow2-gen for the compose stack
+compose/vm/
 # AMD corporate root CA (ZScaler) - local only, not committed
 **/amd-root-ca.crt
 # VSCode 

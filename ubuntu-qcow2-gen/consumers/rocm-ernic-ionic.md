@@ -123,6 +123,12 @@ Two caveats for the consumer side:
 3. The image is published, and rocm-ernic consumes it instead of building a
    golden image of its own.
 
+Note for anyone reaching for the QEMU image instead:
+`…-ubuntu-qemu-libvfio-user` no longer carries a guest of any kind. It is the
+toolchain — QEMU, `qemu-tool`, ansible-core — and its `/output` is empty. Pull
+`…-ubuntu-qcow2-gen-ionic` for the disk and bind-mount it over `/output` if you
+want that image to boot it.
+
 ## Open
 
 - `vm_playbook` is empty for this flavour. A `vm-ionic.yml` upstream in

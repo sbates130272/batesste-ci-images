@@ -216,7 +216,7 @@ jobs:
       # no TCG fallback: a runner without /dev/kvm (ARM Linux, macOS, Windows,
       # ubuntu-slim) cannot build guest images and fails here rather than
       # spending an hour emulating one.
-      - name: Enable KVM for the VM build
+      - name: Enable KVM for guest image builds
         if: matrix.target.entitlement != ''
         run: |
           if [ ! -e /dev/kvm ]; then
@@ -232,8 +232,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
         with:
-          # The VM build stage needs /dev/kvm, reachable only
-          # from a RUN --security=insecure step.
+          # Guest builds reach /dev/kvm only from a RUN --security=insecure
+          # step. No matrix-tier target needs this today -- the guests are all
+          # `job: derived` -- but the gating below is on the entitlement, not on
+          # an image name, so a matrix guest would work without a workflow edit.
           buildkitd-flags: >-
             --allow-insecure-entitlement security.insecure
             --allow-insecure-entitlement network.host
@@ -464,7 +466,7 @@ jobs:
               "https://cloud-images.ubuntu.com/${REL}/current/${REL}-server-cloudimg-amd64.img"
           fi
 
-      - name: Enable KVM for the VM build
+      - name: Enable KVM for guest image builds
         if: matrix.target.entitlement != ''
         run: |
           if [ ! -e /dev/kvm ]; then

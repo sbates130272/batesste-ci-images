@@ -66,12 +66,12 @@ RUN python3 -m venv /opt/qemu-tool --clear && \
 COPY ubuntu-qcow2-gen/packages/ /build/packages/
 COPY ubuntu-qcow2-gen/checks/ /build/checks/
 
-# The base image ships its own guest in /output and its own keypair in
-# /root/.ssh.  Both must go: the final stage copies /output wholesale, so an
-# inherited qcow2 would be published as this flavour's payload -- and under a
-# different VM_NAME it would ship alongside it rather than be overwritten.
-# Clearing /root/.ssh also stops ssh-keygen prompting to overwrite, which is
-# what fails the build rather than reusing the key silently.
+# One keypair per flavour, generated here rather than inherited: the base image
+# is toolchain-only and ships neither a guest nor a key.  The rm still runs
+# because the final stage copies /output wholesale -- anything that ever appears
+# there is published as this flavour's payload -- and because a leftover
+# /root/.ssh would make ssh-keygen prompt to overwrite, which fails the build
+# rather than silently reusing a key from another flavour.
 RUN rm -rf /output /root/.ssh && \
     mkdir -p /output /root/.ssh && \
     ssh-keygen -t rsa -b 4096 -f /root/.ssh/id_rsa -N "" -q
