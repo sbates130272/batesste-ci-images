@@ -6,3 +6,69 @@ updates:
       interval: "weekly"
     labels:
       - "dependencies"
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+  - package-ecosystem: "docker"
+    directory: "/ubuntu-base"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+  - package-ecosystem: "docker"
+    directory: "/ubuntu-libvfio-user"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+  - package-ecosystem: "docker"
+    directory: "/ubuntu-qemu-libvfio-user"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+  - package-ecosystem: "docker"
+    directory: "/ubuntu-kernel-build"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+  - package-ecosystem: "docker"
+    directory: "/ubuntu-cuda-rocm"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+  - package-ecosystem: "docker"
+    directory: "/ubuntu-cuda-rocm-fio"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+  - package-ecosystem: "docker"
+    directory: "/ubuntu-rocm-nixl"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+  - package-ecosystem: "docker"
+    directory: "/ubuntu-rocm-ernic"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+  - package-ecosystem: "docker"
+    directory: "/ubuntu-rocm-rocjitsu"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+  - package-ecosystem: "docker"
+    directory: "/ubuntu-qcow2-gen"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
