@@ -1,4 +1,4 @@
-python-dotenv>=1.1
+python-dotenv>=1.2.3
 PyYAML>=6.0.3
 docker>=7.2.0
 requests>=2.32
