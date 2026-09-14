@@ -1,6 +1,6 @@
 python-dotenv>=1.1
-PyYAML>=6.0
+PyYAML>=6.0.3
 docker>=7.2.0
 requests>=2.32
-rich>=14.0
+rich>=15.0.0
 ruff>=0.11
