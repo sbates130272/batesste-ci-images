@@ -551,7 +551,7 @@ jobs:
 
       - name: Set up ORAS
         if: matrix.target.publish == 'artifact'
-        uses: oras-project/setup-oras@v1
+        uses: oras-project/setup-oras@v2
 
       # --from-dir is the export the build step above wrote, so the release
       # never pulls back the multi-GB image it has just pushed.
