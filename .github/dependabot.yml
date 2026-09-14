@@ -2,51 +2,73 @@ version: 2
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
-    schedule: &weekly_schedule
+    schedule:
       interval: "weekly"
-    labels: &dependencies_label
+    labels:
       - "dependencies"
   - package-ecosystem: "pip"
     directory: "/"
-    schedule: *weekly_schedule
-    labels: *dependencies_label
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
   - package-ecosystem: "docker"
     directory: "/ubuntu-base"
-    schedule: *weekly_schedule
-    labels: *dependencies_label
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
   - package-ecosystem: "docker"
     directory: "/ubuntu-libvfio-user"
-    schedule: *weekly_schedule
-    labels: *dependencies_label
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
   - package-ecosystem: "docker"
     directory: "/ubuntu-qemu-libvfio-user"
-    schedule: *weekly_schedule
-    labels: *dependencies_label
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
   - package-ecosystem: "docker"
     directory: "/ubuntu-kernel-build"
-    schedule: *weekly_schedule
-    labels: *dependencies_label
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
   - package-ecosystem: "docker"
     directory: "/ubuntu-cuda-rocm"
-    schedule: *weekly_schedule
-    labels: *dependencies_label
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
   - package-ecosystem: "docker"
     directory: "/ubuntu-cuda-rocm-fio"
-    schedule: *weekly_schedule
-    labels: *dependencies_label
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
   - package-ecosystem: "docker"
     directory: "/ubuntu-rocm-nixl"
-    schedule: *weekly_schedule
-    labels: *dependencies_label
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
   - package-ecosystem: "docker"
     directory: "/ubuntu-rocm-ernic"
-    schedule: *weekly_schedule
-    labels: *dependencies_label
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
   - package-ecosystem: "docker"
     directory: "/ubuntu-rocm-rocjitsu"
-    schedule: *weekly_schedule
-    labels: *dependencies_label
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
   - package-ecosystem: "docker"
     directory: "/ubuntu-qcow2-gen"
-    schedule: *weekly_schedule
-    labels: *dependencies_label
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
