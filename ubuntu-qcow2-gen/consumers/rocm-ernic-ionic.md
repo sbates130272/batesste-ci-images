@@ -88,10 +88,11 @@ lack >= 6.18 headers. It boots no guest and needs no image.
 ## What the ionic flavour pre-bakes
 
 [`packages/ionic.txt`](../packages/ionic.txt) installs the toolchain, DKMS, the
-rdma-core v62 build dependencies, and distro rdma-core for `ibv_devinfo`. The
-mainline kernel, its matching headers and `linux-modules-<ver>-generic` — which
-carries `ib_core`, `ib_uverbs`, `rdma_ucm` and both halves of ionic — come from
-the `kernel_ref` layer instead, in a provisioning boot after cloud-init.
+rdma-core v62 build dependencies, distro rdma-core for `ibv_devinfo`, and
+`perftest` for `ib_send_bw` and friends. The mainline kernel, its matching
+headers and `linux-modules-<ver>-generic` — which carries `ib_core`,
+`ib_uverbs`, `rdma_ucm` and both halves of ionic — come from the `kernel_ref`
+layer instead, in a provisioning boot after cloud-init.
 
 No kernel-versioned package is named in the manifest: cloud-init runs before
 the mainline kernel exists, so `linux-headers-generic` would pull the release's
@@ -108,6 +109,13 @@ Two caveats for the consumer side:
   remove apt `rdma-core` / `libibverbs-dev` / `ibverbs-utils` afterwards, or a
   later `apt upgrade` reverts it. On the existing self-hosted guests nothing
   holds them today — `apt-mark showhold` is empty.
+- `perftest` is the distro build, so it has no ROCm or CUDA memory support.
+  `ib_send_bw --use_rocm` needs perftest compiled against a ROCm the guest does
+  not carry; a job wanting GPUDirect numbers must build it in the guest or pull
+  a CUDA/ROCm-enabled build from a PPA. Host-memory verbs traffic works as
+  packaged. It depends on distro `ibverbs-providers`, and loads providers at
+  runtime rather than linking them, so a source-built rdma-core over the top
+  serves the same binaries `libionic` without a rebuild.
 - `IONIC_KERNEL_REF` is pinned at `v7.2.4` there and `kernel_ref` at `v7.2.3`
   here: one point release apart, which is the skew already proven to work.
   Nothing asserts they stay compatible beyond `checks/ionic.sh`, so keep the
