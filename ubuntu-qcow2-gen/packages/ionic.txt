@@ -42,5 +42,13 @@ rdma-core
 ibverbs-utils
 libibverbs-dev
 
+# ib_send_bw and friends, for jobs that want to move traffic over the ionic
+# queue pairs rather than only assert the modules built.  The distro build
+# links libibverbs.so.1 and loads providers at runtime, so a source rdma-core
+# installed over the top serves these binaries libionic without a rebuild.
+# It is built without ROCm or CUDA memory support, though: --use_rocm needs
+# perftest compiled against a ROCm the guest does not carry.
+perftest
+
 pipx
 python3-venv

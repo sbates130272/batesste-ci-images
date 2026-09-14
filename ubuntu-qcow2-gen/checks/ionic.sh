@@ -28,5 +28,10 @@ pkg-config --exists libnl-3.0 libnl-route-3.0 libudev libsystemd
 command -v ibv_devinfo
 modinfo ionic_rdma > /dev/null
 
+# Traffic generators for jobs that exercise the queue pairs. Name the read and
+# write verbs separately: perftest splits across binaries and a partial install
+# is the failure worth catching here.
+command -v ib_send_bw ib_write_bw ib_read_bw ib_send_lat
+
 # Headroom for a kernel tree, rdma-core and the DKMS builds.
 test "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 20
