@@ -7,6 +7,16 @@ matrix:
   - '**/*.md'
   pipeline:
   - pyspelling.filters.markdown
+  # Check rendered prose only. Without this, aspell also reads href targets and
+  # image alt text, so every badge URL puts its commit SHA fragments and org
+  # names ("ofiwg", "openucx", "beebf") in front of the dictionary -- and the
+  # generated shields would need new wordlist entries on every version scrub.
+  - pyspelling.filters.html:
+      comments: false
+      attributes: []
+      ignores:
+      - code
+      - pre
   dictionary:
     wordlists:
     - .wordlist.txt

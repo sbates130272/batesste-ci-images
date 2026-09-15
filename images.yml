@@ -31,6 +31,12 @@
 #   An optional, gitignored images.local.yml beside this file is deep-merged
 #   over it for local experiments -- it can reach anything here, including a
 #   variant's pins. CI never reads it. See the README.
+#
+# badges
+#   The README's pinned-upstream shields are generated from the badges: block
+#   at the foot of this file, so a pin and the badge that advertises it cannot
+#   disagree. `ci-images-tool.py badges --write` regenerates them and
+#   `--check` fails if the README is stale; CI runs the latter on every PR.
 
 defaults:
   registry: docker.io
@@ -109,7 +115,7 @@ images:
     vars:
       # Must be a master commit -- the libhipfile engine is not in any fio tag yet
       fio_repo: https://github.com/axboe/fio.git
-      fio_commit: e333e45bd1e7503388d71932af047ecfd22c25da
+      fio_commit: 6bc57a931f04fa3f50348d8c8f087187f050c6e1
       # Provenance only, and empty here: the default target tracks master HEAD,
       # so it has no branch of its own worth recording. A variant built from a
       # fork branch fills it in and the label appears only there.
@@ -148,11 +154,24 @@ images:
     base: ubuntu-cuda-rocm
     vars:
       nixl_repo: https://github.com/ai-dynamo/nixl.git
-      nixl_commit: 8585eee0b2a37be52bb5c727f0d21e714518b689
+      # A NIXL release tag, not a SHA: this image tracks tagged releases so the
+      # tag it publishes names a version a consumer can recognise. The build
+      # still records the resolved commit in nixl-commit.txt for provenance.
+      # version-scrub.sh advances this to the newest stable tag and ignores
+      # -rc ones.
+      nixl_tag: v1.4.1
       # UCX is built from source rather than apt: the packaged build has no
       # ROCm transport, so it cannot register HIP memory.
+      #
+      # v1.23.x is the release branch upstream NIXL builds against, so this
+      # matches what NIXL is tested on rather than running ahead of it on
+      # master. Upstream names the branch and takes whatever it points at;
+      # this pins the commit instead, so a build stays reproducible when the
+      # branch moves under it. version-scrub.sh advances the pin along
+      # whichever branch ucx_branch names.
       ucx_repo: https://github.com/openucx/ucx.git
-      ucx_commit: 5025d2a2e101e30167beebf59512c27ee37fc32b
+      ucx_branch: v1.23.x
+      ucx_commit: 12d6aa65956996625c8daf39cbb3475ef4a1a35b
       etcd_repo: https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git
       etcd_commit: 7c6e714f188f9576e25e0350cac4181139eec23e
       # Abseil and gRPC are built from source because Ubuntu's libgrpc++-dev
@@ -163,6 +182,7 @@ images:
       # tag -- it moves as that LTS line takes patches, despite upstream's
       # comment calling it immutable. This is the release tag at that branch's
       # current head, so it is the same tree and actually immutable.
+      # version-scrub.sh does that branch -> tag resolution on every run.
       absl_tag: "20250814.2"
       grpc_repo: https://github.com/grpc/grpc.git
       grpc_tag: v1.73.0
@@ -172,7 +192,7 @@ images:
       libfabric_tag: v1.21.0
     build_args:
       NIXL_REPO: "{nixl_repo}"
-      NIXL_COMMIT: "{nixl_commit}"
+      NIXL_TAG: "{nixl_tag}"
       UCX_REPO: "{ucx_repo}"
       UCX_COMMIT: "{ucx_commit}"
       ETCD_REPO: "{etcd_repo}"
@@ -183,12 +203,15 @@ images:
       GRPC_TAG: "{grpc_tag}"
       LIBFABRIC_REPO: "{libfabric_repo}"
       LIBFABRIC_TAG: "{libfabric_tag}"
-    variant: "nixl.{nixl_commit|short}-ucx.{ucx_commit|short}"
+    # A release tag becomes nixl1.4.1, the same way the QEMU image names a tag,
+    # rather than the nixl.<sha> a commit pin produced.
+    variant: "nixl{nixl_tag|ver}-ucx.{ucx_commit|short}"
     labels:
       "{ns}.rocm.version": "{rocm_version}"
       "{ns}.cuda.version": "{cuda_version|dots}"
       "{ns}.rocm.stream": "{rocm_stream}"
-      "{ns}.nixl.commit": "{nixl_commit}"
+      "{ns}.nixl.tag": "{nixl_tag}"
+      "{ns}.ucx.branch": "{ucx_branch}"
       "{ns}.ucx.commit": "{ucx_commit}"
 
   ubuntu-rocm-ernic:
@@ -196,7 +219,7 @@ images:
     base: ubuntu-libvfio-user
     artifact: true
     vars:
-      rocm_ernic_commit: 7e73889491d8279f0dfed7eedc16834af8f6ea22
+      rocm_ernic_commit: c34d79894cb41b0c33c21b773ee9752c53ead5b0
     build_args:
       ROCM_ERNIC_COMMIT: "{rocm_ernic_commit}"
     # This image links against libvfio-user, so that pin belongs in the tag:
@@ -214,16 +237,23 @@ images:
       rocjitsu_repo:
         value: https://github.com/ROCm/rocm-systems.git
         env: ROCM_ROCJITSU_REPO
-      # Following the gfx1250 vfio-compute WIP branch rather than develop for
-      # now: the vfio-user compute work only exists there. version-scrub.sh
-      # tracks whichever branch this names, so the pin below follows its HEAD.
-      # Revert both to `develop` once the work lands upstream -- and expect the
-      # scrub to warn rather than bump if the branch is ever rebased away.
+      # Following the gfx1250 vfio-compute work rather than develop for now:
+      # the vfio-user compute path only exists there. version-scrub.sh tracks
+      # whichever branch this names, so the pin below follows its HEAD.
+      #
+      # This is the tip of a stacked review series -- PRs #11391 through #11397,
+      # each based on the one before it, with #11391 based on develop. It
+      # replaces the earlier -wip branch, whose commits were rewritten rather
+      # than carried over, so the two share no history past their fork point.
+      # Expect force-pushes while the stack is in review: the scrub will bump
+      # this on every reviewer round-trip, and will warn rather than bump once
+      # the branches are deleted after merge. Revert both to `develop` at that
+      # point -- that is the whole reason this pin is temporary.
       rocjitsu_branch:
-        value: users/agutierr/gfx1250-vfio-compute-wip
+        value: users/agutierr/gfx1250-vfio-compute-6
         env: ROCM_ROCJITSU_BRANCH
       rocjitsu_commit:
-        value: 730bc62d60191337a07da50892538475370cb071
+        value: 909c17fe35e9739cd7cd30b8532c02be0ddd4f6c
         env: ROCM_ROCJITSU_COMMIT
       # Only gfx_target_version 120500 has an IP discovery profile upstream, so
       # this is the only config the vfio-user front end can actually serve. It
@@ -260,7 +290,7 @@ images:
       # ubuntu-qcow2-gen -- the ansible/ tree its guest builds are driven by, so
       # the CLI and the playbooks always come from one commit.
       qemu_minimal_repo: https://github.com/sbates130272/qemu-minimal.git
-      qemu_minimal_commit: 737f73595b60ab89bd200ce1cb08cee134e2f8bb
+      qemu_minimal_commit: 5d6868914873757ff1c51dec3ca95a3fa0b2e9d9
     build_args:
       QEMU_REPO: "{qemu_repo}"
       QEMU_COMMIT: "{qemu_commit}"
@@ -390,3 +420,118 @@ images:
           flavour: ionic
           vm_packages: ionic.txt
           kernel_ref: v7.2.3
+
+# The README's pinned-upstream shields, generated by `ci-images-tool.py badges`
+# so that a pin and the badge advertising it cannot drift apart. CI runs
+# `badges --check` on every PR, so a bump that forgets the README fails review
+# rather than shipping a lying badge.
+#
+# Each entry names the target to resolve the var against -- a var declared in
+# defaults: resolves against any of them -- and the row it belongs to.
+#
+#   short: true  abbreviates a SHA to 7 characters, as the image tags do.
+#   link:        "{value}" interpolates the resolved pin, so a commit badge
+#                can point at that exact commit upstream.
+#
+# Deleting an entry drops the badge; no code change is involved either way.
+badges:
+  rows:
+    - title: Pinned versions
+      entries:
+        - label: ubuntu
+          target: ubuntu-base
+          var: ubuntu_version
+          colour: E95420
+          link: https://hub.docker.com/_/ubuntu
+        - label: rocm
+          target: ubuntu-cuda-rocm
+          var: rocm_version
+          colour: ED1C24
+          link: https://rocm.docs.amd.com/
+        - label: cuda
+          target: ubuntu-cuda-rocm
+          var: cuda_version
+          dots: true
+          colour: 76B900
+          link: https://developer.nvidia.com/cuda-toolkit
+        - label: qemu
+          target: ubuntu-qemu-libvfio-user
+          var: qemu_commit
+          colour: FF6600
+          link: https://gitlab.com/qemu-project/qemu/-/tags/{value}
+        - label: nixl
+          target: ubuntu-rocm-nixl
+          var: nixl_tag
+          colour: 76B900
+          link: https://github.com/ai-dynamo/nixl/releases/tag/{value}
+        - label: abseil
+          target: ubuntu-rocm-nixl
+          var: absl_tag
+          colour: 4285F4
+          link: https://github.com/abseil/abseil-cpp/releases/tag/{value}
+        - label: grpc
+          target: ubuntu-rocm-nixl
+          var: grpc_tag
+          colour: 244C5A
+          link: https://github.com/grpc/grpc/releases/tag/{value}
+        - label: libfabric
+          target: ubuntu-rocm-nixl
+          var: libfabric_tag
+          colour: 0F4C81
+          link: https://github.com/ofiwg/libfabric/releases/tag/{value}
+        - label: guest
+          target: ubuntu-qcow2-gen
+          var: release
+          colour: 772953
+          link: https://cloud-images.ubuntu.com/
+        # The ionic guest is the only flavour that installs a kernel of its
+        # own, so this reads the variant rather than the default target.
+        - label: guest kernel (ionic)
+          target: ubuntu-qcow2-gen@ionic
+          var: kernel_ref
+          colour: 772953
+          link: https://kernel.ubuntu.com/mainline/{value}/
+    - title: Pinned commits
+      entries:
+        - label: libvfio-user
+          target: ubuntu-libvfio-user
+          var: libvfio_user_commit
+          short: true
+          colour: FF6600
+          link: https://gitlab.com/qemu-project/libvfio-user/-/commit/{value}
+        - label: qemu-minimal
+          target: ubuntu-qemu-libvfio-user
+          var: qemu_minimal_commit
+          short: true
+          colour: FF6600
+          link: https://github.com/sbates130272/qemu-minimal/commit/{value}
+        - label: rocm-ernic
+          target: ubuntu-rocm-ernic
+          var: rocm_ernic_commit
+          short: true
+          colour: ED1C24
+          link: https://github.com/ROCm/rocm-ernic/commit/{value}
+        - label: rocjitsu
+          target: ubuntu-rocm-rocjitsu
+          var: rocjitsu_commit
+          short: true
+          colour: ED1C24
+          link: https://github.com/ROCm/rocm-systems/commit/{value}
+        - label: fio
+          target: ubuntu-cuda-rocm-fio
+          var: fio_commit
+          short: true
+          colour: 4B8BBE
+          link: https://github.com/axboe/fio/commit/{value}
+        - label: ucx
+          target: ubuntu-rocm-nixl
+          var: ucx_commit
+          short: true
+          colour: 4B8BBE
+          link: https://github.com/openucx/ucx/commit/{value}
+        - label: etcd-cpp-apiv3
+          target: ubuntu-rocm-nixl
+          var: etcd_commit
+          short: true
+          colour: 419EDA
+          link: https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3/commit/{value}

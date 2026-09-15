@@ -16,8 +16,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     python3
 
 ARG ROCJITSU_REPO=https://github.com/ROCm/rocm-systems.git
-ARG ROCJITSU_BRANCH=users/agutierr/gfx1250-vfio-compute-wip
-ARG ROCJITSU_COMMIT=730bc62d60191337a07da50892538475370cb071
+ARG ROCJITSU_BRANCH=users/agutierr/gfx1250-vfio-compute-6
+ARG ROCJITSU_COMMIT=909c17fe35e9739cd7cd30b8532c02be0ddd4f6c
 # Which config the vfio-user probe below and the default CMD serve. A build
 # variant pinned to a different upstream ref can point at a renamed or newly
 # added profile from images.yml without editing this file.
@@ -59,11 +59,16 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     cmake --install /build/rocm-systems/build && \
     ldconfig
 
-# rj-ip-discovery and vfio_guest_firmware.py are what let a guest boot amdgpu
-# against the emulator: the first generates the ip_discovery.bin that
-# amdgpu.discovery=2 reads instead of polling BAR registers, the second the
-# firmware-format stubs that GFX/SDMA/MES early_init parse before any real
-# microcode is needed. Without them the driver stalls in gfx_v12_1_hw_init.
+# rj-ip-discovery generates the ip_discovery.bin that amdgpu.discovery=2 reads
+# instead of polling BAR registers; without it the driver stalls in
+# gfx_v12_1_hw_init. run-vfio-guest.py is upstream's harness for booting a
+# prepared guest against the vfio-user socket.
+#
+# The firmware-stub generator that used to ship alongside these is gone: the
+# gfx1250-vfio-compute stack replaced synthesized GFX/SDMA/MES stubs with real
+# firmware taken from the driver release matching the guest's amdgpu.ko, so
+# that inventory is now the caller's to assemble (emulation/rocjitsu/docs/
+# qemu-vfio.md upstream). Nothing here can stand in for it.
 #
 # Upstream builds rj-ip-discovery (CMakeLists.txt add_subdirectory) but ships
 # no install() rule for it -- only rocjitsu_bin and rj_pretranslate -- so it
@@ -75,8 +80,8 @@ RUN set -eux; \
     test -n "${rj_ip_discovery}"; \
     install -m 0755 "${rj_ip_discovery}" /usr/local/bin/rj-ip-discovery; \
     install -m 0755 \
-        /build/rocm-systems/emulation/rocjitsu/tools/vfio_guest_firmware.py \
-        /usr/local/bin/vfio_guest_firmware.py
+        /build/rocm-systems/emulation/rocjitsu/scripts/run-vfio-guest.py \
+        /usr/local/bin/run-vfio-guest.py
 
 # Upstream's install(DIRECTORY configs/) already placed these; the tags come from
 # emulation/rocjitsu/cmake/rj_libvfio_user.cmake, which pins what the vfio-user
@@ -94,7 +99,7 @@ RUN cp /build/rocjitsu-commit.txt \
   "libvfio_user_tag": "v0.8",\n\
   "json_c_tag": "json-c-0.18-20240915",\n\
   "vfio_enabled": true,\n\
-  "guest_tools": ["rj-ip-discovery", "vfio_guest_firmware.py"],\n\
+  "guest_tools": ["rj-ip-discovery", "run-vfio-guest.py"],\n\
   "config_dir": "%s"\n\
 }\n' \
         "${ROCJITSU_REPO}" \
@@ -136,20 +141,19 @@ RUN rocjitsu --config "${ROCJITSU_CONFIG_PATH}" \
     fi; \
     rm -f /tmp/probe.log
 
-# Both tools are useless if they cannot produce their artefact, and a guest
+# rj-ip-discovery is useless if it cannot produce its artefact, and a guest
 # that gets an empty ip_discovery.bin hangs in hw_init rather than failing
-# cleanly -- so prove they run here, where the failure is legible.
+# cleanly -- so prove it runs here, where the failure is legible.
 # gfx1250 is asserted by name: it is the generation the served config models,
 # and a rename upstream should break the build, not the guest.
+# run-vfio-guest.py needs a kernel and initramfs it cannot have at build time,
+# so --help is as far as it can be exercised -- enough to catch a Python the
+# base image cannot import it under.
 RUN set -eux; \
     rj-ip-discovery gfx1250 /tmp/ip_discovery.bin; \
     test -s /tmp/ip_discovery.bin; \
-    vfio_guest_firmware.py --output /tmp/fw-probe; \
-    for f in gc_12_1_0_imu.bin gc_12_1_0_mec.bin gc_12_1_0_rlc_1.bin \
-             gc_12_1_0_uni_mes.bin sdma_7_1_0.bin; do \
-        test -s "/tmp/fw-probe/${f}"; \
-    done; \
-    rm -rf /tmp/ip_discovery.bin /tmp/fw-probe
+    run-vfio-guest.py --help > /dev/null; \
+    rm -f /tmp/ip_discovery.bin
 
 RUN rm -rf /build/rocm-systems /tmp/deps
 
