@@ -31,9 +31,9 @@ from the pins. Edit the `badges:` block in `images.yml`, not this section.
 [![libvfio-user 8039244](https://img.shields.io/badge/libvfio--user-8039244-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/803924493a7c787b2ba358751f55f07d5dba64b2)
 [![qemu-minimal 5d68689](https://img.shields.io/badge/qemu--minimal-5d68689-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/5d6868914873757ff1c51dec3ca95a3fa0b2e9d9)
 [![rocm-ernic c34d798](https://img.shields.io/badge/rocm--ernic-c34d798-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/c34d79894cb41b0c33c21b773ee9752c53ead5b0)
-[![rocjitsu 730bc62](https://img.shields.io/badge/rocjitsu-730bc62-ED1C24)](https://github.com/ROCm/rocm-systems/commit/730bc62d60191337a07da50892538475370cb071)
+[![rocjitsu 909c17f](https://img.shields.io/badge/rocjitsu-909c17f-ED1C24)](https://github.com/ROCm/rocm-systems/commit/909c17fe35e9739cd7cd30b8532c02be0ddd4f6c)
 [![fio 6bc57a9](https://img.shields.io/badge/fio-6bc57a9-4B8BBE)](https://github.com/axboe/fio/commit/6bc57a931f04fa3f50348d8c8f087187f050c6e1)
-[![ucx 5025d2a](https://img.shields.io/badge/ucx-5025d2a-4B8BBE)](https://github.com/openucx/ucx/commit/5025d2a2e101e30167beebf59512c27ee37fc32b)
+[![ucx 12d6aa6](https://img.shields.io/badge/ucx-12d6aa6-4B8BBE)](https://github.com/openucx/ucx/commit/12d6aa65956996625c8daf39cbb3475ef4a1a35b)
 [![etcd-cpp-apiv3 7c6e714](https://img.shields.io/badge/etcd--cpp--apiv3-7c6e714-419EDA)](https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3/commit/7c6e714f188f9576e25e0350cac4181139eec23e)
 
 <!-- END PINNED BADGES -->
@@ -95,9 +95,11 @@ and pushing of these images.
 - **ubuntu-rocm-rocjitsu**: Ubuntu 24.04 image with rocjitsu built from a
   pinned source commit with `-DROCJITSU_ENABLE_VFIO=ON`. Provides a
   software-emulated AMD GPU vfio-user server for KFD/amdgpu bring-up without
-  real hardware. Currently tracks the `users/agutierr/gfx1250-vfio-compute-wip`
+  real hardware. Currently tracks the `users/agutierr/gfx1250-vfio-compute-6`
   branch rather than `develop`, since the vfio-compute work only exists there.
-  See `ubuntu-rocm-rocjitsu/` for details.
+  That branch is the tip of the stacked review series in PRs #11391–#11397, so
+  expect the pin to move while it is under review and to return to `develop`
+  once the series lands. See `ubuntu-rocm-rocjitsu/` for details.
 - **ubuntu-qcow2-gen**: Guest VM disk images (qcow2), not a runnable container.
   Built on `ubuntu-qemu-libvfio-user` and published `FROM scratch` with nothing
   but `/output` in it, one Docker Hub repository per flavour
@@ -120,22 +122,28 @@ this fails at build time rather than at deploy time.
 
 #### Guest bring-up tools
 
-Booting amdgpu against the emulator needs two artefacts the guest cannot
-produce for itself, so the image ships the tools that generate them:
+Booting amdgpu against the emulator needs an IP discovery table the guest
+cannot produce for itself, so the image ships the tools upstream provides:
 
-| Tool | Generates |
+| Tool | Does |
 | --- | --- |
-| `rj-ip-discovery gfx1250 <out>` | `ip_discovery.bin`, staged at `/lib/firmware/amdgpu/ip_discovery.bin` and read with `amdgpu.discovery=2` |
-| `vfio_guest_firmware.py --output <dir>` | the five GFX/SDMA/MES firmware stubs (`gc_12_1_0_{imu,mec,rlc_1,uni_mes}.bin`, `sdma_7_1_0.bin`) |
+| `rj-ip-discovery gfx1250 <out>` | generates `ip_discovery.bin`, staged at `/lib/firmware/amdgpu/ip_discovery.bin` and read with `amdgpu.discovery=2` |
+| `run-vfio-guest.py` | boots a prepared kernel and initramfs under QEMU against a rocjitsu vfio-user socket |
 
 Without the discovery table the driver polls BAR registers for a completion
-bit rocjitsu never sets and spins at 99% CPU in `gfx_v12_1_hw_init`; without
-the firmware stubs it cannot get through `early_init`. The stubs carry only
-header metadata and rocjitsu sentinel payloads — they are not AMD microcode.
+bit rocjitsu never sets and spins at 99% CPU in `gfx_v12_1_hw_init`.
+
+Firmware is no longer synthesized. Earlier pins shipped a
+`vfio_guest_firmware.py` that wrote five GFX/SDMA/MES stubs; the
+gfx1250-vfio-compute stack removed it in favour of real firmware from the
+driver release matching the guest's `amdgpu.ko`, so assembling that inventory
+— `gc_12_1_0_{imu,mec,rlc_1}.bin`, a gfx1250 MES image and `sdma_7_1_0.bin`,
+per `modinfo -F firmware amdgpu.ko` — is now the caller's job. Upstream's
+`emulation/rocjitsu/docs/qemu-vfio.md` covers the full initramfs recipe.
 
 Upstream builds `rj-ip-discovery` but has no `install()` rule for it, so the
-image lifts it out of the build tree; both tools are smoke-tested at build
-time, as the vfio-user probe is.
+image lifts it out of the build tree; it is smoke-tested at build time, as the
+vfio-user probe is.
 
 The VMM must share guest RAM through an mmap-able descriptor or the device
 cannot reach it. With QEMU that means a `memory-backend-memfd` with `share=on`

@@ -163,12 +163,15 @@ images:
       # UCX is built from source rather than apt: the packaged build has no
       # ROCm transport, so it cannot register HIP memory.
       #
-      # This follows master, which upstream NIXL no longer does -- its
-      # Dockerfile.rocm clones the v1.23.x release branch, and the two have
-      # diverged. version-scrub.sh advances this along master; moving it onto
-      # v1.23.x to match upstream is a deliberate change, not a scrub.
+      # v1.23.x is the release branch upstream NIXL builds against, so this
+      # matches what NIXL is tested on rather than running ahead of it on
+      # master. Upstream names the branch and takes whatever it points at;
+      # this pins the commit instead, so a build stays reproducible when the
+      # branch moves under it. version-scrub.sh advances the pin along
+      # whichever branch ucx_branch names.
       ucx_repo: https://github.com/openucx/ucx.git
-      ucx_commit: 5025d2a2e101e30167beebf59512c27ee37fc32b
+      ucx_branch: v1.23.x
+      ucx_commit: 12d6aa65956996625c8daf39cbb3475ef4a1a35b
       etcd_repo: https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git
       etcd_commit: 7c6e714f188f9576e25e0350cac4181139eec23e
       # Abseil and gRPC are built from source because Ubuntu's libgrpc++-dev
@@ -208,6 +211,7 @@ images:
       "{ns}.cuda.version": "{cuda_version|dots}"
       "{ns}.rocm.stream": "{rocm_stream}"
       "{ns}.nixl.tag": "{nixl_tag}"
+      "{ns}.ucx.branch": "{ucx_branch}"
       "{ns}.ucx.commit": "{ucx_commit}"
 
   ubuntu-rocm-ernic:
@@ -233,16 +237,23 @@ images:
       rocjitsu_repo:
         value: https://github.com/ROCm/rocm-systems.git
         env: ROCM_ROCJITSU_REPO
-      # Following the gfx1250 vfio-compute WIP branch rather than develop for
-      # now: the vfio-user compute work only exists there. version-scrub.sh
-      # tracks whichever branch this names, so the pin below follows its HEAD.
-      # Revert both to `develop` once the work lands upstream -- and expect the
-      # scrub to warn rather than bump if the branch is ever rebased away.
+      # Following the gfx1250 vfio-compute work rather than develop for now:
+      # the vfio-user compute path only exists there. version-scrub.sh tracks
+      # whichever branch this names, so the pin below follows its HEAD.
+      #
+      # This is the tip of a stacked review series -- PRs #11391 through #11397,
+      # each based on the one before it, with #11391 based on develop. It
+      # replaces the earlier -wip branch, whose commits were rewritten rather
+      # than carried over, so the two share no history past their fork point.
+      # Expect force-pushes while the stack is in review: the scrub will bump
+      # this on every reviewer round-trip, and will warn rather than bump once
+      # the branches are deleted after merge. Revert both to `develop` at that
+      # point -- that is the whole reason this pin is temporary.
       rocjitsu_branch:
-        value: users/agutierr/gfx1250-vfio-compute-wip
+        value: users/agutierr/gfx1250-vfio-compute-6
         env: ROCM_ROCJITSU_BRANCH
       rocjitsu_commit:
-        value: 730bc62d60191337a07da50892538475370cb071
+        value: 909c17fe35e9739cd7cd30b8532c02be0ddd4f6c
         env: ROCM_ROCJITSU_COMMIT
       # Only gfx_target_version 120500 has an IP discovery profile upstream, so
       # this is the only config the vfio-user front end can actually serve. It

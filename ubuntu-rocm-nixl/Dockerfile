@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ARG NIXL_REPO=https://github.com/ai-dynamo/nixl.git
 ARG NIXL_TAG=v1.4.1
 ARG UCX_REPO=https://github.com/openucx/ucx.git
-ARG UCX_COMMIT=5025d2a2e101e30167beebf59512c27ee37fc32b
+ARG UCX_COMMIT=12d6aa65956996625c8daf39cbb3475ef4a1a35b
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \

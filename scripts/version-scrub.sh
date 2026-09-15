@@ -247,14 +247,16 @@ else
 fi
 
 echo "==> Fetching latest UCX HEAD..."
-# Tracks master. Upstream NIXL builds UCX from the v1.23.x release branch
-# instead, so this pin is deliberately ahead of theirs -- moving it onto that
-# branch is a decision for a human, not for the scrub.
+# Track whichever branch the image is pinned to rather than hardcoding it here,
+# the same way the rocjitsu pin works. That branch is v1.23.x, the release line
+# upstream NIXL builds against, so the scrub keeps this matching NIXL rather
+# than walking it onto master.
+UCX_BRANCH=$(current_pin ubuntu-rocm-nixl ucx_branch)
 UCX_LATEST=$(gh_curl \
-    "https://api.github.com/repos/openucx/ucx/commits/master" \
+    "https://api.github.com/repos/openucx/ucx/commits/${UCX_BRANCH}" \
     | jq -r '.sha')
 UCX_CURRENT=$(current_pin ubuntu-rocm-nixl ucx_commit)
-echo "    current: $UCX_CURRENT  latest: $UCX_LATEST"
+echo "    current: $UCX_CURRENT  latest: $UCX_LATEST  (branch: $UCX_BRANCH)"
 if check_nonempty "$UCX_LATEST" "UCX HEAD" && [[ "$UCX_CURRENT" != "$UCX_LATEST" ]]; then
     replace_in_yaml "$UCX_CURRENT" "$UCX_LATEST"
     replace_in_files "$UCX_CURRENT" "$UCX_LATEST" \
