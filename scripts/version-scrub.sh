@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Checks upstream versions of pinned dependencies and updates images.yml plus
-# the matching Dockerfile ARG fallbacks. Exits 0 with no changes if everything
-# is already current; exits 0 with modified files if updates were applied.
+# Checks upstream versions of pinned dependencies and updates images.yml, the
+# matching Dockerfile ARG fallbacks and the README's generated shields. Exits 0
+# with no changes if everything is already current; exits 0 with modified files
+# if updates were applied.
 # Intended to be called by .github/workflows/version-scrub.yml and locally.
 #
 # images.yml is the single source of truth for pins, so the current value is
@@ -226,6 +227,135 @@ if check_nonempty "$FIO_LATEST" "fio HEAD" && [[ "$FIO_CURRENT" != "$FIO_LATEST"
         "$REPO_ROOT/ubuntu-cuda-rocm-fio/Dockerfile"
 fi
 
+echo "==> Fetching latest NIXL release tag..."
+# NIXL tracks tagged releases, not master: releases/latest already excludes
+# drafts and pre-releases, so an -rc never lands here. A version string can
+# collide with anything else in the file, so rewrite it by key.
+NIXL_LATEST=$(gh_curl \
+    "https://api.github.com/repos/ai-dynamo/nixl/releases/latest" \
+    | jq -r '.tag_name')
+NIXL_CURRENT=$(current_pin ubuntu-rocm-nixl nixl_tag)
+echo "    current: $NIXL_CURRENT  latest: $NIXL_LATEST"
+if check_nonempty "$NIXL_LATEST" "NIXL release tag" \
+    && [[ "$NIXL_CURRENT" != "$NIXL_LATEST" ]]; then
+    replace_yaml_var nixl_tag "$NIXL_LATEST" "$NIXL_CURRENT"
+    replace_arg_default NIXL_TAG "$NIXL_LATEST" \
+        "$REPO_ROOT/ubuntu-rocm-nixl/Dockerfile"
+    NIXL_PINNED="$NIXL_LATEST"
+else
+    NIXL_PINNED="$NIXL_CURRENT"
+fi
+
+echo "==> Fetching latest UCX HEAD..."
+# Tracks master. Upstream NIXL builds UCX from the v1.23.x release branch
+# instead, so this pin is deliberately ahead of theirs -- moving it onto that
+# branch is a decision for a human, not for the scrub.
+UCX_LATEST=$(gh_curl \
+    "https://api.github.com/repos/openucx/ucx/commits/master" \
+    | jq -r '.sha')
+UCX_CURRENT=$(current_pin ubuntu-rocm-nixl ucx_commit)
+echo "    current: $UCX_CURRENT  latest: $UCX_LATEST"
+if check_nonempty "$UCX_LATEST" "UCX HEAD" && [[ "$UCX_CURRENT" != "$UCX_LATEST" ]]; then
+    replace_in_yaml "$UCX_CURRENT" "$UCX_LATEST"
+    replace_in_files "$UCX_CURRENT" "$UCX_LATEST" \
+        "$REPO_ROOT/ubuntu-rocm-nixl/Dockerfile"
+fi
+
+echo "==> Fetching latest etcd-cpp-apiv3 HEAD..."
+ETCD_LATEST=$(gh_curl \
+    "https://api.github.com/repos/etcd-cpp-apiv3/etcd-cpp-apiv3/commits/HEAD" \
+    | jq -r '.sha')
+ETCD_CURRENT=$(current_pin ubuntu-rocm-nixl etcd_commit)
+echo "    current: $ETCD_CURRENT  latest: $ETCD_LATEST"
+if check_nonempty "$ETCD_LATEST" "etcd-cpp-apiv3 HEAD" \
+    && [[ "$ETCD_CURRENT" != "$ETCD_LATEST" ]]; then
+    replace_in_yaml "$ETCD_CURRENT" "$ETCD_LATEST"
+    replace_in_files "$ETCD_CURRENT" "$ETCD_LATEST" \
+        "$REPO_ROOT/ubuntu-rocm-nixl/Dockerfile"
+fi
+
+# Abseil, gRPC and libfabric exist in this image only to satisfy NIXL, and
+# images.yml says they match what upstream NIXL builds against. Their upstreams'
+# own latest releases are therefore the wrong target -- bumping gRPC to its
+# newest tag would walk away from the version NIXL is tested with. Read them out
+# of NIXL's own .ci/dockerfiles/Dockerfile.rocm instead.
+#
+# Preferably at the tag we pin, but that file lives only on main today -- it is
+# not in the v1.4.1 tree -- so fall back to main rather than warning every run.
+# The fallback can read pins newer than the release we build, which is the
+# lesser evil: it is still NIXL's own choice of dependency, and the build fails
+# loudly if the combination does not work.
+echo "==> Reading NIXL's dependency pins at ${NIXL_PINNED}..."
+NIXL_DOCKERFILE=$(gh_curl \
+    "https://raw.githubusercontent.com/ai-dynamo/nixl/${NIXL_PINNED}/.ci/dockerfiles/Dockerfile.rocm" \
+    2>/dev/null || true)
+if [[ -z "$NIXL_DOCKERFILE" ]]; then
+    echo "    no Dockerfile.rocm at ${NIXL_PINNED}, falling back to main"
+    NIXL_DOCKERFILE=$(gh_curl \
+        "https://raw.githubusercontent.com/ai-dynamo/nixl/main/.ci/dockerfiles/Dockerfile.rocm" \
+        2>/dev/null || true)
+fi
+
+# Pull an `ARG NAME=value` default out of that Dockerfile.
+nixl_arg() {
+    printf '%s\n' "$NIXL_DOCKERFILE" \
+        | sed -n -E "s/^ARG $1=([^ ]+).*/\1/p" | head -1
+}
+
+# Upstream writes ABSL_TAG as a branch (lts_2025_08_14) that keeps moving as the
+# LTS line takes patches. images.yml deliberately stores the release tag at that
+# branch's head instead, which is the same tree and actually immutable, so
+# resolve branch -> tag here rather than copying the branch name across.
+absl_branch_to_tag() {
+    local branch="$1" head tags
+    head=$(gh_curl "https://api.github.com/repos/abseil/abseil-cpp/commits/${branch}" \
+        | jq -r '.sha')
+    [[ -z "$head" || "$head" == "null" ]] && return 1
+    tags=$(gh_curl "https://api.github.com/repos/abseil/abseil-cpp/tags?per_page=100" \
+        | jq -r --arg sha "$head" '.[] | select(.commit.sha == $sha) | .name')
+    [[ -z "$tags" ]] && return 1
+    printf '%s\n' "$tags" | sort -V | tail -1
+}
+
+if [[ -z "$NIXL_DOCKERFILE" ]]; then
+    echo "  WARNING: could not fetch NIXL's Dockerfile.rocm at ${NIXL_PINNED}" \
+         "— leaving abseil, gRPC and libfabric alone."
+else
+    ABSL_UPSTREAM=$(nixl_arg ABSL_TAG)
+    if [[ "$ABSL_UPSTREAM" == lts_* ]]; then
+        ABSL_UPSTREAM=$(absl_branch_to_tag "$ABSL_UPSTREAM" || true)
+    fi
+    ABSL_CURRENT=$(current_pin ubuntu-rocm-nixl absl_tag)
+    echo "    abseil      current: $ABSL_CURRENT  nixl wants: $ABSL_UPSTREAM"
+    if check_nonempty "$ABSL_UPSTREAM" "abseil tag from NIXL" \
+        && [[ "$ABSL_CURRENT" != "$ABSL_UPSTREAM" ]]; then
+        replace_yaml_var absl_tag "$ABSL_UPSTREAM" "$ABSL_CURRENT"
+        replace_arg_default ABSL_TAG "$ABSL_UPSTREAM" \
+            "$REPO_ROOT/ubuntu-rocm-nixl/Dockerfile"
+    fi
+
+    GRPC_UPSTREAM=$(nixl_arg GRPC_TAG)
+    GRPC_CURRENT=$(current_pin ubuntu-rocm-nixl grpc_tag)
+    echo "    gRPC        current: $GRPC_CURRENT  nixl wants: $GRPC_UPSTREAM"
+    if check_nonempty "$GRPC_UPSTREAM" "gRPC tag from NIXL" \
+        && [[ "$GRPC_CURRENT" != "$GRPC_UPSTREAM" ]]; then
+        replace_yaml_var grpc_tag "$GRPC_UPSTREAM" "$GRPC_CURRENT"
+        replace_arg_default GRPC_TAG "$GRPC_UPSTREAM" \
+            "$REPO_ROOT/ubuntu-rocm-nixl/Dockerfile"
+    fi
+
+    LIBFABRIC_UPSTREAM=$(nixl_arg LIBFABRIC_VERSION)
+    [[ -z "$LIBFABRIC_UPSTREAM" ]] && LIBFABRIC_UPSTREAM=$(nixl_arg LIBFABRIC_TAG)
+    LIBFABRIC_CURRENT=$(current_pin ubuntu-rocm-nixl libfabric_tag)
+    echo "    libfabric   current: $LIBFABRIC_CURRENT  nixl wants: $LIBFABRIC_UPSTREAM"
+    if check_nonempty "$LIBFABRIC_UPSTREAM" "libfabric tag from NIXL" \
+        && [[ "$LIBFABRIC_CURRENT" != "$LIBFABRIC_UPSTREAM" ]]; then
+        replace_yaml_var libfabric_tag "$LIBFABRIC_UPSTREAM" "$LIBFABRIC_CURRENT"
+        replace_arg_default LIBFABRIC_TAG "$LIBFABRIC_UPSTREAM" \
+            "$REPO_ROOT/ubuntu-rocm-nixl/Dockerfile"
+    fi
+fi
+
 echo "==> Fetching latest cuda-keyring deb..."
 KEYRING_PAGE=$(curl -fsSL \
     "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/")
@@ -288,6 +418,11 @@ fi
 
 # images.yml drives every build, so a scrub that produced an unparseable or
 # inconsistent file must fail here rather than in the release run.
+#
+# The README's shields are generated from those same pins, so regenerate them
+# in the same commit: otherwise the scrub's own PR would fail the badge check
+# it is supposed to satisfy.
 if [[ "$changed" -ne 0 ]]; then
     "$TOOL" validate
+    "$TOOL" badges --write
 fi

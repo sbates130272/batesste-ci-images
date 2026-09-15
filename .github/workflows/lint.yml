@@ -52,6 +52,11 @@ jobs:
       # var no image declares fails here rather than mid-release.
       - name: Validate images.yml
         run: ./ci-images-tool.py validate
+      # The README advertises the pins in shields generated from images.yml.
+      # A bump that forgets to regenerate them would leave the README claiming
+      # a version the images are not built from, so fail the PR instead.
+      - name: Check README badges match the pins
+        run: ./ci-images-tool.py badges --check
 
   readme-structure:
     name: README Project Structure

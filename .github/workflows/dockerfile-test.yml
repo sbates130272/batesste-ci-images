@@ -832,12 +832,12 @@ jobs:
           echo "${OUT}" | grep -q "NIXL Benchmark" \
             || { echo "ERROR: nixlbench printed no help banner"; exit 1; }
 
-      - name: Verify pinned NIXL and UCX commits
+      - name: Verify pinned NIXL tag and UCX commit
         if: matrix.target.image == 'ubuntu-rocm-nixl'
         run: |
           ARGS=$(./ci-images-tool.py build-args "${{ matrix.target.key }}")
           for pair in \
-            "nixl-commit.txt:NIXL_COMMIT" \
+            "nixl-tag.txt:NIXL_TAG" \
             "ucx-commit.txt:UCX_COMMIT"; do
             FILE="${pair%%:*}"
             ARG="${pair##*:}"

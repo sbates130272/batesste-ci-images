@@ -5,7 +5,7 @@ FROM ${BASE_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive
 
 ARG NIXL_REPO=https://github.com/ai-dynamo/nixl.git
-ARG NIXL_COMMIT=8585eee0b2a37be52bb5c727f0d21e714518b689
+ARG NIXL_TAG=v1.4.1
 ARG UCX_REPO=https://github.com/openucx/ucx.git
 ARG UCX_COMMIT=5025d2a2e101e30167beebf59512c27ee37fc32b
 
@@ -67,8 +67,9 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
 
 RUN git init /build/nixl && \
     git -C /build/nixl remote add origin "${NIXL_REPO}" && \
-    git -C /build/nixl fetch --depth 1 origin "${NIXL_COMMIT}" && \
+    git -C /build/nixl fetch --depth 1 origin "refs/tags/${NIXL_TAG}" && \
     git -C /build/nixl checkout FETCH_HEAD && \
+    echo "${NIXL_TAG}" > /build/nixl-tag.txt && \
     git -C /build/nixl rev-parse HEAD > /build/nixl-commit.txt
 
 ARG ABSL_REPO=https://github.com/abseil/abseil-cpp.git
@@ -171,6 +172,7 @@ RUN set -eux; \
 # Keep this directory in the image context so local patches can be added
 # without changing the source checkout or the build command.
 COPY ubuntu-rocm-nixl/patches/nixl /build/patches/nixl
+COPY ubuntu-rocm-nixl/scripts/meson-supported-opts.sh /build/
 
 # ROCm's bin goes on PATH because NIXL translates the libfabric plugin's CUDA
 # sources to HIP with find_program('hipify-perl'), which searches PATH only.
@@ -187,6 +189,11 @@ COPY ubuntu-rocm-nixl/patches/nixl /build/patches/nixl
 # multiarch, so libnixl lands in lib/x86_64-linux-gnu, not lib. ldconfig is used
 # instead of LD_LIBRARY_PATH so the libraries resolve for any process in the
 # image, including one that resets the environment.
+#
+# The -D options go through meson-supported-opts.sh because NIXL's release
+# branches declare fewer of them than main does and meson fails hard on an
+# unknown one: v1.4.1 has no rocm_path here, and it needs none, reaching the
+# GPU through the ROCm-enabled UCX built above.
 RUN set -eux; \
     if find /build/patches/nixl -type f -name '*.patch' -print -quit | grep -q .; then \
         git -C /build/nixl apply /build/patches/nixl/*.patch; \
@@ -197,40 +204,53 @@ RUN set -eux; \
     meson setup /build/nixl/build /build/nixl \
         --prefix=/usr/local/nixl \
         --buildtype=release \
-        -Dbuild_tests=false \
-        -Dbuild_examples=false \
-        -Dbuild_docs=false \
-        -Dbuild_nixl_ep=false \
-        -Drocm_path="${ROCM_PATH}" \
-        -Dwheel_variant=rocm \
-        -Ducx_path=/usr/local \
-        -Dlibfabric_path=/usr/local \
-        -Detcd_inc_path=/usr/local/include \
-        -Detcd_lib_path=/usr/local/lib; \
+        $(sh /build/meson-supported-opts.sh /build/nixl \
+            -Dbuild_tests=false \
+            -Dbuild_examples=false \
+            -Dbuild_docs=false \
+            -Dbuild_nixl_ep=false \
+            -Drocm_path="${ROCM_PATH}" \
+            -Dwheel_variant=rocm \
+            -Ducx_path=/usr/local \
+            -Dlibfabric_path=/usr/local \
+            -Detcd_inc_path=/usr/local/include \
+            -Detcd_lib_path=/usr/local/lib); \
     meson compile -C /build/nixl/build; \
     meson install -C /build/nixl/build; \
     dirname "$(find /usr/local/nixl -name libnixl.so -print -quit)" \
         > /etc/ld.so.conf.d/nixl.conf; \
     ldconfig
 
+# TOML_CUDA=1 is upstream's own workaround, applied here because the release
+# branch still needs it: nixlbench's utils.cpp includes <hip/hip_runtime.h>
+# ahead of toml++, and HIP defines __noinline__ as a macro, which breaks
+# toml++'s TOML_HAS_ATTR(__noinline__) check. NIXL main dropped that include so
+# the collision cannot happen; v1.4.1 has not. The define is inert once a tag
+# carries that fix, so it need not come back out on a bump. It rides in
+# cpp_args rather than the filtered list because meson builtins are not
+# declared in meson_options.txt.
 RUN set -eux; \
     meson setup /build/nixl/benchmark/nixlbench/build \
         /build/nixl/benchmark/nixlbench \
         --prefix=/usr/local \
         --buildtype=release \
-        -Dnixl_path=/usr/local/nixl \
-        -Ducx_path=/usr/local \
-        -Drocm_path="$(cat /etc/rocm-path)" \
-        -Duse_rocm=true \
-        -Dbuild_raw_cli=false \
-        -Detcd_inc_path=/usr/local/include \
-        -Detcd_lib_path=/usr/local/lib; \
+        -Dcpp_args=-DTOML_CUDA=1 \
+        $(sh /build/meson-supported-opts.sh /build/nixl/benchmark/nixlbench \
+            -Dnixl_path=/usr/local/nixl \
+            -Ducx_path=/usr/local \
+            -Drocm_path="$(cat /etc/rocm-path)" \
+            -Duse_rocm=true \
+            -Dbuild_raw_cli=false \
+            -Detcd_inc_path=/usr/local/include \
+            -Detcd_lib_path=/usr/local/lib); \
     meson compile -C /build/nixl/benchmark/nixlbench/build; \
     meson install -C /build/nixl/benchmark/nixlbench/build; \
     cp /build/ucx-commit.txt /usr/local/share/ucx-commit.txt; \
+    cp /build/nixl-tag.txt /usr/local/share/nixl-tag.txt; \
     cp /build/nixl-commit.txt /usr/local/share/nixl-commit.txt; \
     rm -rf /build/ucx /build/nixl /build/etcd-cpp-apiv3 /build/abseil-cpp \
-        /build/grpc /build/libfabric /build/patches
+        /build/grpc /build/libfabric /build/patches \
+        /build/meson-supported-opts.sh
 
 ENV PATH=/usr/local/bin:/usr/local/nixl/bin:${PATH}
 ENV LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH}

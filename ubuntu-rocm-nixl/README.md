@@ -25,10 +25,20 @@ therock ROCm layouts.
 ./ci-images-tool.py build ubuntu-rocm-nixl
 ```
 
-The source revisions can be overridden with the `NIXL_COMMIT`, `UCX_COMMIT`,
+The source revisions can be overridden with the `NIXL_TAG`, `UCX_COMMIT`,
 `ETCD_COMMIT`, `ABSL_TAG`, `GRPC_TAG` and `LIBFABRIC_TAG` Docker build
-arguments. Files ending in `.patch` placed in `patches/nixl/` are
-applied to the pinned NIXL checkout before it is configured.
+arguments. NIXL is built from a tagged release rather than a bare commit; the
+commit that tag resolved to is recorded in `/usr/local/share/nixl-commit.txt`
+alongside the tag itself in `nixl-tag.txt`. Files ending in `.patch` placed in
+`patches/nixl/` are applied to the pinned NIXL checkout before it is
+configured.
+
+NIXL's release branches declare fewer meson options than its main branch, and
+meson aborts on an unknown one, so the `-D` options are passed through
+`scripts/meson-supported-opts.sh`, which forwards only those the pinned tree
+declares and reports the rest on stderr. This lets one Dockerfile build both a
+release tag and main, so a `NIXL_TAG` bump neither breaks the build nor
+silently drops an option a newer tree supports.
 
 ## Run
 
