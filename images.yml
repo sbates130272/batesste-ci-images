@@ -361,6 +361,54 @@ images:
       "{ns}.rocjitsu.firmware-gen-commit": "{rocjitsu_firmware_gen_commit}"
       "{ns}.rocjitsu.log-groups": "{rocjitsu_log_groups}"
 
+  # The storage device server, completing the set: rocm-ernic serves a NIC,
+  # rocjitsu serves a GPU, this serves an NVMe controller.
+  #
+  # base: ubuntu-base, not ubuntu-libvfio-user, and libvfio_user_commit is
+  # deliberately absent from both the vars and the tag. SPDK's vfio-user target
+  # only builds against libvfio-user's own spdk branch, which its submodule
+  # carries; the shared pin in defaults.vars tracks the qemu-project tree that
+  # QEMU and rocm-ernic build against. Pinning both from here would mean one
+  # bump breaking the other, so this image takes the submodule and the
+  # Dockerfile reads the resolved SHA back out for the label below. That is why
+  # the tag is spdk.<sha> alone rather than the two-pin form ernic uses.
+  ubuntu-spdk-libvfio-user:
+    job: matrix
+    description: >-
+      SPDK's NVMe-oF target serving an NVMe controller with LBA and KV
+      namespaces over vfio-user.
+    base: ubuntu-base
+    artifact: true
+    vars:
+      # A fork, and not a temporary embarrassment: upstream SPDK v26.05 added
+      # the Key Value command set to the NVMe *initiator* only
+      # (include/spdk/nvme_kv.h). The target-side kvdev layer, module/kvdev/
+      # and nvmf_subsystem_add_kv_ns exist nowhere upstream, so no spdk/spdk ref
+      # can serve a KV namespace to a guest and there is no upstream variant to
+      # offer. This is the tree ROCm/rocm-xio PR #183 proved the KV path on.
+      #
+      # version-scrub.sh follows whichever branch spdk_branch names, so expect
+      # the pin to move while the work is out of tree. Retire the fork -- repo,
+      # branch and this comment -- when the kvdev series lands upstream.
+      spdk_repo:
+        value: https://github.com/mmgaggle/spdk.git
+        env: SPDK_REPO
+      spdk_branch:
+        value: rados-nkv
+        env: SPDK_BRANCH
+      spdk_commit:
+        value: 18d1d8dab4f2020e10349009e69f94d47de100f9
+        env: SPDK_COMMIT
+    build_args:
+      SPDK_REPO: "{spdk_repo}"
+      SPDK_BRANCH: "{spdk_branch}"
+      SPDK_COMMIT: "{spdk_commit}"
+    variant: "spdk.{spdk_commit|short}"
+    labels:
+      "{ns}.spdk.repo": "{spdk_repo}"
+      "{ns}.spdk.branch": "{spdk_branch}"
+      "{ns}.spdk.commit": "{spdk_commit}"
+
   # The builder/runner toolchain, and only that: QEMU, the qemu-tool CLI,
   # ansible-core, libvfio-user. It builds no guest of its own -- ubuntu-qcow2-gen
   # below does that -- so it needs neither KVM, nor the insecure entitlement,
@@ -701,6 +749,13 @@ badges:
           short: true
           colour: ED1C24
           link: https://github.com/ROCm/rocm-systems/commit/{value}
+        # Links into the fork, not spdk/spdk: the commit only exists there.
+        - label: spdk
+          target: ubuntu-spdk-libvfio-user
+          var: spdk_commit
+          short: true
+          colour: 00A3E0
+          link: https://github.com/mmgaggle/spdk/commit/{value}
         - label: fio
           target: ubuntu-cuda-rocm-fio
           var: fio_commit

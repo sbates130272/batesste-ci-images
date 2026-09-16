@@ -431,6 +431,52 @@ jobs:
               kill \${SERVER_PID}
             "
 
+      - name: Verify SPDK binaries and commit metadata
+        if: matrix.target.image == 'ubuntu-spdk-libvfio-user'
+        run: |
+          docker run --rm \
+            "batesste-ci-images-${{ matrix.target.scope }}:test" \
+            bash -lc '
+              set -e
+              which nvmf_tgt
+              rpc.py --help > /dev/null
+              cat /usr/local/share/spdk-commit.txt
+              cat /usr/local/share/libvfio-user-commit.txt
+              cat /usr/local/share/spdk-build.json
+            '
+
+      # The one run that covers every axis the image claims: memory-backed LBA,
+      # file-backed LBA and KV, all in the same subsystem, on a real socket.
+      # No hugepages on a GitHub runner, so this also exercises --no-huge.
+      - name: Run SPDK vfio-user smoke test
+        if: matrix.target.image == 'ubuntu-spdk-libvfio-user'
+        run: |
+          docker run --rm --name spdk-vfu-test \
+            -e NVME_NAMESPACES='lba:malloc:64M,lba:aio:/tmp/ns.img,kv:mem' \
+            -e VFIO_USER_SOCKET_DIR=/tmp/vfio-sockets/nvme \
+            -e SPDK_MEM_SIZE=512 \
+            --entrypoint bash \
+            "batesste-ci-images-${{ matrix.target.scope }}:test" \
+            -c '
+              set -e
+              /build/entrypoint.sh &
+              SERVER_PID=$!
+              for _ in $(seq 1 60); do
+                test -S /tmp/vfio-sockets/nvme/cntrl && break
+                sleep 1
+              done
+              if ! kill -0 ${SERVER_PID} 2>/dev/null; then
+                echo "ERROR: nvmf_tgt exited prematurely"
+                exit 1
+              fi
+              test -S /tmp/vfio-sockets/nvme/cntrl
+              test -f /tmp/ns.img
+              rpc.py nvmf_get_subsystems > /tmp/subsystems.json
+              python3 -c "import json;subs=[s for s in json.load(open(\"/tmp/subsystems.json\")) if s[\"nqn\"]==\"nqn.2019-07.io.spdk:cnode1\"];ns=subs[0][\"namespaces\"];kv=[n for n in ns if \"kvdev_name\" in n];lba=[n for n in ns if \"kvdev_name\" not in n];print(len(lba),\"LBA +\",len(kv),\"KV\");assert (len(lba),len(kv))==(2,1)"
+              echo "SPDK vfio-user target is serving (PID ${SERVER_PID})"
+              kill ${SERVER_PID}
+            '
+
       # What build-derived wants from its base is a registry ref, not a local
       # image -- it used to load an artifact purely to push it straight back
       # out again. Pushing here skips a multi-GB tarball in each direction, and
