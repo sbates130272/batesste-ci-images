@@ -15,6 +15,11 @@ Everything else comes from the base image: CUDA toolkit under
 `/usr/local/cuda`, ROCm/HIP under the path recorded in `/etc/rocm-path`.
 As with the base, this is **toolkit-only** — GPU drivers are host-provided.
 
+fio is configured `--disable-native`. Its `configure` otherwise adds
+`-march=native` on its own, baking the build machine's instruction set into a
+binary that is then published and run somewhere else. A generic x86-64 build
+is what lets the image run on any host.
+
 > hipFile is an early-access technology preview. AMD does not recommend it
 > for production workloads.
 
