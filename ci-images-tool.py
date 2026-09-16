@@ -2380,6 +2380,117 @@ def _hub_repo(cfg: Config, target: Target) -> tuple[str, str] | None:
     return namespace, repository
 
 
+#: A fully specified tag is the one carrying the source fingerprint -- the
+#: ``.g<sha7>`` tag_set() puts on the primary and on nothing else. Matching
+#: that rather than the date prefix keeps this working for a semver release
+#: base (``1.1.0.g0d300a2-…``) as well as the ``auto`` date one.
+_FINGERPRINTED_TAG_RE = re.compile(r"\.g[0-9a-f]{7}(-dirty)?(-|$)")
+
+#: How many tags to ask the Hub for. Ordered newest first, so this only has to
+#: be deep enough to reach past the rolling aliases -- latest, the variant, the
+#: minor -- that a single push updates alongside the fingerprinted one.
+HUB_TAG_PAGE_SIZE = 100
+
+
+@dataclass(frozen=True)
+class HubTag:
+    """What the Hub knows about one published tag."""
+
+    name: str
+    pushed: str
+    size: str
+
+
+def _hub_published(
+    namespace: str,
+    repository: str,
+    headers: dict[str, str],
+) -> HubTag | None:
+    """Newest fully specified tag on the Hub page, when it was pushed, its size.
+
+    The rolling tags say nothing about *which* build is behind them, so the
+    useful thing to show next to a description is the immutable one: the tag
+    carrying the date and this repo's commit, which is what a consumer should
+    be pinning anyway.
+
+    Anonymous when there is no token -- ``describe --dry-run`` has none, and
+    the tag list is public for a public repository. A private repository
+    without credentials therefore reads as never pushed; that is the same
+    answer an anonymous ``docker pull`` would give.
+
+    None when the repository has no fingerprinted tag, which covers the
+    never-pushed repository and the one whose tags all predate the scheme.
+    """
+
+    url = f"{HUB_API}/repositories/{namespace}/{repository}/tags"
+    try:
+        resp = requests.get(
+            url,
+            headers=headers,
+            params={"page_size": HUB_TAG_PAGE_SIZE, "ordering": "last_updated"},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        console.print(f"[yellow]Warning:[/] tag lookup for {repository} failed: {exc}")
+        return None
+    if resp.status_code == 404:
+        return None
+    if not resp.ok:
+        console.print(
+            f"[yellow]Warning:[/] tag lookup for {repository} returned "
+            f"HTTP {resp.status_code}"
+        )
+        return None
+
+    try:
+        results = resp.json().get("results") or []
+    except ValueError:
+        return None
+
+    for entry in results:
+        name = entry.get("name") or ""
+        if not _FINGERPRINTED_TAG_RE.search(name):
+            continue
+        # tag_last_pushed is when this tag was last written; last_updated is
+        # the repository-level stamp Hub also copies onto the tag. Prefer the
+        # former and fall back, since older tags predate the field.
+        stamp = entry.get("tag_last_pushed") or entry.get("last_updated") or ""
+        return HubTag(name, _hub_when(stamp), _hub_size(entry.get("full_size")))
+    return None
+
+
+def _hub_when(stamp: str) -> str:
+    """An ISO-8601 Hub timestamp as a readable UTC minute."""
+
+    if not stamp:
+        return "unknown"
+    try:
+        when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return stamp[:19]
+    return when.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _hub_size(full_size: object) -> str:
+    """Hub's ``full_size`` as a human figure.
+
+    This is the *compressed* size the registry stores and a puller downloads,
+    not what the image occupies once unpacked -- `docker images` will report a
+    larger number for the same tag. Every target here is single-arch, so the
+    tag total is the image; a multi-arch tag would sum its platforms.
+    """
+
+    if not isinstance(full_size, (int, float)) or full_size <= 0:
+        return "unknown"
+    size = float(full_size)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024 or unit == "GiB":
+            precision = 0 if unit in ("B", "KiB") else 1
+            return f"{size:.{precision}f} {unit}"
+        size /= 1024
+    return "unknown"
+
+
 def readme_for(cfg: Config, target: Target) -> Path:
     """The image directory's README, which becomes the Hub overview.
 
@@ -2406,6 +2517,11 @@ def cmd_describe(args: argparse.Namespace) -> None:
     table.add_column("Target")
     table.add_column("Repository")
     table.add_column("Overview", justify="right")
+    # The tag is the reason this column exists, so fold it rather than let
+    # Rich ellipsise the fingerprint away on a narrow terminal.
+    table.add_column("Published tag", overflow="fold")
+    table.add_column("Image", justify="right")
+    table.add_column("Pushed", overflow="fold")
     table.add_column("Status")
 
     failed = False
@@ -2441,8 +2557,16 @@ def cmd_describe(args: argparse.Namespace) -> None:
 
         size = f"{len(full.encode()) / 1024:.1f} KiB"
         previews.append((target.key, short))
+
+        published = _hub_published(namespace, repository, headers)
+        if published:
+            tag, image_size, pushed = published.name, published.size, published.pushed
+        else:
+            tag, image_size, pushed = "[dim]none[/]", "[dim]-[/]", "[dim]-[/]"
+        row = (target.key, repository, size, tag, image_size, pushed)
+
         if args.dry_run:
-            table.add_row(target.key, repository, size, "[yellow]dry-run[/]")
+            table.add_row(*row, "[yellow]dry-run[/]")
             continue
 
         url = f"{HUB_API}/repositories/{namespace}/{repository}"
@@ -2454,20 +2578,15 @@ def cmd_describe(args: argparse.Namespace) -> None:
                 timeout=30,
             )
         except requests.RequestException as exc:
-            table.add_row(target.key, repository, size, f"[red]{exc}[/]")
+            table.add_row(*row, f"[red]{exc}[/]")
             failed = True
             continue
 
         if resp.ok:
-            table.add_row(target.key, repository, size, "[green]updated[/]")
+            table.add_row(*row, "[green]updated[/]")
         else:
             detail = _hub_error(resp)
-            table.add_row(
-                target.key,
-                repository,
-                size,
-                f"[red]HTTP {resp.status_code}[/] {detail}",
-            )
+            table.add_row(*row, f"[red]HTTP {resp.status_code}[/] {detail}")
             failed = True
 
     console.print(table)

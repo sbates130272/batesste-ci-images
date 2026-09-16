@@ -374,6 +374,19 @@ Variants share their image's README — they are the same Dockerfile against
 different pins, so one document describes both and the per-variant difference
 is carried by the description and the tags.
 
+The table also reports what is actually on each Hub page: the newest published
+tag carrying a source fingerprint — the fully specified
+`<date>.g<sha7>-<variant>` one, not a rolling alias — with that tag's size and
+when it was pushed. It answers "is the page I am about to rewrite describing a
+build I recognise?" without a second trip to the registry. The lookup is a
+public read, so `--dry-run` reports it too; a repository with nothing pushed,
+or a private one read without credentials, shows `none`.
+
+`Overview` is the size of the README being uploaded; `Image` is the size of
+the published tag as Hub reports it, which is the **compressed** registry size
+— what a `docker pull` transfers, not what `docker images` shows once it is
+unpacked.
+
 Hub's short description is capped at 100 **bytes**, not characters — it rejects
 anything longer with `Exceeded max number of bytes 100`. Longer sentences are
 trimmed at a word boundary with an ellipsis and the trim is reported, but the
