@@ -1,10 +1,10 @@
 # Guest image request: ROCm/rocm-xio, rocjitsu emulated GPU
 
-Status: **image built and published.** Three of the four asks landed; firmware
-did not, by agreement. Read [Firmware](#firmware-is-not-baked-in) and
-[Which driver actually loads](#which-driver-actually-loads) before removing
-anything from rocm-xio's runtime playbook — the second one changes what the
-atomics patch buys you.
+Status: **image built and published, now on resolute.** The earlier noble build
+carried a DKMS module that could never load; this one carries the driver that
+does. Read [Which driver actually loads](#which-driver-actually-loads) and
+[Firmware](#firmware-is-not-baked-in) before removing anything from rocm-xio's
+runtime playbook.
 
 ## What was asked for
 
@@ -16,9 +16,9 @@ flavour's shape.
 | # | Asked for | Landed |
 | --- | --- | --- |
 | 1 | ROCm userspace from the `therock` stream: `libstdc++-14-dev`, `amdrocm-runtime-dev`, `amdrocm-blas-dev` | yes — but see [BLAS](#amdrocm-blas-dev-is-headers-only) |
-| 2 | `amdgpu-dkms` built against the guest kernel, KFD atomics patch applied first | built and patched, but against 6.8, **not** the kernel the guest boots — see below |
-| 3 | gfx1250 firmware present under `/lib/firmware`, asserted in the checks | **no**, by agreement |
-| 4 | `blacklist amdgpu` in `/etc/modprobe.d/` | yes |
+| 2 | `amdgpu-dkms` built against the guest kernel, KFD atomics patch applied first | yes, since the move to resolute |
+| 3 | gfx1250 firmware present under `/lib/firmware`, asserted in the checks | **no**, by agreement — no public release ships it |
+| 4 | `blacklist amdgpu` in `/etc/modprobe.d/` | yes, plus `modprobe.blacklist=amdgpu` on the kernel cmdline |
 
 The "nice to have" list — `build-essential`, `cmake`, `git`, `pciutils`,
 `nvme-cli` — is in, along with the rest of rocm-xio's build dependencies.
@@ -28,78 +28,91 @@ Everything on the "do not want" list stays out: no `ip_discovery.bin`, no
 
 ## Which driver actually loads
 
-The guest boots **7.0.0-31-generic** (noble's HWE kernel) and the driver that
-loads is the **in-tree** amdgpu from it. That is the point of the flavour: 7.0
-is the first kernel whose in-tree amdgpu has GC 12.1.0, and it names all seven
-gfx1250 blobs —
+`amdgpu-dkms 1:7.1.3.31500000`, built for the kernel the guest boots
+(`7.0.0-31-generic`), carrying the KFD atomics patch in the module itself and
+not only in its source tree. `modprobe amdgpu` resolves to
+`/lib/modules/<kver>/updates/dkms/amdgpu.ko`, ahead of the in-tree module, and
+`checks/rocjitsu.sh` asserts exactly that: `dkms status amdgpu -k "$(uname -r)"`
+reporting `installed`, and `modinfo -n amdgpu` resolving under `updates/dkms`.
+
+This is the driver version the one known-good hand-built guest reports
+(`[drm] amdgpu version: 7.1.3.31500000`), and it enumerates eight IP blocks with
+psp/smu/mes present. It contains the UMSCH HW IP enumeration
+(`4e07da515d1c`) that upstream names as the fix for
 
 ```
-gc_12_1_0_rlc.bin  gc_12_1_0_mec.bin  gc_12_1_0_imu.bin  sdma_7_1_0.bin
-gc_12_1_0_uni_mes.bin  gc_12_1_0_mes1.bin  gc_12_1_0_mes.bin
+Failed to add vcn/jpeg ip block(UVD_HWIP:0x0)
+amdgpu: probe with driver amdgpu failed with error -22
 ```
 
-— where `amdgpu-dkms` names none of them. `checks/rocjitsu.sh` asserts both the
-kernel floor and those firmware references, so a guest that came up on the
-cloud image's 6.8, or on a driver without gfx1250, cannot be published.
+which is what the in-tree 7.0 driver does with this compute-only device.
 
-`amdgpu-dkms` **is** installed, patched and built, but for 6.8 only. It cannot
-be built for 7.0 at all: it is a `~24.04` package whose `kcl` compatibility
-layer fails on `migrate_enable`, `zone_device_page_init` and `shmem_file_setup`,
-and on 7.0 it also hits `drm_client_dev_resume` and `pci_resize_resource`
-signature changes. So what the image carries is a patched source tree plus an
-inert 6.8 module, not the driver that runs.
+### Why the release changed, and the ordering that goes with it
 
-**Consequence for the atomics patch: it is not in the loaded driver.** If KFD's
-PCIe-atomics gate does fire against the emulated device on the in-tree 7.0
-driver, the patch in `/usr/src/amdgpu-*` will not help, because that tree is not
-what `modprobe amdgpu` loads. The in-tree module does still expose `emu_mode` as
-a parameter, and `strings` on it still shows the `PCI rejects atomics` message,
-so the gate exists in the code path — whether it is reached for this device is
-not something this image's GPU-less probe boot can determine. First real
-evidence is a rocm-xio run.
+The noble build could only install a `~24.04` `amdgpu-dkms` whose `kcl`
+compatibility layer does not compile against 7.0 at all (`migrate_enable`,
+`zone_device_page_init`, `shmem_file_setup`, then `drm_client_dev_resume` and
+`pci_resize_resource`). Because its postinst builds for **every kernel with
+headers on disk** rather than for the running one, the package had to be
+installed *before* noble's HWE kernel put 7.0 headers there — leaving a 6.8
+module that cannot load, and the in-tree 7.0 driver as the only thing that
+could bind. That driver rejects the device.
 
-### Ordering, and why it differs from qemu-minimal
+On resolute none of that applies. The cloud image already boots 7.0, the 31.50
+`amdgpu-dkms` is a 26.04 package that builds against it, and provisioning does
+the ordinary thing: kernel and headers first, then DKMS, then the atomics patch,
+then a rebuild for both installed kernels. `/etc/dkms/no-autoinstall-errors` is
+**not** written on resolute — a failing amdgpu build for a future kernel is a
+real regression there and should stop the install that caused it. The inverted
+order and that flag file both survive in
+[`provision/rocjitsu.sh`](../provision/rocjitsu.sh) behind `RELEASE = noble`,
+for reference rather than for use.
 
-qemu-minimal's `ansible/playbooks/vm-rocjitsu.yml` (as of PR #136) installs
-`linux-generic-hwe-24.04` first and `amdgpu-dkms` second, which is the order the
-`rocm_setup` role imposes. That does not work: `amdgpu-dkms`'s postinst builds
-for **every kernel with headers on disk**, not for the running one, so with 7.0
-headers already present it dies with exit status 10 and the package is left
-unconfigured. This flavour reverses the two — DKMS while only 6.8 headers exist,
-then the HWE kernel — which is the only reason it has a built module at all.
-
-Installing the kernel afterwards then trips the same failure from
-`/etc/kernel/postinst.d/dkms`, which would leave `linux-image-7.0.0-31-generic`
-unconfigured. `/etc/dkms/no-autoinstall-errors` (the autoinstaller's own
-documented flag) is written first so the attempt still happens and the error is
-not propagated. It is left in the published image, so a consumer installing a
-later kernel gets the module if it builds and a working kernel if it does not.
-
-Worth fixing on the qemu-minimal side too, or its next rebuild produces a guest
-with no `amdgpu.ko` from DKMS and an unconfigured kernel package.
+qemu-minimal's `ansible/playbooks/vm-rocjitsu.yml` selects
+`linux-generic-hwe-24.04` or `-26.04` by release and otherwise leaves the order
+to the `rocm_setup` role. On resolute that order is correct; on noble it is the
+failure described above.
 
 ## Firmware is not baked in
 
-Not a build failure — this was dropped on request, and the checks do not assert
-it.
+Still not baked in, and now for a demonstrated reason rather than a suspected
+one: **no public release carries gfx1250 firmware.**
+`amdgpu-dkms-firmware 1:31.50.0.0.31500000` — the newest driver tree with a
+resolute suite — ships 683 files and not one `gc_12_1_0`, `sdma_7_1_0` or
+`psp_15_0_8_toc_1.bin` among them. Ubuntu's `linux-firmware` has none either.
+Upstream's `qemu-vfio.md` says to use "files from the same public driver/
+firmware release", and for gfx1250 that release does not exist yet.
 
-It is, however, **obtainable**, which is a change from the earlier read. No
-public driver release ships gfx1250 blobs (the newest `amdgpu-dkms-firmware` on
-`repo.radeon.com` carries 674 amdgpu files and zero `gc_12_1_0` or
-`sdma_7_1_0`), but qemu-minimal does not get them from a package either: it runs
-`vfio_guest_firmware.py` and `rj-ip-discovery` out of the rocjitsu container.
-That generator was removed from the current stack, which is exactly why PR #136
-pins `sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:rocjitsu.730bc62`
-rather than `:latest`. It also copies `gc_12_1_0_uni_mes.bin` over
-`gc_12_1_0_mes.bin` and `gc_12_1_0_mes1.bin`, which the generator does not emit.
+So the synthesised stubs remain the only way to boot the device, which is why
+qemu-minimal generates them on the controller and why its playbook was pinned to
+`…-ubuntu-rocm-rocjitsu:rocjitsu.730bc62` — the last tag whose image still had
+the generator after upstream deleted
+`emulation/rocjitsu/tools/vfio_guest_firmware.py`.
 
-So baking firmware here is possible — a builder stage on that pinned tag — at
-the cost of depending on a pinned image whose generator no longer exists in
-source. Say the word and it goes in.
+**That pin is no longer needed.** `ubuntu-rocm-rocjitsu` now ships
+`/usr/local/bin/vfio_guest_firmware.py` again, fetched from that commit by SHA
+(`rocjitsu_firmware_gen_commit` in `images.yml`, recorded in the
+`…rocjitsu.firmware-gen-commit` label and in `rocjitsu-build.json`) while the
+server itself keeps tracking the head of the series. Consumers can move back to
+a current tag.
 
-For now **rocm-xio keeps firmware in its runtime playbook**, together with
-`ip_discovery.bin`, which was already on the "do not want" list because it must
-match the consumer's rocjitsu pin, not this image's.
+The generator emits five files:
+
+```
+gc_12_1_0_imu.bin  gc_12_1_0_mec.bin  gc_12_1_0_rlc_1.bin
+gc_12_1_0_uni_mes.bin  sdma_7_1_0.bin
+```
+
+Two more are the caller's copies, because only the caller knows which MES path
+its `amdgpu.ko` takes: `gc_12_1_0_mes.bin` and `gc_12_1_0_mes1.bin`, both copied
+from `gc_12_1_0_uni_mes.bin`. The 7.1.3 DKMS driver additionally opens
+`amdgpu/psp_15_0_8_toc_1.bin`, which nothing public provides and the generator
+does not emit; public `linux-firmware` has only `psp_15_0_0_toc.bin` and
+`psp_15_0_9_toc.bin`, which are different parts and must not be substituted.
+
+Firmware and `ip_discovery.bin` stay in rocm-xio's runtime playbook, both of
+them because they must match the consumer's rocjitsu pin rather than this
+image's.
 
 [`checks/rocjitsu.sh`](../checks/rocjitsu.sh) runs the inventory and prints what
 is missing without failing. One note if you keep an assert on the rocm-xio side:
@@ -107,6 +120,16 @@ the pattern `gc_12_1_0|sdma_7_1_0|mes` is too loose — `mes` matches gc_11 and
 gc_12_0 blobs that are present, so it can pass on a guest carrying none of the
 gfx1250 firmware it was written to check for. The check here is scoped to
 `gc_12_1_0|sdma_7_1_0` only.
+
+## Autoload stays blacklisted
+
+Deliberately, and belt-and-braces: `/etc/modprobe.d/amdgpu-blacklist.conf` plus
+`modprobe.blacklist=amdgpu` on the kernel command line, the second so an
+initramfs-driven load cannot slip in ahead of `/etc/modprobe.d`. Neither the
+device nor its firmware exists until the consumer starts rocjitsu, and an
+autoloaded copy wedges the guest: the in-tree module's `modprobe` returns 0
+without rebinding, and unloading the DKMS one has been seen to GPF in
+`kgd2kfd_device_exit`. The checks assert both, and that `amdgpu` is not loaded.
 
 ## `amdrocm-blas-dev` is headers-only
 
@@ -127,36 +150,34 @@ unilaterally.
 
 ## Pins, and why
 
-**`release: noble`, not the catalogue default `resolute`.**
-`repo.radeon.com/amdgpu/*/ubuntu/dists/` publishes `jammy` and `noble` only;
-`resolute` is a 404. There is no 26.04 guest that can install `amdgpu-dkms` from
-AMD at all. TheRock userspace does publish both `ubuntu2404` and `ubuntu2604`,
-so it is the kernel driver alone that forces the pin.
+**`release: resolute`, the catalogue default again.** 26.04 boots 7.0 out of the
+box and is the only release with an `amdgpu-dkms` that builds against it.
 
-**`amdgpu_driver_version: latest`, not `7.0.3`.**
-The numbered directories track the ROCm release, not the driver. 7.0.3 ships
-amdgpu-dkms 6.14.14; `latest` is 6.16.13. Neither builds against 7.0, which is
-why the build happens on 6.8 — but `latest` is the `rocm_setup` role default, so
-this flavour and the qemu-minimal playbook install the same driver.
+**`amdgpu_driver_version: 31.50`, not `latest`.** The `latest` symlink still
+publishes `jammy` and `noble` only; `31.50` is the first version directory with
+a `resolute` suite, and the `amdgpu-dkms` in it is `1:7.1.3.31500000`.
+Provisioning probes `dists/<codename>/Release` before writing the apt source, so
+a version without the guest's suite fails with both names in the message rather
+than as a 404 several steps later.
 
 ## What the guest records about itself
 
-`/etc/rocjitsu-guest.json`, written during provisioning, from the published
-build:
+`/etc/rocjitsu-guest.json`, written during provisioning:
 
 ```json
 {
-  "amdgpu_driver_repo_version": "latest",
-  "amdgpu_dkms_version": "1:6.16.13.30300400-2341068.24.04",
-  "amdgpu_dkms_module": "6.16.13-2341068.24.04",
-  "amdgpu_dkms_built_for_kernel": "6.8.0-139-generic",
+  "amdgpu_driver_repo_version": "31.50",
+  "amdgpu_dkms_version": "1:7.1.3.31500000-2390945.26.04",
+  "amdgpu_dkms_module": "7.1.3.31500000-2390945.26.04",
+  "amdgpu_dkms_built_for_kernels": "7.0.0-30-generic 7.0.0-31-generic",
   "booted_kernel": "7.0.0-31-generic",
   "amdrocm_runtime_dev_version": "10.0.0-4",
   "rocm_stream": "therock",
   "kfd_atomics_patched": true,
-  "kfd_atomics_patch_applies_to": "amdgpu-dkms source only, not the in-tree driver",
-  "runtime_driver": "in-tree amdgpu from the booted HWE kernel",
+  "kfd_atomics_patch_applies_to": "amdgpu-dkms source and the module built from it",
+  "runtime_driver": "amdgpu-dkms 1:7.1.3.31500000-2390945.26.04, built for the booted kernel 7.0.0-31-generic",
   "amdgpu_autoload_blacklisted": true,
+  "amdgpu_blacklisted_on_cmdline": true,
   "gfx1250_firmware": false,
   "ip_discovery_bin": false
 }
@@ -168,7 +189,10 @@ on purpose and are the contract for what rocm-xio must still do at runtime.
 
 ## What rocm-xio still has to do at job time
 
-1. Install gfx1250 firmware and `ip_discovery.bin` into `/lib/firmware/amdgpu/`.
+1. Install the gfx1250 firmware stubs and `ip_discovery.bin` into
+   `/lib/firmware/amdgpu/`, generated from the rocjitsu image it runs — both
+   `vfio_guest_firmware.py` and `rj-ip-discovery` are in a current tag again —
+   plus the two `uni_mes` copies.
 2. `modprobe amdgpu` with the emulation parameters once the vfio-user server is
    serving. The image blacklists autoload but ships no helper; keep
    `amdgpu-probe` on the rocm-xio side, where the parameters belong.
@@ -180,24 +204,25 @@ the kernel, the DKMS install, the patch, the rebuild — is already in the disk.
 
 Unchanged from `basic`: a `FROM scratch` payload whose `/output` carries the
 qcow2, `id_rsa`, `id_rsa.pub` and `vm-info.json`. `vm-info.json` keeps
-`vm_name`, `username`, `release` and `kernel_release` (now `7.0.0-31-generic`),
-and is `schema_version: 4` — the only addition is `provisioning.provision`,
-naming the in-guest script. Flavour-specific versions stay in the guest's own
-record rather than leaking into this file.
+`vm_name`, `username`, `release` and `kernel_release`, and is
+`schema_version: 4` — the only addition is `provisioning.provision`, naming the
+in-guest script. Flavour-specific versions stay in the guest's own record rather
+than leaking into this file.
 
 Consume an explicit dated tag, never `:latest`.
 
 ## Open
 
-- The image cannot be end-to-end tested here. The build's probe boot has no
-  vfio-user device, so it asserts that everything is installed and patched, not
-  that the emulated GPU comes up. First real proof is a rocm-xio run.
-- Whether the KFD atomics gate fires for the emulated device under the in-tree
-  7.0 driver is unresolved. If it does, the fix has to move into the in-tree
-  driver — a `kfd_device.c` patch plus a kernel build — because the DKMS tree
-  the patch currently lands in is not what loads.
+- The image cannot be end-to-end tested in the build. The probe boot has no
+  vfio-user device, so it asserts that the right driver is installed for the
+  booted kernel, not that the emulated GPU comes up. Qualification is a boot
+  under the rocjitsu stack: eight IP blocks, no vcn/jpeg failure, `amdgpu` bound
+  under `/sys/bus/pci/drivers/amdgpu/`, and a KFD node present. A zero exit from
+  `modprobe` proves none of that.
+- `psp_15_0_8_toc_1.bin` has no public source. If the driver's PSP path turns
+  out to be mandatory for this profile rather than best-effort, either the stub
+  generator has to grow it or the device profile has to stop advertising that
+  management processor.
 - `test-vm-nvme.yml` is not on rocm-xio's default branch, so the runtime path it
   replaces has never run in CI either. Landing that workflow and this image
   together is worth doing in one go.
-</content>
-</invoke>

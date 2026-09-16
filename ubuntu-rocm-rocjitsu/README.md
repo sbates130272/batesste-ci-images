@@ -30,13 +30,17 @@ transport has to be the one upstream tested against.
   `install()` rule, so it is lifted out of the build tree by hand.
 - **`run-vfio-guest.py`** -- upstream's harness for booting a prepared guest
   against the vfio-user socket
+- **`vfio_guest_firmware.py`** -- generates the GFX/SDMA/MES firmware-format
+  fixtures the driver parses during early init. Upstream deleted it; this image
+  fetches it from the last commit that had it, pinned separately from the
+  server's own commit. See [Firmware](#firmware) below.
 - the config profiles under `/usr/local/share/rocjitsu/configs`
 - `/usr/local/share/rocjitsu-build.json`, recording the repo, branch, commit,
   the libvfio-user and json-c tags built against, and the guest tools shipped
 
 ### Build-time verification
 
-Three checks run in the image build, so a broken stack fails where the output
+Four checks run in the image build, so a broken stack fails where the output
 is legible rather than as a hung guest:
 
 1. `rocjitsu` is started against the pinned config and must log `vfu: serving`
@@ -45,15 +49,39 @@ is legible rather than as a hung guest:
    an empty `ip_discovery.bin` hangs in `hw_init` instead of failing cleanly
 3. `run-vfio-guest.py --help` must run, which catches a Python the base image
    cannot import it under
+4. `vfio_guest_firmware.py` must emit all five of its fixtures by name
 
-## What is *not* here
+## Firmware
 
-The firmware-stub generator that used to ship alongside these tools is gone.
-The gfx1250-vfio-compute stack replaced synthesized GFX/SDMA/MES stubs with
-real firmware taken from the driver release matching the guest's `amdgpu.ko`,
-so assembling that inventory is the caller's job -- see
-`emulation/rocjitsu/docs/qemu-vfio.md` upstream. Nothing in this image can
-stand in for it.
+Upstream removed the stub generator when `emulation/rocjitsu/docs/qemu-vfio.md`
+moved to "use firmware files from the same public driver/firmware release as
+the guest's `amdgpu.ko`". No such release exists for gfx1250:
+`amdgpu-dkms-firmware 31.50`, the newest driver tree with an Ubuntu 26.04 suite,
+ships 683 files and not one `gc_12_1_0` or `sdma_7_1_0` among them, and
+`linux-firmware` has none either. Stubs are therefore still the only way to boot
+the emulated device, and this image keeps shipping the generator --
+`ROCJITSU_FIRMWARE_GEN_COMMIT`, recorded in the
+`…rocjitsu.firmware-gen-commit` label and in `rocjitsu-build.json`. Retire the
+pin when real gfx1250 firmware is published.
+
+```bash
+docker run --rm -v "$PWD/fw:/out" "$IMAGE" \
+    python3 /usr/local/bin/vfio_guest_firmware.py --output /out
+docker run --rm -v "$PWD/fw:/out" "$IMAGE" \
+    rj-ip-discovery gfx1250 /out/ip_discovery.bin
+```
+
+That produces `gc_12_1_0_imu.bin`, `gc_12_1_0_mec.bin`, `gc_12_1_0_rlc_1.bin`,
+`gc_12_1_0_uni_mes.bin` and `sdma_7_1_0.bin`, plus `ip_discovery.bin`. Two more
+files are the caller's to make, because only the caller knows which MES path its
+`amdgpu.ko` takes: copy `gc_12_1_0_uni_mes.bin` to `gc_12_1_0_mes.bin` and
+`gc_12_1_0_mes1.bin`. The 7.1.3 driver also opens `psp_15_0_8_toc_1.bin`, which
+nothing public provides and this generator does not emit; the similarly named
+`psp_15_0_0_toc.bin` and `psp_15_0_9_toc.bin` are different parts and must not
+be substituted.
+
+`ip_discovery.bin` must come from the same rocjitsu commit that serves the
+device, which is why it is generated here rather than shipped in a guest disk.
 
 ## Usage
 

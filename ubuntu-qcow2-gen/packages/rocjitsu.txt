@@ -14,23 +14,19 @@ ninja-build
 pkg-config
 dkms
 git
-# No kernel here, deliberately, and this is the one ordering constraint the
-# whole flavour turns on.
+# No kernel metapackage here, deliberately.  Which one to install, and whether
+# it goes in before or after amdgpu-dkms, depends on the release, and
+# provision/rocjitsu.sh is where that decision lives:
 #
-# The published guest boots noble's HWE kernel, 7.0.0-31-generic, because the
-# *in-tree* amdgpu in 7.0 is the first one with GC 12.1.0 support -- it names
-# all seven gc_12_1_0/sdma_7_1_0 firmware blobs, where amdgpu-dkms names none.
-# But amdgpu-dkms is a ~24.04 package whose kcl layer does not compile against
-# 7.0 at all (migrate_enable, zone_device_page_init, shmem_file_setup).
+#   resolute -- the cloud image already boots 7.0, so the DKMS module builds
+#     for the kernel that matters and the HWE metapackage is only a roll
+#     forward to the latest 7.0.0-3x.
+#   noble -- amdgpu-dkms's postinst builds for every kernel with headers on
+#     disk rather than for the running one, and the noble package's kcl layer
+#     does not compile against 7.0 at all, so the HWE kernel must not be here:
+#     naming it would put 7.0 headers on disk before provisioning even starts.
 #
-# So the HWE kernel is installed by provision/rocjitsu.sh, and only *after*
-# amdgpu-dkms has been built against the cloud image's 6.8.  amdgpu-dkms's
-# postinst builds for every kernel that has headers on disk, not for the
-# running one, so the 7.0 headers must not exist yet when it runs.  Naming the
-# kernel here would put them there before provisioning even starts.
-#
-# The cloud image's own 6.8 headers are what amdgpu-dkms builds against, so
-# they do have to be here.
+# Headers for the kernel the cloud image boots are needed either way.
 linux-headers-generic
 # Needed before the provisioning boot can add a signed apt source.
 ca-certificates

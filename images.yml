@@ -315,15 +315,29 @@ images:
       rocjitsu_config:
         value: gfx1250_mi455x.json
         env: ROCM_ROCJITSU_CONFIG
+      # The last upstream commit that carried
+      # emulation/rocjitsu/tools/vfio_guest_firmware.py, deleted after it in
+      # favour of "use the firmware from the driver release matching the
+      # guest's amdgpu.ko". There is no such release for gfx1250 -- the newest
+      # amdgpu-dkms-firmware carries no gc_12_1_0 or sdma_7_1_0 blob -- so the
+      # stubs remain the only way to boot the emulated device, and the image
+      # keeps shipping the generator from here. A SHA, not a branch, and not
+      # scrubbed: it names a deleted file, so it can only ever move backwards.
+      # Retire it when upstream publishes real gfx1250 firmware.
+      rocjitsu_firmware_gen_commit:
+        value: 730bc62d60191337a07da50892538475370cb071
+        env: ROCM_ROCJITSU_FIRMWARE_GEN_COMMIT
     build_args:
       ROCJITSU_REPO: "{rocjitsu_repo}"
       ROCJITSU_BRANCH: "{rocjitsu_branch}"
       ROCJITSU_COMMIT: "{rocjitsu_commit}"
       ROCJITSU_CONFIG: "{rocjitsu_config}"
+      ROCJITSU_FIRMWARE_GEN_COMMIT: "{rocjitsu_firmware_gen_commit}"
     variant: "rocjitsu.{rocjitsu_commit|short}"
     labels:
       "{ns}.rocjitsu.branch": "{rocjitsu_branch}"
       "{ns}.rocjitsu.commit": "{rocjitsu_commit}"
+      "{ns}.rocjitsu.firmware-gen-commit": "{rocjitsu_firmware_gen_commit}"
 
   # The builder/runner toolchain, and only that: QEMU, the qemu-tool CLI,
   # ansible-core, libvfio-user. It builds no guest of its own -- ubuntu-qcow2-gen
@@ -438,13 +452,10 @@ images:
       # is read back out of the guest into /etc/rocjitsu-guest.json, because
       # this names a repository and not a driver build.
       #
-      # "latest" rather than the highest numbered directory on purpose. The
-      # numbered tree tracks the ROCm release, not the driver: 7.0.3 ships
-      # amdgpu-dkms 6.14.14, where "latest" is 6.16.13. Neither builds against
-      # the 7.0 kernel the guest boots -- that is why provisioning builds the
-      # module on the cloud image's 6.8, before the HWE kernel is installed --
-      # but "latest" is what the rocm_setup role defaults to, so this flavour
-      # and the qemu-minimal playbook install the same driver.
+      # "latest" is the rolling symlink the rocm_setup role defaults to, and it
+      # publishes jammy and noble only. A flavour on a release that tree has no
+      # suite for must name a version directory that does -- see the rocjitsu
+      # variant, which pins 31.50 for resolute.
       amdgpu_driver_version: "latest"
       username: batesste
       vm_name: ""
@@ -521,13 +532,17 @@ images:
       # installed ROCm and amdgpu-dkms over SSH at runtime, costing the better
       # part of an hour per run; this flavour bakes it in once.
       #
-      # release: noble, not the catalogue default. The AMD kernel driver repo
-      # (repo.radeon.com/amdgpu/<ver>/ubuntu) publishes jammy and noble suites
-      # and no resolute one, so amdgpu-dkms simply cannot be installed on a
-      # 26.04 guest -- and noble is the release the one working rocjitsu guest
-      # was built on. The kernel is not the release's own 6.8: packages/
-      # rocjitsu.txt pulls noble's HWE metapackage, which has rolled onto the
-      # same 7.0.0-31-generic resolute boots.
+      # release: resolute, and amdgpu_driver_version: 31.50, which are one
+      # decision. 31.50 is the first amdgpu driver tree to publish a resolute
+      # suite, and the amdgpu-dkms in it is 1:7.1.3.31500000 -- a driver that
+      # builds against the 7.0 kernel 26.04 boots and that carries GC 12.1.0
+      # plus the UMSCH HW IP enumeration (4e07da515d1c) the emulated gfx1250
+      # needs. The noble build this replaces could install only a ~24.04
+      # amdgpu-dkms whose kcl layer will not compile against 7.0 at all, so its
+      # module had to be built against the cloud image's 6.8 and could never
+      # load, leaving the in-tree 7.0 driver to reject the device with
+      # "Failed to add vcn/jpeg ip block". Do not move this pin back to
+      # "latest": that symlink is still jammy/noble only.
       #
       # Three things this flavour deliberately does not carry, all of which
       # stay in rocm-xio's runtime playbook because they belong to the
@@ -535,18 +550,16 @@ images:
       #
       #   * ip_discovery.bin -- generated per-config by "rj-ip-discovery
       #     gfx1250" from the rocjitsu image the consumer runs.
-      #   * gfx1250 firmware. No public driver release ships gc_12_1_0 or
-      #     sdma_7_1_0 blobs -- the latest amdgpu-dkms-firmware carries none --
-      #     and the gfx1250-vfio-compute stack removed the synthesised-stub
-      #     generator, so there is nothing honest to bake. checks/rocjitsu.sh
-      #     reports the inventory without failing on it.
+      #   * gfx1250 firmware. No public release ships gc_12_1_0 or sdma_7_1_0
+      #     blobs: amdgpu-dkms-firmware 31.50 has 683 files and none of them,
+      #     so the synthesised stubs from ubuntu-rocm-rocjitsu's
+      #     vfio_guest_firmware.py remain the only source, and they must match
+      #     the consumer's rocjitsu pin. checks/rocjitsu.sh reports the
+      #     inventory without failing on it.
       #   * The amdgpu-probe helper and the CI user's passwordless sudo.
       #
       # The KFD atomics patch is applied to the DKMS source and the module is
-      # rebuilt from it, which is what survives a later dkms autoinstall. Note
-      # that the public driver this installs has no GC 12.1.0 support at all,
-      # so it is the pipeline and the time saving that are baked in here, not
-      # a driver that can bind the emulated device.
+      # rebuilt from it, which is what survives a later dkms autoinstall.
       rocjitsu:
         suffix: "-rocjitsu"
         description: >-
@@ -555,7 +568,8 @@ images:
         vars:
           flavour: rocjitsu
           vm_packages: rocjitsu.txt
-          release: noble
+          release: resolute
+          amdgpu_driver_version: "31.50"
 
 # The README's pinned-upstream shields, generated by `ci-images-tool.py badges`
 # so that a pin and the badge advertising it cannot drift apart. CI runs

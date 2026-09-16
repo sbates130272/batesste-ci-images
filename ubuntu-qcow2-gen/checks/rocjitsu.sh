@@ -9,12 +9,14 @@
 # consumer would otherwise have had to install and patch at runtime is present
 # and in the state it promised.
 
-# The published guest must boot noble's HWE kernel, 7.0.0-31-generic, and not
-# the cloud image's 6.8 that provisioning ran on. 7.0 is the first kernel whose
-# in-tree amdgpu carries GC 12.1.0, so a guest that came back up on 6.8 has no
-# driver that can see the emulated device. Compare the whole version tuple,
+# The published guest must boot a 7.0 or newer kernel: 7.0 is the first one
+# whose in-tree amdgpu carries GC 12.1.0, and it is what the 26.04 amdgpu-dkms
+# is built against here. On resolute that is the release's own HWE kernel; on
+# noble it is the HWE metapackage installed during provisioning, which the
+# provisioning boot itself was not running. Compare the whole version tuple,
 # not major-and-minor separately.
 test "$(printf '7.0\n%s\n' "$(uname -r)" | sort -V | head -1)" = "7.0"
+. /etc/os-release
 
 # The toolchain and headers, so an out-of-tree module can be built here.
 command -v gcc make cmake ninja dkms git
@@ -46,10 +48,10 @@ for h in /opt/rocm/include/hipblas/hipblas.h \
 done
 test -n "${HIPBLAS_H}"
 
-# The driver the guest will actually load is the in-tree amdgpu from 7.0, and
-# it must be the one with GC 12.1.0 -- that is the whole reason this flavour
-# boots an HWE kernel. Assert it by the firmware it names: a driver without
-# gfx1250 support does not reference gc_12_1_0 at all.
+# Whichever module modprobe would pick -- the DKMS one on resolute, the in-tree
+# one on noble -- it must be a driver with GC 12.1.0. Assert it by the firmware
+# it names: a driver without gfx1250 support does not reference gc_12_1_0 at
+# all.
 AMDGPU_KO=$(modinfo -n amdgpu)
 test -n "${AMDGPU_KO}"
 echo "amdgpu.ko: ${AMDGPU_KO}"
@@ -58,29 +60,48 @@ modinfo -F firmware "${AMDGPU_KO}" | grep -q 'sdma_7_1_0'
 # emu_mode is what rocjitsu passes; a driver without it is the wrong driver.
 modinfo -F parm "${AMDGPU_KO}" | grep -q '^emu_mode:'
 
-# amdgpu-dkms is also present, built against the 6.8 kernel that provisioning
-# ran on and carrying the KFD atomics patch in its source tree. It is NOT the
-# module this guest loads -- 7.0 is out of its kcl layer's range -- so it is
-# asserted as a patched source tree a consumer can build from, not as a
-# working driver. See consumers/rocm-xio-rocjitsu.md.
+# amdgpu-dkms, carrying the KFD atomics patch in its source tree.
 dkms status amdgpu | grep -q '^amdgpu'
 grep -q 'amdgpu_emu_mode == 1' \
     /usr/src/amdgpu-*/amd/amdkfd/kfd_device.c
 
+# On 26.04 the DKMS module is the driver that loads, so it has to exist for the
+# kernel this guest actually booted -- not merely for some kernel. A module
+# built for the provisioning kernel and nothing else is exactly the failure this
+# flavour moved off noble to avoid, and dkms status without -k hides it.
+if [ "${VERSION_ID}" = "26.04" ]; then
+    dkms status amdgpu -k "$(uname -r)" | grep -q 'installed'
+    case "${AMDGPU_KO}" in
+        */updates/dkms/*) ;;
+        *)
+            echo "error: modprobe would load ${AMDGPU_KO}, not the DKMS module" >&2
+            exit 1
+            ;;
+    esac
+    modinfo -F version "${AMDGPU_KO}"
+else
+    # noble: the DKMS module is for the 6.8 provisioning kernel and cannot load
+    # at all, so it is only a patched source tree a consumer can build from.
+    # See consumers/rocm-xio-rocjitsu.md.
+    echo "note: noble build -- DKMS module is not the runtime driver"
+fi
+
 # amdgpu must not autoload -- it is modprobed by hand with the emulation
-# parameters once the vfio-user server is serving.
+# parameters once the vfio-user server is serving. Belt (modprobe.d) and
+# braces (kernel cmdline, which also covers a load from the initramfs).
 grep -qx 'blacklist amdgpu' /etc/modprobe.d/amdgpu-blacklist.conf
+grep -q 'modprobe.blacklist=amdgpu' /proc/cmdline
 ! lsmod | grep -q '^amdgpu '
 
 # The flavour's own record, for a consumer reading it from inside the guest.
 test -s /etc/rocjitsu-guest.json
 
-# gfx1250 firmware is NOT baked in: noble's linux-firmware predates gc_12_1_0
-# and no amdgpu-dkms-firmware release carries it either, so there is nothing to
-# install from a package. Report the inventory so the build log says plainly
-# what is missing, and leave the check non-fatal -- supplying it is the
-# consumer's step. Unlike before, this list is now meaningful: the in-tree 7.0
-# driver really does request these blobs.
+# gfx1250 firmware is NOT baked in: no linux-firmware or amdgpu-dkms-firmware
+# release carries gc_12_1_0 or sdma_7_1_0 blobs (31.50's has 683 files and none
+# of them), so there is nothing to install from a package. Report the inventory
+# so the build log says plainly what is missing, and leave the check non-fatal
+# -- supplying it, from ubuntu-rocm-rocjitsu's vfio_guest_firmware.py at the
+# consumer's own rocjitsu pin, is the consumer's step.
 #
 # Scoped to gc_12_1_0 and sdma_7_1_0 only. rocm-xio's own assert also greps
 # "mes", which matches the gc_11 and gc_12_0 blobs that every release ships --
