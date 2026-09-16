@@ -347,6 +347,10 @@ images:
       # the CLI and the playbooks always come from one commit.
       qemu_minimal_repo: https://github.com/sbates130272/qemu-minimal.git
       qemu_minimal_commit: 5d6868914873757ff1c51dec3ca95a3fa0b2e9d9
+      # Provenance only, and empty here: the default target builds a release
+      # tag, which belongs to no branch. A fork variant fills it in and the
+      # label appears only there.
+      qemu_branch: ""
     build_args:
       QEMU_REPO: "{qemu_repo}"
       QEMU_COMMIT: "{qemu_commit}"
@@ -358,6 +362,7 @@ images:
     labels:
       "{ns}.qemu.repo": "{qemu_repo}"
       "{ns}.qemu.commit": "{qemu_commit}"
+      "{ns}.qemu.branch": "{qemu_branch}"
       "{ns}.libvfio-user.commit": "{libvfio_user_commit}"
     variants:
       sbates-fork:
@@ -365,9 +370,16 @@ images:
         description: >-
           QEMU from the sbates130272 fork, not the pinned upstream tag, adding
           unmerged PCI MMIO bridge work.
+        # A SHA, not the branch name: the branch is rebased and force-pushed as
+        # the series is reworked upstream, so a branch pin silently rebuilds a
+        # different QEMU and the tag it publishes never changes. This commit is
+        # the head of dev/stephen/pci-mmio-bridge-submit as of 2026-09-16.
+        # version-scrub.sh must not touch it -- it tracks QEMU releases, and
+        # this is not one.
         vars:
           qemu_repo: https://github.com/sbates130272/qemu.git
-          qemu_commit: dev/stephen/pci-mmio-bridge-submit
+          qemu_commit: 98eca1a522557f6c5a1a9fed4a41a0acb5277560
+          qemu_branch: dev/stephen/pci-mmio-bridge-submit
 
   # Guest qcow2 images. One parameterised Dockerfile, one repository per
   # flavour: adding a guest is packages/<name>.txt, checks/<name>.sh, an

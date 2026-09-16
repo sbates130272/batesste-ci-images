@@ -70,10 +70,16 @@ The mount must be read-write. `entrypoint.sh` also accepts a guest under
 | Variant | Repository suffix | What differs |
 | --- | --- | --- |
 | *(default)* | *(none)* | Upstream QEMU at the pinned tag |
-| `sbates-fork` | `-sbates-fork` | Built from the `sbates130272` fork, carrying the PCI MMIO bridge work that is not yet upstream |
+| `sbates-fork` | `-sbates-fork` | Built from a pinned commit of the `sbates130272` fork, carrying the PCI MMIO bridge work that is not yet upstream |
+
+The fork branch is rebased and force-pushed as the series is reworked, so the
+variant pins a SHA rather than the branch. Bumping it means editing
+`qemu_commit` in [images.yml](../images.yml); the branch it came from is
+recorded in `qemu_branch` and in the `…qemu.branch` label.
 
 ## Tags
 
 The tag variant combines the QEMU version and the libvfio-user commit, for
-example `qemu11.1.1-vfu.8039244`. See the repository [README](../README.md)
-for the full tag scheme.
+example `qemu11.1.1-vfu.8039244`. A fork build names the commit instead of a
+version, for example `qemu.98eca1a-vfu.8039244`. See the repository
+[README](../README.md) for the full tag scheme.
