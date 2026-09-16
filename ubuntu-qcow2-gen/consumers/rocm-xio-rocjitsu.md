@@ -40,7 +40,7 @@ This is the driver version the one known-good hand-built guest reports
 psp/smu/mes present. It contains the UMSCH HW IP enumeration
 (`4e07da515d1c`) that upstream names as the fix for
 
-```
+```text
 Failed to add vcn/jpeg ip block(UVD_HWIP:0x0)
 amdgpu: probe with driver amdgpu failed with error -22
 ```
@@ -61,7 +61,8 @@ could bind. That driver rejects the device.
 On resolute none of that applies. The cloud image already boots 7.0, the 31.50
 `amdgpu-dkms` is a 26.04 package that builds against it, and provisioning does
 the ordinary thing: kernel and headers first, then DKMS, then the atomics patch,
-then a rebuild for both installed kernels. `/etc/dkms/no-autoinstall-errors` is
+then a rebuild for the kernel that boots (and for the provisioning kernel too,
+when the HWE metapackage moves the guest off it). `/etc/dkms/no-autoinstall-errors` is
 **not** written on resolute — a failing amdgpu build for a future kernel is a
 real regression there and should stop the install that caused it. The inverted
 order and that flag file both survive in
@@ -98,7 +99,7 @@ a current tag.
 
 The generator emits five files:
 
-```
+```text
 gc_12_1_0_imu.bin  gc_12_1_0_mec.bin  gc_12_1_0_rlc_1.bin
 gc_12_1_0_uni_mes.bin  sdma_7_1_0.bin
 ```
@@ -168,8 +169,8 @@ than as a 404 several steps later.
 {
   "amdgpu_driver_repo_version": "31.50",
   "amdgpu_dkms_version": "1:7.1.3.31500000-2390945.26.04",
-  "amdgpu_dkms_module": "7.1.3.31500000-2390945.26.04",
-  "amdgpu_dkms_built_for_kernels": "7.0.0-30-generic 7.0.0-31-generic",
+  "amdgpu_dkms_module": "7.1.3-2390945.26.04",
+  "amdgpu_dkms_built_for_kernels": "7.0.0-31-generic",
   "booted_kernel": "7.0.0-31-generic",
   "amdrocm_runtime_dev_version": "10.0.0-4",
   "rocm_stream": "therock",

@@ -122,12 +122,14 @@ sudo update-pciids || true
 # any of /etc/modprobe.d is necessarily in scope.
 printf 'blacklist amdgpu\n' |
     sudo tee /etc/modprobe.d/amdgpu-blacklist.conf > /dev/null
-if ! grep -q 'modprobe.blacklist=amdgpu' /etc/default/grub; then
-    sudo sed -i \
-        's/^\(GRUB_CMDLINE_LINUX_DEFAULT="[^"]*\)"/\1 modprobe.blacklist=amdgpu"/' \
-        /etc/default/grub
-fi
-grep -q 'modprobe.blacklist=amdgpu' /etc/default/grub
+#
+# A grub.d snippet rather than an edit to /etc/default/grub: the cloud image
+# assigns GRUB_CMDLINE_LINUX_DEFAULT in
+# /etc/default/grub.d/50-cloudimg-settings.cfg, which is sourced afterwards and
+# overwrites anything the main file set.  99- sorts last, and appends.
+sudo install -d -m 0755 /etc/default/grub.d
+printf 'GRUB_CMDLINE_LINUX_DEFAULT="${GRUB_CMDLINE_LINUX_DEFAULT} modprobe.blacklist=amdgpu"\n' |
+    sudo tee /etc/default/grub.d/99-amdgpu-blacklist.cfg > /dev/null
 
 # The kernel, and the ordering the whole flavour turns on.  It differs by
 # release because the driver does:
@@ -247,6 +249,10 @@ if [ "${RELEASE}" = noble ]; then
 fi
 
 sudo update-grub
+# The grub.d snippet is only worth anything if it reached the generated config:
+# a menuentry without it means the next boot autoloads amdgpu from the
+# initramfs, and the probe boot is where that has to be caught.
+sudo grep -q 'modprobe.blacklist=amdgpu' /boot/grub/grub.cfg
 
 # What this image is, recorded where a consumer inside the guest can read it.
 # vm-info.json stays flavour-agnostic; this is the flavour's own record, and
