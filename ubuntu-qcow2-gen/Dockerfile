@@ -34,6 +34,7 @@ ARG VM_VMEM=4096
 ARG VM_PACKAGES=base.txt
 ARG VM_PLAYBOOK=
 ARG KERNEL_REF=
+ARG AMDGPU_DRIVER_VERSION=latest
 ARG CACHE_BUST=
 
 WORKDIR /build
@@ -62,10 +63,12 @@ RUN python3 -m venv /opt/qemu-tool --clear && \
     ln -sf /opt/qemu-tool/bin/qemu-tool /usr/local/bin/qemu-tool && \
     qemu-tool --version
 
-# Per-flavour cloud-init package manifests and post-build assertions.  Copied
-# whole so a flavour is packages/<name>.txt plus checks/<name>.sh plus an
-# images.yml variant, with no Dockerfile change.
+# Per-flavour cloud-init package manifests, in-guest provisioning and
+# post-build assertions.  Copied whole so a flavour is packages/<name>.txt plus
+# an optional provision/<name>.sh plus checks/<name>.sh plus an images.yml
+# variant, with no Dockerfile change.
 COPY ubuntu-qcow2-gen/packages/ /build/packages/
+COPY ubuntu-qcow2-gen/provision/ /build/provision/
 COPY ubuntu-qcow2-gen/checks/ /build/checks/
 
 # One keypair per flavour, generated here rather than inherited: the base image
@@ -105,6 +108,7 @@ ARG VM_VMEM=4096
 ARG VM_PACKAGES=base.txt
 ARG VM_PLAYBOOK=
 ARG KERNEL_REF=
+ARG AMDGPU_DRIVER_VERSION=latest
 ARG CACHE_BUST=
 # hadolint ignore=DL3059
 RUN --security=insecure \

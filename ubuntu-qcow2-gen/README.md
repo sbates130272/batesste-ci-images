@@ -12,7 +12,13 @@ second boot, and exports the result `FROM scratch` -- so a consumer pulls a
 bare payload, not the multi-GB QEMU toolchain that produced it.
 
 Adding a guest flavour is `packages/<name>.txt`, `checks/<name>.sh`, an
-upstream Ansible playbook name and a `variants:` entry. No Dockerfile change.
+optional `provision/<name>.sh` and a `variants:` entry (plus, optionally, an
+upstream Ansible playbook name). No Dockerfile change.
+
+`provision/<name>.sh` runs inside the guest in its own boot, between cloud-init
+and the verification boot, with the changes kept. It is where anything
+cloud-init's package list cannot express goes: third-party apt repositories,
+patching a source tree, building a DKMS module against the guest's own kernel.
 
 ## Base image
 
@@ -94,6 +100,7 @@ and then ship it in the payload anyway.
 | --- | --- | --- |
 | *(default)* | *(none)* | The `basic` flavour: cloud-init packages from `packages/base.txt`, no playbook |
 | `ionic` | `-ionic` | For ROCm/rocm-ernic's ionic RDMA jobs. `drivers/infiniband/hw/ionic` merged in Linux 6.18; the toolchain and rdma-core build deps are pre-installed to save those jobs wall-clock, but the ionic-ernic DKMS modules are deliberately **not** built here -- building them from pinned upstream sources is what those jobs exist to test. |
+| `rocjitsu` | `-rocjitsu` | For ROCm/rocm-xio's rocjitsu emulated-GPU jobs. ROCm userspace from the `therock` stream and an `amdgpu-dkms` built against the guest kernel with the KFD atomics patch applied first, so those jobs stop doing it over SSH. Pinned to `noble`: `repo.radeon.com/amdgpu` publishes no `resolute` suite. gfx1250 firmware is **not** baked in -- see [consumers/rocm-xio-rocjitsu.md](consumers/rocm-xio-rocjitsu.md). |
 
 ## Tags
 

@@ -6,13 +6,17 @@
 # Run from the Dockerfile; configuration comes from the build ARGs, which reach
 # us as environment variables.
 #
-# Three provisioning layers, matching how the container images work:
+# Four provisioning layers, matching how the container images work:
 #   packages/<VM_PACKAGES>  cloud-init packages, appended to qemu-minimal's
 #                           default manifest
 #   <VM_PLAYBOOK>           an Ansible playbook from the qemu-minimal checkout,
 #                           for anything cloud-init cannot express
 #   <KERNEL_REF>            an Ubuntu mainline kernel, installed in a boot of
 #                           its own because it is loose .debs in no repository
+#   provision/<FLAVOUR>.sh  in-guest steps this repo owns -- a third-party apt
+#                           repository, a patched DKMS source, a module built
+#                           against the booted kernel -- run in a boot of their
+#                           own, after the kernel layer and before the checks
 #
 # KVM is mandatory.  It only works in a RUN --security=insecure step (the
 # device node has to be created and opened); anywhere else this script aborts
@@ -41,6 +45,9 @@ export VM_VMEM="${FINAL_VM_VMEM}"
 FINAL_PACKAGES="${VM_PACKAGES:-base.txt}"
 FINAL_PLAYBOOK="${VM_PLAYBOOK:-}"
 FINAL_KERNEL_REF="${KERNEL_REF:-}"
+# Only read by a provision script that installs the AMD kernel driver; inert
+# for every other flavour.
+FINAL_AMDGPU_DRIVER_VERSION="${AMDGPU_DRIVER_VERSION:-latest}"
 KERNEL_VERSION=$(uname -r)
 
 echo "=== Guest Image Build Configuration ==="
@@ -58,6 +65,7 @@ echo "VM_VMEM: ${FINAL_VM_VMEM} MiB (build-time boots only)"
 echo "VM_PACKAGES: ${FINAL_PACKAGES}"
 echo "VM_PLAYBOOK: ${FINAL_PLAYBOOK:-none}"
 echo "KERNEL_REF: ${FINAL_KERNEL_REF:-none (release kernel)}"
+echo "AMDGPU_DRIVER_VERSION: ${FINAL_AMDGPU_DRIVER_VERSION}"
 
 command -v qemu-tool > /dev/null || {
     echo "Error: qemu-tool not installed!"
@@ -214,6 +222,34 @@ KERNEL_EOF
     rm -rf "${DEBDIR}"
 fi
 
+# Flavour provisioning this repo owns, for steps cloud-init cannot express: a
+# third-party apt repository needs a keyring and a sources file, a DKMS module
+# has to be patched and then built against the kernel that actually boots.
+# Same primitive as the kernel layer above -- PROBE_PERSIST keeps what it
+# changes -- and it runs after it, so a module built here is built for the
+# pinned kernel and not the one the release shipped.
+#
+# The script is fed to "bash -s" with no environment of its own, so the few
+# build-side values it needs are prepended as assignments rather than threaded
+# through probe-guest's arguments. Everything else it decides from the guest.
+PROVISION="/build/provision/${FLAVOUR}.sh"
+PROVISION_NAME=none
+if [ -f "${PROVISION}" ]; then
+    PROVISION_NAME="${FLAVOUR}.sh"
+    PROV=/tmp/provision.sh
+    cat > "${PROV}" <<EOF
+set -eu
+FLAVOUR='${FLAVOUR}'
+RELEASE='${FINAL_RELEASE}'
+USERNAME='${FINAL_USERNAME}'
+AMDGPU_DRIVER_VERSION='${FINAL_AMDGPU_DRIVER_VERSION}'
+EOF
+    cat "${PROVISION}" >> "${PROV}"
+    echo "Provisioning the guest with provision/${PROVISION_NAME}"
+    PROBE_PERSIST=1 probe-guest "/output/${FINAL_VM_NAME}.qcow2" \
+        "${FINAL_USERNAME}" "${PROV}"
+fi
+
 # Boot the finished guest once, to read its kernel out of it and to run the
 # flavour's checks.  The kernel version is not knowable before the build --
 # which is why it is not in the image tag -- and consumers that need a minimum
@@ -269,6 +305,10 @@ fi
 CHECKS="/build/checks/${FLAVOUR}.sh"
 if [ -f "${CHECKS}" ]; then
     printf 'echo "Running %s checks" >&2\n' "${FLAVOUR}" >> "${PROBE}"
+    # Traced, because an assertion is a bare command under "set -eu": without
+    # this a failing check prints nothing at all and the build log says only
+    # that the probe exited non-zero.
+    printf 'set -x\n' >> "${PROBE}"
     cat "${CHECKS}" >> "${PROBE}"
 else
     printf 'echo "No checks file for flavour %s" >&2\n' "${FLAVOUR}" >> "${PROBE}"
@@ -315,8 +355,13 @@ BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # schema_version 2 added flavour/kernel_release/vm_playbook/packages_digest and
 # the kernel pin on top of the v1 keys; 3 adds the virtual size, the qemu
 # version, the SSH key fingerprint, the checks script and the build-time boot
-# shape.  Every earlier key is kept, so a v1 or v2 consumer is unaffected --
-# read schema_version before reaching for anything newer.
+# shape; 4 adds the provision script.  Every earlier key is kept, so a v1, v2
+# or v3 consumer is unaffected -- read schema_version before reaching for
+# anything newer.
+#
+# What a provision script installed is deliberately not hoisted here: this file
+# is flavour-agnostic, and a flavour with its own versions to report writes its
+# own record inside the guest (rocjitsu leaves /etc/rocjitsu-guest.json).
 #
 # kernel_debs carries the resolved filenames, build stamp included, because
 # kernel_ref alone does not identify a build.
@@ -325,7 +370,7 @@ BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # so "oras manifest fetch" answers the common questions without the referrer.
 cat > /output/vm-info.json <<EOF
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "vm_name": "${FINAL_VM_NAME}",
   "flavour": "${FLAVOUR}",
   "username": "${FINAL_USERNAME}",
@@ -352,6 +397,7 @@ cat > /output/vm-info.json <<EOF
     "vm_playbook": "${FINAL_PLAYBOOK}",
     "kernel_ref": "${FINAL_KERNEL_REF}",
     "kernel_debs": "${KERNEL_DEBS}",
+    "provision": "${PROVISION_NAME}",
     "checks": "${CHECKS_NAME}"
   },
   "build_info": {

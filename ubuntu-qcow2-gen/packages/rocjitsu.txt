@@ -1,0 +1,51 @@
+# cloud-init packages for the "rocjitsu" guest flavour: the toolchain and
+# kernel headers amdgpu-dkms needs, plus what every consumer of an emulated
+# gfx1250 guest goes on to build with.
+#
+# ROCm userspace and amdgpu-dkms are *not* here.  They come from third-party
+# apt repositories, which cloud-init's package list cannot add, so they are
+# installed by provision/rocjitsu.sh in a provisioning boot instead.
+#
+# Nothing here may be kernel-versioned: cloud-init runs before any of the
+# provisioning does, and ${KERNEL_VERSION} expands to the *host* kernel.
+build-essential
+cmake
+ninja-build
+pkg-config
+dkms
+git
+# No kernel here, deliberately, and this is the one ordering constraint the
+# whole flavour turns on.
+#
+# The published guest boots noble's HWE kernel, 7.0.0-31-generic, because the
+# *in-tree* amdgpu in 7.0 is the first one with GC 12.1.0 support -- it names
+# all seven gc_12_1_0/sdma_7_1_0 firmware blobs, where amdgpu-dkms names none.
+# But amdgpu-dkms is a ~24.04 package whose kcl layer does not compile against
+# 7.0 at all (migrate_enable, zone_device_page_init, shmem_file_setup).
+#
+# So the HWE kernel is installed by provision/rocjitsu.sh, and only *after*
+# amdgpu-dkms has been built against the cloud image's 6.8.  amdgpu-dkms's
+# postinst builds for every kernel that has headers on disk, not for the
+# running one, so the 7.0 headers must not exist yet when it runs.  Naming the
+# kernel here would put them there before provisioning even starts.
+#
+# The cloud image's own 6.8 headers are what amdgpu-dkms builds against, so
+# they do have to be here.
+linux-headers-generic
+# Needed before the provisioning boot can add a signed apt source.
+ca-certificates
+curl
+gnupg
+
+# rocm-xio's build and test dependencies, pre-installed because every consumer
+# of this flavour wants them and they are free to carry.
+libcli11-dev
+libdrm-dev
+libssl-dev
+nvme-cli
+pciutils
+python3-dev
+rsync
+
+pipx
+python3-venv
