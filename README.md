@@ -33,7 +33,7 @@ adding an image or a variant adds its row.
 [![libvfio-user 8039244](https://img.shields.io/badge/libvfio--user-8039244-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/803924493a7c787b2ba358751f55f07d5dba64b2)
 [![qemu-minimal 5d68689](https://img.shields.io/badge/qemu--minimal-5d68689-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/5d6868914873757ff1c51dec3ca95a3fa0b2e9d9)
 [![rocm-ernic c34d798](https://img.shields.io/badge/rocm--ernic-c34d798-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/c34d79894cb41b0c33c21b773ee9752c53ead5b0)
-[![rocjitsu 909c17f](https://img.shields.io/badge/rocjitsu-909c17f-ED1C24)](https://github.com/ROCm/rocm-systems/commit/909c17fe35e9739cd7cd30b8532c02be0ddd4f6c)
+[![rocjitsu be38974](https://img.shields.io/badge/rocjitsu-be38974-ED1C24)](https://github.com/ROCm/rocm-systems/commit/be38974c9e74ef11bb27448d05264f9d3431dd0b)
 [![fio 6bc57a9](https://img.shields.io/badge/fio-6bc57a9-4B8BBE)](https://github.com/axboe/fio/commit/6bc57a931f04fa3f50348d8c8f087187f050c6e1)
 [![ucx 12d6aa6](https://img.shields.io/badge/ucx-12d6aa6-4B8BBE)](https://github.com/openucx/ucx/commit/12d6aa65956996625c8daf39cbb3475ef4a1a35b)
 [![etcd-cpp-apiv3 7c6e714](https://img.shields.io/badge/etcd--cpp--apiv3-7c6e714-419EDA)](https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3/commit/7c6e714f188f9576e25e0350cac4181139eec23e)

@@ -312,8 +312,22 @@ images:
         value: users/agutierr/gfx1250-vfio-compute-6
         env: ROCM_ROCJITSU_BRANCH
       rocjitsu_commit:
-        value: 909c17fe35e9739cd7cd30b8532c02be0ddd4f6c
+        value: be38974c9e74ef11bb27448d05264f9d3431dd0b
         env: ROCM_ROCJITSU_COMMIT
+      # Compile-time log groups (emulation/rocjitsu/cmake/rj_log.cmake): OFF,
+      # ALL, a comma-separated subset of VM, CP, DBT_HOOKS, PLUGINS, DRIVER, or
+      # a raw bitmask. CP is the command processor -- doorbell, dispatch,
+      # completion -- which is the path a guest exercises through the vfio-user
+      # front end and the one worth seeing when a dispatch never lands.
+      #
+      # There is no runtime gate: util/log.h reads this into a constexpr, so a
+      # group compiled in prints unconditionally, mutex-serialised, for every
+      # event. That is the cost of CP, and it is why the other groups -- VM
+      # especially, which logs instruction execution -- are left off. Set this
+      # to OFF to get a quiet server back without touching the Dockerfile.
+      rocjitsu_log_groups:
+        value: CP
+        env: ROCM_ROCJITSU_LOG_GROUPS
       # Only gfx_target_version 120500 has an IP discovery profile upstream, so
       # this is the only config the vfio-user front end can actually serve. It
       # is a var so a variant built against a different upstream ref can point
@@ -339,11 +353,13 @@ images:
       ROCJITSU_COMMIT: "{rocjitsu_commit}"
       ROCJITSU_CONFIG: "{rocjitsu_config}"
       ROCJITSU_FIRMWARE_GEN_COMMIT: "{rocjitsu_firmware_gen_commit}"
+      ROCJITSU_LOG_GROUPS: "{rocjitsu_log_groups}"
     variant: "rocjitsu.{rocjitsu_commit|short}"
     labels:
       "{ns}.rocjitsu.branch": "{rocjitsu_branch}"
       "{ns}.rocjitsu.commit": "{rocjitsu_commit}"
       "{ns}.rocjitsu.firmware-gen-commit": "{rocjitsu_firmware_gen_commit}"
+      "{ns}.rocjitsu.log-groups": "{rocjitsu_log_groups}"
 
   # The builder/runner toolchain, and only that: QEMU, the qemu-tool CLI,
   # ansible-core, libvfio-user. It builds no guest of its own -- ubuntu-qcow2-gen
