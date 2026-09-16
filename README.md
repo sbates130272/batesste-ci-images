@@ -337,6 +337,46 @@ docker build -f <image-directory>/Dockerfile \
 Each image may support different build arguments. See the
 individual image documentation for details.
 
+### 1c. Docker Hub Descriptions
+
+The images describe themselves in three places, and all three come from the
+same source so they cannot drift:
+
+| Where | Source |
+| --- | --- |
+| `org.opencontainers.image.description` label | `description:` in `images.yml` (a variant may override its image's) |
+| Docker Hub short description | the same `description:`, trimmed to Hub's 100-**byte** limit |
+| Docker Hub overview | the image directory's own `README.md` |
+
+The rest of the standard `org.opencontainers.image.*` provenance — source, url,
+documentation, vendor, authors, licenses — comes from `defaults.metadata` in
+`images.yml` and is stamped on every image by the tool, so a new target cannot
+ship without it.
+
+Push the descriptions to Docker Hub, all targets or one:
+
+```bash
+./ci-images-tool.py describe --dry-run    # show what would be sent
+./ci-images-tool.py describe
+./ci-images-tool.py describe ubuntu-cuda-rocm
+```
+
+Variants share their image's README — they are the same Dockerfile against
+different pins, so one document describes both and the per-variant difference
+is carried by the description and the tags.
+
+Hub's short description is capped at 100 **bytes**, not characters — it rejects
+anything longer with `Exceeded max number of bytes 100`. Longer sentences are
+trimmed at a word boundary with an ellipsis and the trim is reported, but the
+page reads better if the `description:` fits on its own. `--dry-run` prints the
+byte count of each one.
+
+`REGISTRY_PASSWORD` must be a Docker Hub personal access token with the
+**read/write/delete** scope. This is a different surface from pushing: a
+read/write token logs in successfully and is then refused by the metadata
+`PATCH`, with a 403 rather than an auth error. The release workflow runs this
+once per release in its `sync-descriptions` job.
+
 ### 2. Configure Environment Variables
 
 Some images may require environment configuration. Copy the example
@@ -841,11 +881,22 @@ needs and how it will use the image is written down in
 `ubuntu-qcow2-gen/consumers/<name>.md`, so the reason a flavour exists outlives
 the conversation that created it.
 
-`vm-info.json` is `schema_version` 2 here: every v1 key above is unchanged, and
-`flavour`, `kernel_release` and a `provisioning` object (`vm_packages`,
-`packages_digest`, `vm_playbook`, `kernel_ref`, `kernel_debs`) are added.
-`kernel_debs` carries the resolved filenames, upstream build stamp included,
-because a mainline tag alone does not identify a build.
+`vm-info.json` is `schema_version` 3 here, and every earlier key is unchanged —
+read `schema_version` before reaching for anything newer:
+
+- **v2** added `flavour`, `kernel_release` and a `provisioning` object
+  (`vm_packages`, `packages_digest`, `vm_playbook`, `kernel_ref`,
+  `kernel_debs`). `kernel_debs` carries the resolved filenames, upstream build
+  stamp included, because a mainline tag alone does not identify a build.
+- **v3** adds `image_virtual_size_bytes` and `vm_size_gb` (the sparse ceiling,
+  next to what the payload actually costs to move), `ssh_keys.fingerprint`
+  (identifies the keypair without publishing it), `provisioning.checks`, and
+  `build_info.qemu_version`, `build_host_kernel`, `build_vcpus` and
+  `build_vmem_mib`.
+
+Most of this is hoisted into the pushed artifact's annotations as well, so
+`oras manifest fetch` answers the common questions without the referrer — see
+[Bare qcow2 artifacts (ORAS)](#bare-qcow2-artifacts-oras).
 
 Like every guest build, this needs KVM — see
 [KVM is required](#kvm-is-required).
@@ -876,6 +927,21 @@ chmod 600 id_rsa
 
 The keypair is generated per build for a disposable test VM and is public by
 construction; it is a convenience credential, never a secret.
+
+A bare artifact has no config blob and therefore no labels, so the manifest is
+annotated instead — the same `org.opencontainers.image.*` provenance the
+container images carry, plus the `vm.*` facts hoisted out of `vm-info.json`
+(flavour, release, architecture, kernel release, image format and size,
+packages digest, playbook, and the qemu/qemu-minimal/libvfio-user commits).
+That makes "what is this disk?" answerable from the manifest alone:
+
+```bash
+oras manifest fetch "$REPO:latest-qcow2" | jq .annotations
+```
+
+The guest's console password is deliberately *not* annotated. It is in
+`vm-info.json` by design, but that is a referrer a consumer asks for, not
+something a registry listing shows.
 
 Artifact tags carry a `-qcow2` suffix (`--tag-suffix`) so they share the
 flavour's repository with the scratch image instead of overwriting it. Requires
