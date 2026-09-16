@@ -48,6 +48,8 @@ FINAL_KERNEL_REF="${KERNEL_REF:-}"
 # Only read by a provision script that installs the AMD kernel driver; inert
 # for every other flavour.
 FINAL_AMDGPU_DRIVER_VERSION="${AMDGPU_DRIVER_VERSION:-latest}"
+# Likewise read only by a provision script that stamps the guest's rdma-core.
+FINAL_RDMA_CORE_VERSION="${RDMA_CORE_VERSION:-}"
 KERNEL_VERSION=$(uname -r)
 
 echo "=== Guest Image Build Configuration ==="
@@ -66,6 +68,7 @@ echo "VM_PACKAGES: ${FINAL_PACKAGES}"
 echo "VM_PLAYBOOK: ${FINAL_PLAYBOOK:-none}"
 echo "KERNEL_REF: ${FINAL_KERNEL_REF:-none (release kernel)}"
 echo "AMDGPU_DRIVER_VERSION: ${FINAL_AMDGPU_DRIVER_VERSION}"
+echo "RDMA_CORE_VERSION: ${FINAL_RDMA_CORE_VERSION:-none}"
 
 command -v qemu-tool > /dev/null || {
     echo "Error: qemu-tool not installed!"
@@ -243,6 +246,7 @@ FLAVOUR='${FLAVOUR}'
 RELEASE='${FINAL_RELEASE}'
 USERNAME='${FINAL_USERNAME}'
 AMDGPU_DRIVER_VERSION='${FINAL_AMDGPU_DRIVER_VERSION}'
+RDMA_CORE_VERSION='${FINAL_RDMA_CORE_VERSION}'
 EOF
     cat "${PROVISION}" >> "${PROV}"
     echo "Provisioning the guest with provision/${PROVISION_NAME}"

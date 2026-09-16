@@ -1,6 +1,6 @@
-# cloud-init packages for the "ionic" guest flavour: everything needed to build
-# rdma-core from source and the ionic-ernic DKMS modules against the guest
-# kernel.  The modules themselves are not built here -- building them is what
+# cloud-init packages for the "ionic" guest flavour: the verbs userspace, and
+# everything needed to build rdma-core from source and the ionic-ernic DKMS
+# modules against the guest kernel.  The modules themselves are not built here -- building them is what
 # the consuming jobs exist to test.
 #
 # Nothing here may be kernel-versioned: cloud-init runs before the mainline
@@ -34,18 +34,22 @@ libudev-dev
 libsystemd-dev
 python3-docutils
 
-# Distro rdma-core, for ibv_devinfo and friends.  26.04's package still
-# predates providers/ionic (upstream v61), so a job needing libionic must still
-# build rdma-core from source over the top -- and nothing holds the packaged
-# copy, so an apt upgrade in a long-lived guest will revert libionic*.so.
+# Distro rdma-core, which on resolute is 61.0 -- past the v61 that first
+# shipped providers/ionic upstream, so ibverbs-providers carries
+# libionic-rdmav59.so and nothing has to be built to get it.  That is the
+# provider the whole flavour turns on, as well as ibv_devinfo and friends.
+# The build deps above stay listed even so: the consuming jobs build rdma-core
+# themselves whenever their pin moves past what the release packages, or when
+# they need the GDA patches.
 rdma-core
 ibverbs-utils
 libibverbs-dev
 
 # ib_send_bw and friends, for jobs that want to move traffic over the ionic
 # queue pairs rather than only assert the modules built.  The distro build
-# links libibverbs.so.1 and loads providers at runtime, so a source rdma-core
-# installed over the top serves these binaries libionic without a rebuild.
+# links libibverbs.so.1 and loads providers at runtime, so it picks up libionic
+# with nothing done to it -- including a source rdma-core a consuming job
+# installs over the top.
 # It is built without ROCm or CUDA memory support, though: --use_rocm needs
 # perftest compiled against a ROCm the guest does not carry.
 perftest

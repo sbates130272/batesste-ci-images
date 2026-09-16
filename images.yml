@@ -457,6 +457,10 @@ images:
       # suite for must name a version directory that does -- see the rocjitsu
       # variant, which pins 31.50 for resolute.
       amdgpu_driver_version: "latest"
+      # Empty by default: only a flavour whose provision script cares which
+      # rdma-core the release packages reads it, and the pin belongs with the
+      # flavour that needs it.
+      rdma_core_version: ""
       username: batesste
       vm_name: ""
       password:
@@ -478,6 +482,7 @@ images:
       VM_PLAYBOOK: "{vm_playbook}"
       KERNEL_REF: "{kernel_ref}"
       AMDGPU_DRIVER_VERSION: "{amdgpu_driver_version}"
+      RDMA_CORE_VERSION: "{rdma_core_version}"
     # kernel_ref is deliberately not in the tag: the flavour name already
     # distinguishes the images, and the resolved kernel goes in vm-info.json
     # and the label below, where it can carry the full build stamp.
@@ -489,6 +494,7 @@ images:
       "{ns}.vm.playbook": "{vm_playbook}"
       "{ns}.vm.kernel-ref": "{kernel_ref}"
       "{ns}.vm.amdgpu-driver-version": "{amdgpu_driver_version}"
+      "{ns}.vm.rdma-core-version": "{rdma_core_version}"
       "{ns}.qemu-minimal.commit": "{qemu_minimal_commit}"
     variants:
       # For ROCm/rocm-ernic's ionic RDMA jobs: drivers/infiniband/hw/ionic
@@ -512,10 +518,15 @@ images:
       # two are pinned separately here and in rocm-ernic, with nothing
       # asserting they stay compatible beyond checks/ionic.sh.
       #
-      # vm_playbook stays empty until vm-ionic.yml lands in qemu-minimal: the
-      # source build of rdma-core 62.0 and the pre-seeded /opt/ionic-src
-      # checkout are optimisations, and guest provisioning is owned upstream so
-      # it stays shared with the non-container qemu-tool workflows.
+      # vm_playbook stays empty until vm-ionic.yml lands in qemu-minimal, and
+      # the pre-seeded /opt/ionic-src checkout waits on it.
+      #
+      # rdma_core_version is not an install instruction -- resolute packages
+      # rdma-core, and its ibverbs-providers already carries the ionic
+      # provider, so nothing is built or overwritten. It is the version
+      # provision/ionic.sh asserts the release actually shipped before writing
+      # it into the stamp ernic_guest_setup reads, and it moves when the
+      # release does. Bump it with release: above, never on its own.
       ionic:
         suffix: "-ionic"
         description: >-
@@ -525,6 +536,7 @@ images:
           flavour: ionic
           vm_packages: ionic.txt
           kernel_ref: v7.2.3
+          rdma_core_version: "61.0"
 
       # For ROCm/rocm-xio's test-vm-nvme job: a guest that is booted against a
       # rocjitsu emulated gfx1250 over vfio-user plus an emulated NVMe
