@@ -53,6 +53,7 @@ from the pins. Edit the `badges:` block in `images.yml`, not this section.
 | [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-qemu-libvfio-user | [![ubuntu-qemu-libvfio-user main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qemu-libvfio-user)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen | [![ubuntu-qcow2-gen main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen-ionic (job: ubuntu-qcow2-gen@ionic) | [![ubuntu-qcow2-gen-ionic main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen%40ionic)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen-rocjitsu (job: ubuntu-qcow2-gen@rocjitsu) | [![ubuntu-qcow2-gen-rocjitsu main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen%40rocjitsu)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 
 This repository contains a collection of Docker images for CI/CD and
 development workflows. Each image is self-contained in its own directory
@@ -103,7 +104,8 @@ and pushing of these images.
 - **ubuntu-qcow2-gen**: Guest VM disk images (qcow2), not a runnable container.
   Built on `ubuntu-qemu-libvfio-user` and published `FROM scratch` with nothing
   but `/output` in it, one Docker Hub repository per flavour
-  (`…-ubuntu-qcow2-gen`, `…-ubuntu-qcow2-gen-ionic`). See
+  (`…-ubuntu-qcow2-gen`, `…-ubuntu-qcow2-gen-ionic`,
+  `…-ubuntu-qcow2-gen-rocjitsu`). See
   [Guest VM images](#guest-vm-images-ubuntu-qcow2-gen) and `ubuntu-qcow2-gen/`.
 
 ### rocjitsu vfio-user mode
