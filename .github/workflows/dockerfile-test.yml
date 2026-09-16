@@ -472,10 +472,44 @@ jobs:
               test -S /tmp/vfio-sockets/nvme/cntrl
               test -f /tmp/ns.img
               rpc.py nvmf_get_subsystems > /tmp/subsystems.json
-              python3 -c "import json;subs=[s for s in json.load(open(\"/tmp/subsystems.json\")) if s[\"nqn\"]==\"nqn.2019-07.io.spdk:cnode1\"];ns=subs[0][\"namespaces\"];kv=[n for n in ns if \"kvdev_name\" in n];lba=[n for n in ns if \"kvdev_name\" not in n];print(len(lba),\"LBA +\",len(kv),\"KV\");assert (len(lba),len(kv))==(2,1)"
+              python3 -c "import json;subs=[s for s in json.load(open(\"/tmp/subsystems.json\")) if s[\"nqn\"]==\"nqn.2019-07.io.spdk:cnode1\"];got={n[\"nsid\"]:(\"kv\" if \"kvdev_name\" in n else \"lba\") for n in subs[0][\"namespaces\"]};print(\"nsid map\",got);assert got=={1:\"lba\",2:\"lba\",3:\"kv\"},got"
               echo "SPDK vfio-user target is serving (PID ${SERVER_PID})"
               kill ${SERVER_PID}
+              wait ${SERVER_PID} || true
+              if test -e /tmp/vfio-sockets/nvme/cntrl; then
+                echo "ERROR: stale socket left behind after SIGTERM"
+                exit 1
+              fi
+              echo "socket removed on SIGTERM"
             '
+
+      # The validation has to happen in the main shell: it used to live inside
+      # the function that emits the hugepage flags, which runs in a process
+      # substitution, so a bad value printed an error and then started the
+      # target anyway.
+      - name: Verify SPDK_HUGE rejects a bad value
+        if: matrix.target.image == 'ubuntu-spdk-libvfio-user'
+        run: |
+          # A non-zero exit on its own proves nothing: with the check back inside
+          # the process substitution a bad value yields empty HUGE_ARGS, and the
+          # target then dies at EAL init on a runner with no hugepages -- also
+          # non-zero. The discriminator is that the run never reaches the config
+          # echo, so assert on the message and on the target never starting.
+          out=$(docker run --rm -e SPDK_HUGE=yes \
+              "batesste-ci-images-${{ matrix.target.scope }}:test" 2>&1) && rc=0 || rc=$?
+          echo "${out}"
+          if [ "${rc}" -eq 0 ]; then
+            echo "ERROR: SPDK_HUGE=yes should have been rejected"
+            exit 1
+          fi
+          if ! grep -q "SPDK_HUGE must be auto, on or off" <<< "${out}"; then
+            echo "ERROR: expected the SPDK_HUGE validation error"
+            exit 1
+          fi
+          if grep -q "^\[spdk-vfu\] namespaces:" <<< "${out}"; then
+            echo "ERROR: startup continued past a bad SPDK_HUGE"
+            exit 1
+          fi
 
       # What build-derived wants from its base is a registry ref, not a local
       # image -- it used to load an artifact purely to push it straight back

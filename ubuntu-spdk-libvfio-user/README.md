@@ -64,9 +64,10 @@ works — backed by memory — while ~1 GB of Ceph daemons stays out of the imag
 The Ceph-backed KV reproduction case lives in rocm-xio PR #183.
 
 A build-time probe starts the target, creates one memory-backed LBA namespace,
-one file-backed LBA namespace and one KV namespace, and asserts the vfio-user
-socket appears — so a fork whose RPC names have moved fails the image build
-rather than a deployment.
+one file-backed LBA namespace and one KV namespace, asserts the vfio-user socket
+appears and asserts the target reports those namespaces at the NSIDs it was
+asked for — so a fork whose RPC names have moved, or whose `add_kv_ns` silently
+no-ops, fails the image build rather than a deployment.
 
 ## Usage
 
@@ -115,6 +116,34 @@ sets — `lib/nvmf/nvmf_rpc.c` branches on whether a namespace has a `kvdev`.
 the latter. So "memory and files" is available on the LBA side and memory-only
 on the KV side; `kv:` with any other backing fails with a message saying so.
 
+### Namespace IDs
+
+Namespaces get NSID 1, 2, 3… in `NVME_NAMESPACES` order, assigned explicitly
+rather than left to the target's first-free search. The mapping is logged at
+startup (`nsid map: 1=lba,2=lba,3=kv`) and the build-time probe asserts the
+target built the one it was asked for.
+
+Addressing the right NSID is the host's problem and it is not a safe one to get
+wrong: KV Store and Retrieve are opcodes 0x01 and 0x02, the same numbers as
+block Write and Read. A KV command sent to an LBA namespace is not rejected —
+it executes as a block write, with the key dwords interpreted as LBA fields.
+
+### Value size
+
+**A KV value must be 131072 bytes (128 KiB) or smaller.** `lib/nvmf/vfio_user.c`
+rejects any Store, Retrieve or List whose length exceeds the transport's
+`max_io_size`, and the vfio-user default is
+`NVMF_VFIO_USER_DEFAULT_MAX_IO_SIZE` = `(NVMF_REQ_MAX_BUFFERS - 1) << 12` =
+32 × 4096. A larger value fails with SC 0x06, Internal Device Error.
+
+Raising it is not available: `nvmf_create_transport -i` would lift the length
+check, but `nvme_cmd_map_prps` refuses more than `NVMF_REQ_MAX_BUFFERS` (33)
+iovecs, so a PRP command cannot describe more than ~32 pages of payload however
+the transport is configured. The `max_value_len` argument to `kv:mem` therefore
+only lowers the ceiling — raising it above 128 KiB advertises a capacity the
+transport will not carry. Clients that default to a larger value size (rocm-xio's
+`--value-size` follows `--data-buffer-size`, 1 MiB) must be told a smaller one.
+
 ### Environment
 
 | Var | Default | Meaning |
@@ -124,13 +153,21 @@ on the KV side; `kv:` with any other backing fails with a message saying so.
 | `VFIO_USER_SOCKET_DIR` | `/tmp/vfio-sockets/nvme` | socket is `<dir>/cntrl` |
 | `SPDK_SERIAL` | `SPDKVFU01` | controller serial |
 | `SPDK_CPUMASK` | `0x1` | `nvmf_tgt -m` |
-| `SPDK_HUGE` | `auto` | `auto`, `on` or `off` |
+| `SPDK_HUGE` | `auto` | `auto`, `on` or `off`; anything else is a startup error |
 | `SPDK_MEM_SIZE` | `1024` | `-s`, in MiB, when hugepages are off |
 | `SPDK_AIO_DEFAULT_SIZE` | `1G` | size of an `lba:aio` file created on demand |
-| `SPDK_JSON_CONFIG` | unset | an SPDK JSON config to use instead of all of the above |
+| `SPDK_JSON_CONFIG` | unset | an SPDK JSON config naming the transports, bdevs, kvdevs, subsystems and listeners itself |
 
-`SPDK_JSON_CONFIG` bypasses generation entirely and execs
+`SPDK_JSON_CONFIG` skips the RPC generation above and execs
 `nvmf_tgt --json <file>`, for a caller who wants full SPDK expressiveness.
+`SPDK_HUGE`, `SPDK_MEM_SIZE` and `SPDK_CPUMASK` still apply: those become DPDK
+EAL arguments, which an SPDK JSON config has no way to express, so a JSON run on
+a host without hugepages would otherwise fail at EAL init.
+
+One gotcha if the config came from `rpc.py save_config`: SPDK writes
+`"adrfam": "unknown"` into a `VFIOUSER` listener and then rejects its own output
+on load with `Invalid adrfam: unknown`. Delete that key from the
+`nvmf_subsystem_add_listener` entry and the config loads.
 
 ### Hugepages
 

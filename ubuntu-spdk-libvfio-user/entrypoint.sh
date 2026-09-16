@@ -48,32 +48,6 @@ if ! [ -x "${SPDK_DIR}/build/bin/nvmf_tgt" ]; then
     die "nvmf_tgt not found under ${SPDK_DIR}/build/bin"
 fi
 
-# A caller who brings their own SPDK JSON config wants all of the below skipped:
-# the config already names its transports, bdevs, kvdevs, subsystems and
-# listeners, and generating a second set on top of it would only conflict.
-if [ -n "${SPDK_JSON_CONFIG:-}" ]; then
-    [ -f "${SPDK_JSON_CONFIG}" ] || die "SPDK_JSON_CONFIG=${SPDK_JSON_CONFIG} not found"
-    log "starting nvmf_tgt from ${SPDK_JSON_CONFIG} (NVME_NAMESPACES ignored)"
-    exec "${SPDK_DIR}/build/bin/nvmf_tgt" \
-        -r "${SPDK_RPC_SOCK}" -m "${SPDK_CPUMASK}" \
-        --json "${SPDK_JSON_CONFIG}"
-fi
-
-# Size in MiB from a 512M / 2G / bare-MiB spelling. Used for bdev_malloc_create,
-# whose total_size argument is already in MB, and scaled to bytes where a file
-# has to be created.
-to_mib() {
-    local spec=$1 num unit
-    num=${spec%[KkMmGg]}
-    unit=${spec#"${num}"}
-    case "${unit}" in
-        K|k) echo $(((num + 1023) / 1024)) ;;
-        M|m|"") echo "${num}" ;;
-        G|g) echo $((num * 1024)) ;;
-        *) die "unrecognised size '${spec}'" ;;
-    esac
-}
-
 # Hugepages are the normal SPDK memory source, but a container gets none unless
 # it is privileged or /dev/hugepages is mounted with pages already reserved.
 # Falling back to --no-huge keeps the common `docker run` case working; the
@@ -98,16 +72,52 @@ huge_args() {
                 printf -- '--no-huge\n-s\n%s\n' "${SPDK_MEM_SIZE}"
             fi
             ;;
-        *)
-            die "SPDK_HUGE must be auto, on or off (got '${SPDK_HUGE}')"
-            ;;
     esac
 }
+
+# Validated here and not inside huge_args: that runs in a process substitution,
+# so a die() there would print and be discarded along with the subshell, leaving
+# a typo'd SPDK_HUGE to start the target with no --no-huge at all. `on` also
+# legitimately emits zero arguments, so an empty result cannot stand in for it.
+case "${SPDK_HUGE}" in
+    auto|on|off) ;;
+    *) die "SPDK_HUGE must be auto, on or off (got '${SPDK_HUGE}')" ;;
+esac
 
 HUGE_ARGS=()
 while IFS= read -r arg; do
     [ -n "${arg}" ] && HUGE_ARGS+=("${arg}")
 done < <(huge_args)
+
+# A caller who brings their own SPDK JSON config wants the RPC generation below
+# skipped: the config already names its transports, bdevs, kvdevs, subsystems
+# and listeners, and generating a second set on top of it would only conflict.
+# The hugepage flags still apply -- they are DPDK EAL arguments, which an SPDK
+# JSON config has no way to express, so omitting them here would fail at EAL
+# init on exactly the hugepage-less host the fallback exists for.
+if [ -n "${SPDK_JSON_CONFIG:-}" ]; then
+    [ -f "${SPDK_JSON_CONFIG}" ] || die "SPDK_JSON_CONFIG=${SPDK_JSON_CONFIG} not found"
+    log "starting nvmf_tgt from ${SPDK_JSON_CONFIG} (NVME_NAMESPACES ignored)"
+    exec "${SPDK_DIR}/build/bin/nvmf_tgt" \
+        -r "${SPDK_RPC_SOCK}" -m "${SPDK_CPUMASK}" \
+        ${HUGE_ARGS[@]+"${HUGE_ARGS[@]}"} \
+        --json "${SPDK_JSON_CONFIG}"
+fi
+
+# Size in MiB from a 512M / 2G / bare-MiB spelling. Used for bdev_malloc_create,
+# whose total_size argument is already in MB, and scaled to bytes where a file
+# has to be created.
+to_mib() {
+    local spec=$1 num unit
+    num=${spec%[KkMmGg]}
+    unit=${spec#"${num}"}
+    case "${unit}" in
+        K|k) echo $(((num + 1023) / 1024)) ;;
+        M|m|"") echo "${num}" ;;
+        G|g) echo $((num * 1024)) ;;
+        *) die "unrecognised size '${spec}'" ;;
+    esac
+}
 
 log "namespaces: ${NVME_NAMESPACES}"
 log "nqn:        ${NQN}"
@@ -124,9 +134,29 @@ rm -f "${VFIO_USER_SOCKET_DIR}/cntrl" "${SPDK_RPC_SOCK}" "${SPDK_RPC_SOCK}.lock"
     ${HUGE_ARGS[@]+"${HUGE_ARGS[@]}"} &
 TGT_PID=$!
 
-# Forward a container stop to the target so libvfio-user tears the socket down
-# rather than leaving a stale one in a shared volume.
-trap 'kill -TERM "${TGT_PID}" 2>/dev/null || true' TERM INT
+# Forwarding the stop is not enough on its own: `wait` returns immediately when
+# a trapped signal arrives, so without waiting again here PID 1 exits while
+# nvmf_tgt is still shutting down and libvfio-user never unlinks <dir>/cntrl.
+# The stale socket then sits in the shared bind mount and the next QEMU gets
+# ECONNREFUSED from it. EXIT is armed too so that every die() below stops the
+# target rather than orphaning it. Guarded because a signal runs this once and
+# then again on the way out.
+CLEANED=0
+# shellcheck disable=SC2317  # reached only through the traps below
+cleanup() {
+    [ "${CLEANED}" -eq 1 ] && return 0
+    CLEANED=1
+    if kill -0 "${TGT_PID}" 2>/dev/null; then
+        kill -TERM "${TGT_PID}" 2>/dev/null || true
+        wait "${TGT_PID}" 2>/dev/null || true
+    fi
+    # Belt and braces: libvfio-user unlinks it on a clean teardown, but a target
+    # that took a SIGKILL did not.
+    rm -f "${VFIO_USER_SOCKET_DIR}/cntrl"
+}
+trap cleanup EXIT
+trap 'cleanup; exit 143' TERM
+trap 'cleanup; exit 130' INT
 
 for _ in $(seq 1 120); do
     if [ -S "${SPDK_RPC_SOCK}" ] && rpc rpc_get_methods >/dev/null 2>&1; then
@@ -145,10 +175,20 @@ rpc nvmf_create_subsystem "${NQN}" -s "${SPDK_SERIAL}" -a
 
 lba_count=0
 kv_count=0
+# NSIDs are assigned explicitly and in NVME_NAMESPACES order rather than left to
+# the target's first-free search, because KV Store and Retrieve are opcodes 0x01
+# and 0x02 -- the same numbers as block Write and Read. A KV command sent to an
+# LBA namespace is therefore not rejected: it executes as a block write with the
+# key dwords read as LBA fields. A host that guesses the wrong NSID corrupts
+# data silently, so the mapping is stated here, logged below and documented in
+# README.md instead of being an implementation detail of the RPC layer.
+nsid=0
+ns_map=""
 IFS=',' read -r -a ns_specs <<< "${NVME_NAMESPACES}"
 for spec in "${ns_specs[@]}"; do
     [ -n "${spec}" ] || continue
     IFS=':' read -r kind backing a1 a2 <<< "${spec}"
+    nsid=$((nsid + 1))
     case "${kind}:${backing}" in
         lba:malloc)
             # lba:malloc:<size>[:<blocklen>]
@@ -156,9 +196,9 @@ for spec in "${ns_specs[@]}"; do
             name="Malloc${lba_count}"
             rpc bdev_malloc_create -b "${name}" \
                 "$(to_mib "${a1}")" "${a2:-4096}"
-            rpc nvmf_subsystem_add_ns "${NQN}" "${name}"
+            rpc nvmf_subsystem_add_ns "${NQN}" "${name}" -n "${nsid}"
             lba_count=$((lba_count + 1))
-            log "LBA namespace ${name}: ${a1} of memory, ${a2:-4096}B blocks"
+            log "nsid ${nsid}: LBA namespace ${name}, ${a1} of memory, ${a2:-4096}B blocks"
             ;;
         lba:aio)
             # lba:aio:<path>[:<blocklen>[:<size>]] -- the file is created sparsely
@@ -171,9 +211,9 @@ for spec in "${ns_specs[@]}"; do
                 truncate -s "${size_mib}M" "${a1}"
             fi
             rpc bdev_aio_create "${a1}" "${name}" "${a2:-4096}"
-            rpc nvmf_subsystem_add_ns "${NQN}" "${name}"
+            rpc nvmf_subsystem_add_ns "${NQN}" "${name}" -n "${nsid}"
             lba_count=$((lba_count + 1))
-            log "LBA namespace ${name}: file ${a1}, ${a2:-4096}B blocks"
+            log "nsid ${nsid}: LBA namespace ${name}, file ${a1}, ${a2:-4096}B blocks"
             ;;
         kv:mem)
             # kv:mem[:<max_value_len>[:<max_num_keys>]]
@@ -182,9 +222,9 @@ for spec in "${ns_specs[@]}"; do
             [ -n "${a1:-}" ] && kv_args+=(--max-value-len "${a1}")
             [ -n "${a2:-}" ] && kv_args+=(--max-num-keys "${a2}")
             rpc kvdev_mem_create "${name}" ${kv_args[@]+"${kv_args[@]}"}
-            rpc nvmf_subsystem_add_kv_ns "${NQN}" "${name}"
+            rpc nvmf_subsystem_add_kv_ns "${NQN}" "${name}" -n "${nsid}"
             kv_count=$((kv_count + 1))
-            log "KV namespace ${name}: memory backed"
+            log "nsid ${nsid}: KV namespace ${name}, memory backed"
             ;;
         kv:*)
             # kvdev_rados is the only other backend the fork has, and it needs a
@@ -195,6 +235,7 @@ for spec in "${ns_specs[@]}"; do
             die "unrecognised namespace spec '${spec}'"
             ;;
     esac
+    ns_map="${ns_map:+${ns_map},}${nsid}=${kind}"
 done
 
 rpc nvmf_subsystem_add_listener "${NQN}" \
@@ -207,29 +248,41 @@ done
 [ -S "${VFIO_USER_SOCKET_DIR}/cntrl" ] || die "vfio-user socket never appeared"
 
 log "serving ${lba_count} LBA + ${kv_count} KV namespace(s) on ${VFIO_USER_SOCKET_DIR}/cntrl"
+log "nsid map:   ${ns_map}"
 
 if [ "${PROBE}" -eq 1 ]; then
     # Assert the target agrees with what we asked for, rather than trusting that
     # the RPCs returned success: a fork whose add_kv_ns silently no-ops would
-    # otherwise pass.
+    # otherwise pass. The NSID of each namespace is checked too, not just the
+    # counts, because a host addressing a KV command at an LBA namespace gets a
+    # block write rather than an error -- so the mapping README.md publishes has
+    # to be the one the target actually built.
     rpc nvmf_get_subsystems | python3 -c '
 import json, sys
-want_lba, want_kv = int(sys.argv[1]), int(sys.argv[2])
-nqn = sys.argv[3]
+nqn, want_map = sys.argv[1], sys.argv[2]
+want = dict((int(k), v) for k, v in
+            (e.split("=") for e in want_map.split(",") if e))
 subs = [s for s in json.load(sys.stdin) if s.get("nqn") == nqn]
 if not subs:
     sys.exit(f"subsystem {nqn} not found")
-namespaces = subs[0].get("namespaces", [])
-kv = [n for n in namespaces if "kvdev_name" in n]
-lba = [n for n in namespaces if "kvdev_name" not in n]
-print(f"[spdk-vfu] target reports {len(lba)} LBA + {len(kv)} KV namespace(s)")
-if len(lba) != want_lba or len(kv) != want_kv:
-    sys.exit(f"expected {want_lba} LBA + {want_kv} KV, got {len(lba)} + {len(kv)}")
-' "${lba_count}" "${kv_count}" "${NQN}"
+got = dict((n["nsid"], "kv" if "kvdev_name" in n else "lba")
+           for n in subs[0].get("namespaces", []))
+kinds = list(got.values())
+shown = ",".join("%d=%s" % (k, got[k]) for k in sorted(got))
+print("[spdk-vfu] target reports %d LBA + %d KV namespace(s), nsid map %s"
+      % (kinds.count("lba"), kinds.count("kv"), shown))
+if got != want:
+    sys.exit(f"expected nsid map {want}, got {got}")
+' "${NQN}" "${ns_map}"
     log "probe OK"
-    kill -TERM "${TGT_PID}" 2>/dev/null || true
-    wait "${TGT_PID}" 2>/dev/null || true
     exit 0
 fi
 
-wait "${TGT_PID}"
+# Not the last line by accident: `wait` returns as soon as a trapped signal
+# arrives, and the TERM/INT handlers exit rather than falling through to here.
+# This form reports a target that died on its own instead of masking it as a
+# clean container exit.
+TGT_STATUS=0
+wait "${TGT_PID}" || TGT_STATUS=$?
+log "nvmf_tgt exited with status ${TGT_STATUS}"
+exit "${TGT_STATUS}"

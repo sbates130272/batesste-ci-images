@@ -183,3 +183,16 @@ repo's
 spdk
 submodule
 xio
+NSID
+NSIDs
+dwords
+KiB
+PRP
+iovecs
+xio's
+bdevs
+kvdevs
+DPDK
+EAL
+init
+adrfam
