@@ -1,7 +1,10 @@
 # Guest image request: ROCm/rocm-ernic, ionic device mode
 
-Status: **blocked on this repo** — `ubuntu-qcow2-gen@ionic` exists and its
-packages and checks are in place, but no image has been published yet.
+Status: **published**, most recently as
+`20260914-vm.resolute-ionic-qm.737f735-qcow2`. The guest carries the ionic
+verbs provider from the archive and the stamp that says so — see
+[rdma-core comes from the archive](#rdma-core-comes-from-the-archive). One
+change is wanted in rocm-ernic to make that stamp take effect.
 
 ## What is needed
 
@@ -75,8 +78,9 @@ suffix. It does **not** need changing.
 bespoke apart from a two-line device-ID patch. The working guest runs a
 hand-installed mainline kernel behind a hand-written `run-parts` shim, gcc-15
 from a third-party PPA, and a source-built rdma-core 62.0 overwriting
-dpkg-owned paths under `/usr` with nothing holding it. Read literally, the doc
-invites a rebuild from a stock cloud image, which does not work.
+dpkg-owned paths under `/usr` with nothing holding it — on a release that
+packages the provider anyway. Read literally, the doc invites a rebuild from a
+stock cloud image, which does not work.
 
 ### Not a consumer
 
@@ -101,21 +105,74 @@ the mainline kernel exists, so `linux-headers-generic` would pull the release's
 The `ionic-ernic` DKMS modules are deliberately **not** built here — building
 them from pinned upstream sources is what the consuming jobs exist to test.
 
-Two caveats for the consumer side:
+## rdma-core comes from the archive
 
-- 26.04's apt `rdma-core` still predates `providers/ionic` (upstream v61), so a
-  job needing `libionic*.so` must still build rdma-core from source over the
-  top. That build overwrites dpkg-owned files under `/usr`, so hold or
-  remove apt `rdma-core` / `libibverbs-dev` / `ibverbs-utils` afterwards, or a
-  later `apt upgrade` reverts it. On the existing self-hosted guests nothing
-  holds them today — `apt-mark showhold` is empty.
+`ernic_guest_setup` builds rdma-core from source in the guest on every run of
+every lane, because `providers/ionic` — the userspace provider that makes the
+emulated NIC usable through libibverbs — first shipped upstream in v61 and the
+role assumes the distro predates it. On **noble that is true (50.0). On
+resolute it is not:** the release packages **61.0-2ubuntu3**, and its stock
+`ibverbs-providers` contains
+
+```
+/usr/lib/x86_64-linux-gnu/libibverbs/libionic-rdmav59.so
+/usr/lib/x86_64-linux-gnu/libionic.so.1.0.61.0
+```
+
+— the same provider at the same ABI (`rdmav59`) a 62.0 source build produces.
+So this flavour installs nothing and overwrites nothing. No `dpkg`-owned file
+under `/usr` is replaced behind its back, and there is therefore nothing to
+hold against a later `apt upgrade`. That is a gap the self-hosted
+golden image still has, where a source-built rdma-core sits over the packaged
+one with `apt-mark showhold` empty.
+
+The ~30 s the source build costs is not the point. The point is that building
+it at job time makes every lane of every run depend on the GitHub release CDN,
+and on 2026-09-16 that CDN returned HTTP 500 for the 62.0 tarball and failed a
+run during provisioning. The archive has no such failure mode.
+
+### The stamp, and what is needed on your side
+
+[`provision/ionic.sh`](../provision/ionic.sh) writes
+`/usr/local/share/rocm-ernic/provider.stamp` containing exactly `61.0:none`,
+newline included: the version the guest actually has, and `none` because no GDA
+patches were applied. It asserts the installed `rdma-core` matches before
+writing, so the stamp cannot describe a guest that does not exist.
+
+**This does not skip your build yet.** The role compares the stamp against a
+value computed from `ernic_rdma_core_version`, which is pinned at `62.0` and
+compared exactly, so `61.0:none` does not match and the lane rebuilds — CDN
+dependency included. The ask is one line in
+`ansible/roles/ernic_guest_setup/defaults/main.yml`: **set
+`ernic_rdma_core_version` to `61.0`.** The role's own hard assert is `>= 61`,
+which 61.0 satisfies, and the provider it would build is the one the archive
+already installed.
+
+A stamp reading `62.0` over a 61.0 install would buy the skip today without
+that change, and is the reason this repo does not do it —
+[`checks/ionic.sh`](../checks/ionic.sh) compares the stamp against `dpkg`
+rather than against the pin, precisely so a stamp that lies fails this image's
+build instead of a consumer's job.
+
+`none`, not a patch hash, is deliberate. The role applies an ionic GDA
+direct-verbs series for GPU-passthrough guests and folds a hash of it into the
+stamp in place of `none`. Every current lane passes
+`ernic_gpu_passthrough=false` and therefore matches; a passthrough run does not
+and rebuilds with the patches, which is correct.
+
+If a future `ernic_rdma_core_version` needs to be genuinely newer than what
+Ubuntu packages, say so and this flavour can go back to a pinned source build —
+but then the holds come with it, and so does the CDN.
+
+One caveat for the consumer side:
+
 - `perftest` is the distro build, so it has no ROCm or CUDA memory support.
   `ib_send_bw --use_rocm` needs perftest compiled against a ROCm the guest does
   not carry; a job wanting GPUDirect numbers must build it in the guest or pull
   a CUDA/ROCm-enabled build from a PPA. Host-memory verbs traffic works as
   packaged. It depends on distro `ibverbs-providers`, and loads providers at
-  runtime rather than linking them, so a source-built rdma-core over the top
-  serves the same binaries `libionic` without a rebuild.
+  runtime rather than linking them, so it picks up `libionic` as installed —
+  and would equally pick up one from a source rdma-core laid over the top.
 - `IONIC_KERNEL_REF` is pinned at `v7.2.4` there and `kernel_ref` at `v7.2.3`
   here: one point release apart, which is the skew already proven to work.
   Nothing asserts they stay compatible beyond `checks/ionic.sh`, so keep the
@@ -139,11 +196,12 @@ want that image to boot it.
 
 ## Open
 
-- `vm_playbook` is empty for this flavour. A `vm-ionic.yml` upstream in
-  qemu-minimal — source-building rdma-core 62.0 and pre-seeding
-  `/opt/ionic-src` — is an optimisation, not a prerequisite. Guest
-  provisioning is owned upstream so it stays shared with the non-container
-  `qemu-tool` workflows.
+- `vm_playbook` is empty for this flavour, and a `vm-ionic.yml` upstream in
+  qemu-minimal — pre-seeding `/opt/ionic-src` — is still an optimisation
+  rather than a prerequisite. rdma-core is no longer on that list at all.
+- `ernic_rdma_core_version: 61.0` in rocm-ernic, per
+  [the stamp](#the-stamp-and-what-is-needed-on-your-side). Until it lands the
+  guest is correct and the lanes simply keep rebuilding, as they do today.
 - rocm-ernic's brief assumed GitHub-hosted runners have no nested virt. For
   x86 `ubuntu-latest` that is wrong — `/dev/kvm` is present as `root:kvm
   0660`, which is why this repo's workflows carry a udev step. Running QEMU

@@ -45,6 +45,12 @@ RUN git init /build/fio && \
 # --enable-* makes each probe hard-fail rather than silently drop the engine.
 # fio's own libhipfile probe adds -rpath ${ROCM_PATH}/lib; the CUDA side needs
 # explicit paths because configure hardcodes bare -lcuda -lcudart -lcufile.
+#
+# --disable-native because fio's configure enables -march=native on its own.
+# This layer is restored from the registry cache onto whatever runner the job
+# lands on, so a binary built for the compiling machine's ISA SIGILLs on a
+# narrower one -- and the in-image checks below are cached alongside it, so
+# they cannot catch it. A published image has to run on any x86-64 host.
 # hadolint ignore=DL3003
 RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     set -eux; \
@@ -55,6 +61,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     ./configure \
         --extra-cflags="-I${CUDA_PATH}/include" \
         --extra-ldflags="-L${CUDA_PATH}/lib64 -L${CUDA_PATH}/lib64/stubs -Wl,-rpath,${CUDA_PATH}/lib64" \
+        --disable-native \
         --enable-cuda \
         --enable-libcufile \
         --enable-libhipfile; \

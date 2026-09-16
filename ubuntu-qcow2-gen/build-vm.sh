@@ -6,13 +6,17 @@
 # Run from the Dockerfile; configuration comes from the build ARGs, which reach
 # us as environment variables.
 #
-# Three provisioning layers, matching how the container images work:
+# Four provisioning layers, matching how the container images work:
 #   packages/<VM_PACKAGES>  cloud-init packages, appended to qemu-minimal's
 #                           default manifest
 #   <VM_PLAYBOOK>           an Ansible playbook from the qemu-minimal checkout,
 #                           for anything cloud-init cannot express
 #   <KERNEL_REF>            an Ubuntu mainline kernel, installed in a boot of
 #                           its own because it is loose .debs in no repository
+#   provision/<FLAVOUR>.sh  in-guest steps this repo owns -- a third-party apt
+#                           repository, a patched DKMS source, a module built
+#                           against the booted kernel -- run in a boot of their
+#                           own, after the kernel layer and before the checks
 #
 # KVM is mandatory.  It only works in a RUN --security=insecure step (the
 # device node has to be created and opened); anywhere else this script aborts
@@ -41,6 +45,11 @@ export VM_VMEM="${FINAL_VM_VMEM}"
 FINAL_PACKAGES="${VM_PACKAGES:-base.txt}"
 FINAL_PLAYBOOK="${VM_PLAYBOOK:-}"
 FINAL_KERNEL_REF="${KERNEL_REF:-}"
+# Only read by a provision script that installs the AMD kernel driver; inert
+# for every other flavour.
+FINAL_AMDGPU_DRIVER_VERSION="${AMDGPU_DRIVER_VERSION:-latest}"
+# Likewise read only by a provision script that stamps the guest's rdma-core.
+FINAL_RDMA_CORE_VERSION="${RDMA_CORE_VERSION:-}"
 KERNEL_VERSION=$(uname -r)
 
 echo "=== Guest Image Build Configuration ==="
@@ -58,6 +67,8 @@ echo "VM_VMEM: ${FINAL_VM_VMEM} MiB (build-time boots only)"
 echo "VM_PACKAGES: ${FINAL_PACKAGES}"
 echo "VM_PLAYBOOK: ${FINAL_PLAYBOOK:-none}"
 echo "KERNEL_REF: ${FINAL_KERNEL_REF:-none (release kernel)}"
+echo "AMDGPU_DRIVER_VERSION: ${FINAL_AMDGPU_DRIVER_VERSION}"
+echo "RDMA_CORE_VERSION: ${FINAL_RDMA_CORE_VERSION:-none}"
 
 command -v qemu-tool > /dev/null || {
     echo "Error: qemu-tool not installed!"
@@ -214,6 +225,35 @@ KERNEL_EOF
     rm -rf "${DEBDIR}"
 fi
 
+# Flavour provisioning this repo owns, for steps cloud-init cannot express: a
+# third-party apt repository needs a keyring and a sources file, a DKMS module
+# has to be patched and then built against the kernel that actually boots.
+# Same primitive as the kernel layer above -- PROBE_PERSIST keeps what it
+# changes -- and it runs after it, so a module built here is built for the
+# pinned kernel and not the one the release shipped.
+#
+# The script is fed to "bash -s" with no environment of its own, so the few
+# build-side values it needs are prepended as assignments rather than threaded
+# through probe-guest's arguments. Everything else it decides from the guest.
+PROVISION="/build/provision/${FLAVOUR}.sh"
+PROVISION_NAME=none
+if [ -f "${PROVISION}" ]; then
+    PROVISION_NAME="${FLAVOUR}.sh"
+    PROV=/tmp/provision.sh
+    cat > "${PROV}" <<EOF
+set -eu
+FLAVOUR='${FLAVOUR}'
+RELEASE='${FINAL_RELEASE}'
+USERNAME='${FINAL_USERNAME}'
+AMDGPU_DRIVER_VERSION='${FINAL_AMDGPU_DRIVER_VERSION}'
+RDMA_CORE_VERSION='${FINAL_RDMA_CORE_VERSION}'
+EOF
+    cat "${PROVISION}" >> "${PROV}"
+    echo "Provisioning the guest with provision/${PROVISION_NAME}"
+    PROBE_PERSIST=1 probe-guest "/output/${FINAL_VM_NAME}.qcow2" \
+        "${FINAL_USERNAME}" "${PROV}"
+fi
+
 # Boot the finished guest once, to read its kernel out of it and to run the
 # flavour's checks.  The kernel version is not knowable before the build --
 # which is why it is not in the image tag -- and consumers that need a minimum
@@ -269,6 +309,10 @@ fi
 CHECKS="/build/checks/${FLAVOUR}.sh"
 if [ -f "${CHECKS}" ]; then
     printf 'echo "Running %s checks" >&2\n' "${FLAVOUR}" >> "${PROBE}"
+    # Traced, because an assertion is a bare command under "set -eu": without
+    # this a failing check prints nothing at all and the build log says only
+    # that the probe exited non-zero.
+    printf 'set -x\n' >> "${PROBE}"
     cat "${CHECKS}" >> "${PROBE}"
 else
     printf 'echo "No checks file for flavour %s" >&2\n' "${FLAVOUR}" >> "${PROBE}"
@@ -294,18 +338,43 @@ LIBVFIO_USER_COMMIT_INFO=$(cat /usr/local/share/libvfio-user-commit.txt \
 QEMU_MINIMAL_COMMIT_INFO=$(cat /build/qemu-minimal-commit.txt \
     2>/dev/null || echo "unknown")
 IMAGE_SIZE=$(stat -c%s "/output/${FINAL_VM_NAME}.qcow2")
-IMAGE_FORMAT=$(/opt/qemu/bin/qemu-img info \
-    "/output/${FINAL_VM_NAME}.qcow2" 2>/dev/null |
-    grep -i "file format" | cut -d: -f2 | xargs || echo "qcow2")
+IMAGE_INFO=$(/opt/qemu/bin/qemu-img info --output=json \
+    "/output/${FINAL_VM_NAME}.qcow2" 2>/dev/null || echo '{}')
+IMAGE_FORMAT=$(echo "${IMAGE_INFO}" | jq -r '.format // "qcow2"')
+# The sparse ceiling the guest filesystem can grow into, as qemu sees it --
+# image_size_bytes is what the payload actually costs to move.
+IMAGE_VIRTUAL_SIZE=$(echo "${IMAGE_INFO}" | jq -r '."virtual-size" // 0')
+QEMU_VERSION=$(/opt/qemu/bin/qemu-system-x86_64 --version 2>/dev/null |
+    head -1 | sed 's/^QEMU emulator version //' || echo "unknown")
+# Identifies the key without publishing it, so a consumer can check that the
+# keypair in the referrer is the one this disk was built with.
+SSH_FINGERPRINT=$(ssh-keygen -lf /output/id_rsa.pub 2>/dev/null |
+    awk '{print $2}' || echo "")
+CHECKS_NAME=none
+if [ -f "${CHECKS}" ]; then
+    CHECKS_NAME="${FLAVOUR}.sh"
+fi
 BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# schema_version 2 adds flavour/kernel_release/vm_playbook/packages_digest and
-# the kernel pin on top of the v1 keys, all of which are kept so existing
-# consumers are unaffected.  kernel_debs carries the resolved filenames, build
-# stamp included, because kernel_ref alone does not identify a build.
+# schema_version 2 added flavour/kernel_release/vm_playbook/packages_digest and
+# the kernel pin on top of the v1 keys; 3 adds the virtual size, the qemu
+# version, the SSH key fingerprint, the checks script and the build-time boot
+# shape; 4 adds the provision script.  Every earlier key is kept, so a v1, v2
+# or v3 consumer is unaffected -- read schema_version before reaching for
+# anything newer.
+#
+# What a provision script installed is deliberately not hoisted here: this file
+# is flavour-agnostic, and a flavour with its own versions to report writes its
+# own record inside the guest (rocjitsu leaves /etc/rocjitsu-guest.json).
+#
+# kernel_debs carries the resolved filenames, build stamp included, because
+# kernel_ref alone does not identify a build.
+#
+# ci-images-tool.py hoists most of this into the pushed artifact's annotations,
+# so "oras manifest fetch" answers the common questions without the referrer.
 cat > /output/vm-info.json <<EOF
 {
-  "schema_version": 2,
+  "schema_version": 4,
   "vm_name": "${FINAL_VM_NAME}",
   "flavour": "${FLAVOUR}",
   "username": "${FINAL_USERNAME}",
@@ -313,6 +382,8 @@ cat > /output/vm-info.json <<EOF
   "image_path": "/output/${FINAL_VM_NAME}.qcow2",
   "image_format": "${IMAGE_FORMAT}",
   "image_size_bytes": ${IMAGE_SIZE},
+  "image_virtual_size_bytes": ${IMAGE_VIRTUAL_SIZE},
+  "vm_size_gb": ${FINAL_VM_SIZE},
   "release": "${FINAL_RELEASE}",
   "architecture": "${FINAL_ARCH}",
   "kernel_release": "${GUEST_KERNEL}",
@@ -321,20 +392,27 @@ cat > /output/vm-info.json <<EOF
   "backing_file": false,
   "ssh_keys": {
     "private_key_path": "/output/id_rsa",
-    "public_key_path": "/output/id_rsa.pub"
+    "public_key_path": "/output/id_rsa.pub",
+    "fingerprint": "${SSH_FINGERPRINT}"
   },
   "provisioning": {
     "vm_packages": "${FINAL_PACKAGES}",
     "packages_digest": "${PACKAGES_DIGEST}",
     "vm_playbook": "${FINAL_PLAYBOOK}",
     "kernel_ref": "${FINAL_KERNEL_REF}",
-    "kernel_debs": "${KERNEL_DEBS}"
+    "kernel_debs": "${KERNEL_DEBS}",
+    "provision": "${PROVISION_NAME}",
+    "checks": "${CHECKS_NAME}"
   },
   "build_info": {
+    "qemu_version": "${QEMU_VERSION}",
     "qemu_commit": "${QEMU_COMMIT_INFO}",
     "libvfio_user_commit": "${LIBVFIO_USER_COMMIT_INFO}",
     "qemu_minimal_commit": "${QEMU_MINIMAL_COMMIT_INFO}",
-    "build_timestamp": "${BUILD_TIMESTAMP}"
+    "build_timestamp": "${BUILD_TIMESTAMP}",
+    "build_host_kernel": "${KERNEL_VERSION}",
+    "build_vcpus": ${FINAL_VM_VCPUS},
+    "build_vmem_mib": ${FINAL_VM_VMEM}
   }
 }
 EOF

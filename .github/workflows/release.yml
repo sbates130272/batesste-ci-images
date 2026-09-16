@@ -135,12 +135,7 @@ jobs:
             type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
               env.CACHE_REGISTRY
             }}:ubuntu-base
-          labels: |
-            ${{ steps.refs.outputs.ubuntu_base_labels }}
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+          labels: ${{ steps.refs.outputs.ubuntu_base_labels }}
 
       - name: Build and push ubuntu-libvfio-user
         uses: docker/build-push-action@v7
@@ -157,12 +152,7 @@ jobs:
             type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
               env.CACHE_REGISTRY
             }}:ubuntu-libvfio-user
-          labels: |
-            ${{ steps.refs.outputs.ubuntu_libvfio_user_labels }}
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+          labels: ${{ steps.refs.outputs.ubuntu_libvfio_user_labels }}
 
   build-and-push:
     name: Build and Push ${{ matrix.target.key }}
@@ -344,12 +334,7 @@ jobs:
               matrix.target.scope
             }}
           build-args: ${{ steps.tags.outputs.args }}
-          labels: |
-            ${{ steps.tags.outputs.labels }}
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+          labels: ${{ steps.tags.outputs.labels }}
 
   build-and-push-derived:
     name: Build and Push ${{ matrix.target.key }}
@@ -527,12 +512,7 @@ jobs:
               matrix.target.scope
             }}
           build-args: ${{ steps.tags.outputs.args }}
-          labels: |
-            ${{ steps.tags.outputs.labels }}
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+          labels: ${{ steps.tags.outputs.labels }}
 
       # The scratch image is the low-friction path; this is what makes "qcow2
       # as an artifact" true rather than a container-shaped approximation --
@@ -565,6 +545,35 @@ jobs:
             --tag "${{ steps.version.outputs.version }}" \
             --extra-tag "sha-${GITHUB_SHA:0:7}" \
             --extra-tag "${{ steps.version.outputs.tag }}"
+
+  # The Docker Hub page is the one place the images describe themselves that no
+  # build step can reach: descriptions live on the repository, not in a
+  # manifest. Pushing them here keeps the page, the OCI labels and images.yml
+  # saying the same thing, and does it once per release rather than per image.
+  #
+  # DOCKERHUB_TOKEN has to be a read/write/**delete** PAT: Hub refuses the
+  # PATCH under a plain read/write token, with a 403 rather than an auth error.
+  sync-descriptions:
+    name: Sync Docker Hub descriptions
+    runs-on: ubuntu-latest
+    needs: [build-bases, build-and-push, build-and-push-derived]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install tool dependencies
+        run: pip install -r requirements.txt
+
+      - name: Push descriptions to Docker Hub
+        env:
+          REGISTRY_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: ./ci-images-tool.py describe
 
   github-release:
     name: Create GitHub Release

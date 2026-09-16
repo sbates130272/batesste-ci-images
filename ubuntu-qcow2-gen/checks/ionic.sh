@@ -28,6 +28,35 @@ pkg-config --exists libnl-3.0 libnl-route-3.0 libudev libsystemd
 command -v ibv_devinfo
 modinfo ionic_rdma > /dev/null
 
+# providers/ionic, which is what makes the emulated NIC usable through
+# libibverbs. Upstream first shipped it in v61 and resolute packages 61.0, so
+# the archive supplies it. This is the role's own verification step, so a
+# failure here is a failure it would have hit too. The provider carries the ABI
+# suffix rather than a bare name -- libionic-rdmav59.so at 61.0 -- so match on
+# the prefix.
+ls /usr/lib/*/libibverbs/libionic*.so
+
+# And it is still the packaged file. A source build installed over /usr leaves
+# this same path in place while orphaning it from dpkg, which is the state this
+# flavour deliberately does not create: nothing an apt upgrade can clobber, and
+# so nothing to hold.
+dpkg -S /usr/lib/*/libibverbs/libionic*.so > /dev/null
+
+# The stamp ernic_guest_setup reads before deciding to build rdma-core itself.
+# <version>:<gda-patch-hash>, where the hash is the literal "none" if no GDA
+# direct-verbs patches were applied -- which is the case here on purpose, since
+# every current lane passes ernic_gpu_passthrough=false and wants the unpatched
+# build.
+STAMP=$(cat /usr/local/share/rocm-ernic/provider.stamp)
+test "${STAMP#*:}" = none
+
+# No version literal in this file. The stamp has to describe the rdma-core that
+# is actually installed, so compare it against dpkg rather than against a copy
+# of the pin -- which the pin would satisfy even if the guest carried something
+# else entirely.
+INSTALLED=$(dpkg-query -W -f='${Version}' rdma-core)
+test "${STAMP%%:*}" = "${INSTALLED%%-*}"
+
 # Traffic generators for jobs that exercise the queue pairs. Name the read and
 # write verbs separately: perftest splits across binaries and a partial install
 # is the failure worth catching here.

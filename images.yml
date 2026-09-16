@@ -27,6 +27,18 @@
 #   `matrix` (the flat parallel matrix), `derived` (built after the matrix,
 #   on top of an image the matrix produced).
 #
+# description
+#   One sentence saying what the image is for. A variant may override it.
+#   This is the single source for the image's OCI
+#   org.opencontainers.image.description label and the short description on
+#   its Docker Hub page, so the two cannot drift. The long-form Hub overview
+#   is the image directory's own README.md.
+#
+#   Docker Hub caps the short description at 100 *bytes*. Anything longer is
+#   trimmed at a word boundary with an ellipsis rather than rejected, but the
+#   page reads better if the sentence fits; `describe --dry-run` shows the
+#   byte count. The OCI label carries the full text either way.
+#
 # overlay
 #   An optional, gitignored images.local.yml beside this file is deep-merged
 #   over it for local experiments -- it can reach anything here, including a
@@ -44,6 +56,20 @@ defaults:
   image_tag: auto
   label_namespace: io.batesste.ci-images
 
+  # Repo-wide provenance. Every image gets these as standard OCI labels, and
+  # `ci-images-tool.py describe` pushes the same facts to the Docker Hub page,
+  # so the registry, the image and the hub page cannot disagree.
+  #
+  # {image} interpolates the image directory. licenses is empty because this
+  # repo carries no LICENSE file; add one and set an SPDX id here to stamp it.
+  metadata:
+    source: https://github.com/sbates130272/batesste-ci-images
+    url: https://github.com/sbates130272/batesste-ci-images
+    documentation: https://github.com/sbates130272/batesste-ci-images/blob/main/{image}/README.md
+    vendor: sbates130272
+    authors: Stephen Bates
+    licenses: ""
+
   # Shared by more than one image, so they cannot be owned by any single one.
   vars:
     libvfio_user_commit: 803924493a7c787b2ba358751f55f07d5dba64b2
@@ -60,6 +86,9 @@ images:
 
   ubuntu-base:
     job: bases
+    description: >-
+      Ubuntu 24.04 base layer every other image here inherits, with
+      build-essential, cmake and ccache.
     variant: "ubuntu{ubuntu_version|ver}"
     labels:
       org.opencontainers.image.base.name: "docker.io/library/ubuntu:{ubuntu_version}"
@@ -67,6 +96,9 @@ images:
 
   ubuntu-libvfio-user:
     job: bases
+    description: >-
+      Ubuntu with libvfio-user built from source, the vfio-user protocol
+      library consumers link against.
     base: ubuntu-base
     build_args:
       LIBVFIO_USER_COMMIT: "{libvfio_user_commit}"
@@ -76,6 +108,9 @@ images:
 
   ubuntu-kernel-build:
     job: matrix
+    description: >-
+      Ubuntu 24.04 carrying bison, flex, libelf and linux-headers-generic for
+      kernel and module builds.
     base: ubuntu-base
     # Adds no pinned payload of its own, so the Ubuntu release is the only
     # thing that can differ between two of its builds.
@@ -83,6 +118,9 @@ images:
 
   ubuntu-cuda-rocm:
     job: matrix
+    description: >-
+      Ubuntu 24.04 carrying nvcc and hipcc, the CUDA and ROCm/HIP toolkits,
+      with no GPU kernel drivers.
     base: ubuntu-base
     # No CI artifact: its only consumer wants a registry ref, so the build job
     # pushes it straight to GHCR instead of round-tripping a ~13 GB tarball.
@@ -111,6 +149,9 @@ images:
 
   ubuntu-cuda-rocm-fio:
     job: derived
+    description: >-
+      fio with AMD libhipfile and NVIDIA libcufile direct-to-GPU engines, on a
+      CUDA + ROCm toolkit base.
     base: ubuntu-cuda-rocm
     vars:
       # Must be a master commit -- the libhipfile engine is not in any fio tag yet
@@ -134,6 +175,9 @@ images:
     variants:
       async-hipfile:
         suffix: "-async-hipfile"
+        description: >-
+          fio from ROCm's unmerged async hipFile branch, adding
+          hipfile_mode=sync|batch|stream to libhipfile.
         # AMD's asynchronous hipFile work: adds hipfile_mode=sync|batch|stream
         # to the libhipfile engine. Published alongside the master build rather
         # than replacing it, so the upstream image keeps tracking axboe HEAD.
@@ -151,6 +195,9 @@ images:
 
   ubuntu-rocm-nixl:
     job: derived
+    description: >-
+      NIXL, NIXLBench and libfabric built from source over a ROCm-enabled UCX,
+      for AMD GPU transfers.
     base: ubuntu-cuda-rocm
     vars:
       nixl_repo: https://github.com/ai-dynamo/nixl.git
@@ -216,6 +263,9 @@ images:
 
   ubuntu-rocm-ernic:
     job: matrix
+    description: >-
+      A source build of rocm-ernic, which emulates an RDMA NIC and serves it to
+      a guest over vfio-user.
     base: ubuntu-libvfio-user
     artifact: true
     vars:
@@ -231,6 +281,9 @@ images:
 
   ubuntu-rocm-rocjitsu:
     job: matrix
+    description: >-
+      An emulated gfx1250 GPU served by rocjitsu over vfio-user, so a guest
+      needs no physical GPU.
     base: ubuntu-base
     artifact: true
     vars:
@@ -262,15 +315,29 @@ images:
       rocjitsu_config:
         value: gfx1250_mi455x.json
         env: ROCM_ROCJITSU_CONFIG
+      # The last upstream commit that carried
+      # emulation/rocjitsu/tools/vfio_guest_firmware.py, deleted after it in
+      # favour of "use the firmware from the driver release matching the
+      # guest's amdgpu.ko". There is no such release for gfx1250 -- the newest
+      # amdgpu-dkms-firmware carries no gc_12_1_0 or sdma_7_1_0 blob -- so the
+      # stubs remain the only way to boot the emulated device, and the image
+      # keeps shipping the generator from here. A SHA, not a branch, and not
+      # scrubbed: it names a deleted file, so it can only ever move backwards.
+      # Retire it when upstream publishes real gfx1250 firmware.
+      rocjitsu_firmware_gen_commit:
+        value: 730bc62d60191337a07da50892538475370cb071
+        env: ROCM_ROCJITSU_FIRMWARE_GEN_COMMIT
     build_args:
       ROCJITSU_REPO: "{rocjitsu_repo}"
       ROCJITSU_BRANCH: "{rocjitsu_branch}"
       ROCJITSU_COMMIT: "{rocjitsu_commit}"
       ROCJITSU_CONFIG: "{rocjitsu_config}"
+      ROCJITSU_FIRMWARE_GEN_COMMIT: "{rocjitsu_firmware_gen_commit}"
     variant: "rocjitsu.{rocjitsu_commit|short}"
     labels:
       "{ns}.rocjitsu.branch": "{rocjitsu_branch}"
       "{ns}.rocjitsu.commit": "{rocjitsu_commit}"
+      "{ns}.rocjitsu.firmware-gen-commit": "{rocjitsu_firmware_gen_commit}"
 
   # The builder/runner toolchain, and only that: QEMU, the qemu-tool CLI,
   # ansible-core, libvfio-user. It builds no guest of its own -- ubuntu-qcow2-gen
@@ -279,6 +346,9 @@ images:
   # mounted over.
   ubuntu-qemu-libvfio-user:
     job: matrix
+    description: >-
+      QEMU built with vfio-user, the qemu-tool CLI and ansible-core, but no
+      guest; mount one at /output.
     base: ubuntu-libvfio-user
     artifact: true
     vars:
@@ -291,6 +361,10 @@ images:
       # the CLI and the playbooks always come from one commit.
       qemu_minimal_repo: https://github.com/sbates130272/qemu-minimal.git
       qemu_minimal_commit: 5d6868914873757ff1c51dec3ca95a3fa0b2e9d9
+      # Provenance only, and empty here: the default target builds a release
+      # tag, which belongs to no branch. A fork variant fills it in and the
+      # label appears only there.
+      qemu_branch: ""
     build_args:
       QEMU_REPO: "{qemu_repo}"
       QEMU_COMMIT: "{qemu_commit}"
@@ -302,13 +376,24 @@ images:
     labels:
       "{ns}.qemu.repo": "{qemu_repo}"
       "{ns}.qemu.commit": "{qemu_commit}"
+      "{ns}.qemu.branch": "{qemu_branch}"
       "{ns}.libvfio-user.commit": "{libvfio_user_commit}"
     variants:
       sbates-fork:
         suffix: "-sbates-fork"
+        description: >-
+          QEMU from the sbates130272 fork, not the pinned upstream tag, adding
+          unmerged PCI MMIO bridge work.
+        # A SHA, not the branch name: the branch is rebased and force-pushed as
+        # the series is reworked upstream, so a branch pin silently rebuilds a
+        # different QEMU and the tag it publishes never changes. This commit is
+        # the head of dev/stephen/pci-mmio-bridge-submit as of 2026-09-16.
+        # version-scrub.sh must not touch it -- it tracks QEMU releases, and
+        # this is not one.
         vars:
           qemu_repo: https://github.com/sbates130272/qemu.git
-          qemu_commit: dev/stephen/pci-mmio-bridge-submit
+          qemu_commit: 98eca1a522557f6c5a1a9fed4a41a0acb5277560
+          qemu_branch: dev/stephen/pci-mmio-bridge-submit
 
   # Guest qcow2 images. One parameterised Dockerfile, one repository per
   # flavour: adding a guest is packages/<name>.txt, checks/<name>.sh, an
@@ -324,6 +409,9 @@ images:
   # until the guest is built. It is recorded in vm-info.json instead.
   ubuntu-qcow2-gen:
     job: derived
+    description: >-
+      Ready-to-boot Ubuntu guest disk, cloud-init provisioned and published as
+      a qcow2 ORAS artifact.
     base: ubuntu-qemu-libvfio-user
     publish: artifact
     entitlement: security.insecure
@@ -357,6 +445,22 @@ images:
       # handful of base packages and are built once per version rather than
       # per release, so this is orthogonal to the release var above.
       kernel_ref: ""
+      # Only read by a flavour whose provision script installs the AMD kernel
+      # driver, and inert for every other one. A directory under
+      # repo.radeon.com/amdgpu/ -- an explicit version, or "latest" for the
+      # rolling symlink. The amdgpu-dkms package version that actually landed
+      # is read back out of the guest into /etc/rocjitsu-guest.json, because
+      # this names a repository and not a driver build.
+      #
+      # "latest" is the rolling symlink the rocm_setup role defaults to, and it
+      # publishes jammy and noble only. A flavour on a release that tree has no
+      # suite for must name a version directory that does -- see the rocjitsu
+      # variant, which pins 31.50 for resolute.
+      amdgpu_driver_version: "latest"
+      # Empty by default: only a flavour whose provision script cares which
+      # rdma-core the release packages reads it, and the pin belongs with the
+      # flavour that needs it.
+      rdma_core_version: ""
       username: batesste
       vm_name: ""
       password:
@@ -377,6 +481,8 @@ images:
       VM_PACKAGES: "{vm_packages}"
       VM_PLAYBOOK: "{vm_playbook}"
       KERNEL_REF: "{kernel_ref}"
+      AMDGPU_DRIVER_VERSION: "{amdgpu_driver_version}"
+      RDMA_CORE_VERSION: "{rdma_core_version}"
     # kernel_ref is deliberately not in the tag: the flavour name already
     # distinguishes the images, and the resolved kernel goes in vm-info.json
     # and the label below, where it can carry the full build stamp.
@@ -387,6 +493,8 @@ images:
       "{ns}.vm.packages": "{vm_packages}"
       "{ns}.vm.playbook": "{vm_playbook}"
       "{ns}.vm.kernel-ref": "{kernel_ref}"
+      "{ns}.vm.amdgpu-driver-version": "{amdgpu_driver_version}"
+      "{ns}.vm.rdma-core-version": "{rdma_core_version}"
       "{ns}.qemu-minimal.commit": "{qemu_minimal_commit}"
     variants:
       # For ROCm/rocm-ernic's ionic RDMA jobs: drivers/infiniband/hw/ionic
@@ -410,16 +518,70 @@ images:
       # two are pinned separately here and in rocm-ernic, with nothing
       # asserting they stay compatible beyond checks/ionic.sh.
       #
-      # vm_playbook stays empty until vm-ionic.yml lands in qemu-minimal: the
-      # source build of rdma-core 62.0 and the pre-seeded /opt/ionic-src
-      # checkout are optimisations, and guest provisioning is owned upstream so
-      # it stays shared with the non-container qemu-tool workflows.
+      # vm_playbook stays empty until vm-ionic.yml lands in qemu-minimal, and
+      # the pre-seeded /opt/ionic-src checkout waits on it.
+      #
+      # rdma_core_version is not an install instruction -- resolute packages
+      # rdma-core, and its ibverbs-providers already carries the ionic
+      # provider, so nothing is built or overwritten. It is the version
+      # provision/ionic.sh asserts the release actually shipped before writing
+      # it into the stamp ernic_guest_setup reads, and it moves when the
+      # release does. Bump it with release: above, never on its own.
       ionic:
         suffix: "-ionic"
+        description: >-
+          Ubuntu guest disk on a mainline 7.2.3 kernel with the ionic RDMA
+          driver, for rocm-ernic DKMS jobs.
         vars:
           flavour: ionic
           vm_packages: ionic.txt
           kernel_ref: v7.2.3
+          rdma_core_version: "61.0"
+
+      # For ROCm/rocm-xio's test-vm-nvme job: a guest that is booted against a
+      # rocjitsu emulated gfx1250 over vfio-user plus an emulated NVMe
+      # controller, then builds and tests rocm-xio inside itself. That job
+      # installed ROCm and amdgpu-dkms over SSH at runtime, costing the better
+      # part of an hour per run; this flavour bakes it in once.
+      #
+      # release: resolute, and amdgpu_driver_version: 31.50, which are one
+      # decision. 31.50 is the first amdgpu driver tree to publish a resolute
+      # suite, and the amdgpu-dkms in it is 1:7.1.3.31500000 -- a driver that
+      # builds against the 7.0 kernel 26.04 boots and that carries GC 12.1.0
+      # plus the UMSCH HW IP enumeration (4e07da515d1c) the emulated gfx1250
+      # needs. The noble build this replaces could install only a ~24.04
+      # amdgpu-dkms whose kcl layer will not compile against 7.0 at all, so its
+      # module had to be built against the cloud image's 6.8 and could never
+      # load, leaving the in-tree 7.0 driver to reject the device with
+      # "Failed to add vcn/jpeg ip block". Do not move this pin back to
+      # "latest": that symlink is still jammy/noble only.
+      #
+      # Three things this flavour deliberately does not carry, all of which
+      # stay in rocm-xio's runtime playbook because they belong to the
+      # consumer's rocjitsu pin rather than to the disk:
+      #
+      #   * ip_discovery.bin -- generated per-config by "rj-ip-discovery
+      #     gfx1250" from the rocjitsu image the consumer runs.
+      #   * gfx1250 firmware. No public release ships gc_12_1_0 or sdma_7_1_0
+      #     blobs: amdgpu-dkms-firmware 31.50 has 683 files and none of them,
+      #     so the synthesised stubs from ubuntu-rocm-rocjitsu's
+      #     vfio_guest_firmware.py remain the only source, and they must match
+      #     the consumer's rocjitsu pin. checks/rocjitsu.sh reports the
+      #     inventory without failing on it.
+      #   * The amdgpu-probe helper and the CI user's passwordless sudo.
+      #
+      # The KFD atomics patch is applied to the DKMS source and the module is
+      # rebuilt from it, which is what survives a later dkms autoinstall.
+      rocjitsu:
+        suffix: "-rocjitsu"
+        description: >-
+          Ubuntu guest disk with ROCm userspace and a KFD-atomics-patched
+          amdgpu-dkms, for rocm-xio's rocjitsu emulated-GPU jobs.
+        vars:
+          flavour: rocjitsu
+          vm_packages: rocjitsu.txt
+          release: resolute
+          amdgpu_driver_version: "31.50"
 
 # The README's pinned-upstream shields, generated by `ci-images-tool.py badges`
 # so that a pin and the badge advertising it cannot drift apart. CI runs

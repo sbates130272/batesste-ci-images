@@ -22,6 +22,11 @@ ARG ROCJITSU_COMMIT=909c17fe35e9739cd7cd30b8532c02be0ddd4f6c
 # variant pinned to a different upstream ref can point at a renamed or newly
 # added profile from images.yml without editing this file.
 ARG ROCJITSU_CONFIG=gfx1250_mi455x.json
+# The last upstream commit carrying emulation/rocjitsu/tools/
+# vfio_guest_firmware.py, fetched separately from ROCJITSU_COMMIT because the
+# stub generator was deleted upstream and no public firmware release replaces
+# it for gfx1250. See the install step below.
+ARG ROCJITSU_FIRMWARE_GEN_COMMIT=730bc62d60191337a07da50892538475370cb071
 
 WORKDIR /build
 
@@ -64,11 +69,18 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
 # gfx_v12_1_hw_init. run-vfio-guest.py is upstream's harness for booting a
 # prepared guest against the vfio-user socket.
 #
-# The firmware-stub generator that used to ship alongside these is gone: the
-# gfx1250-vfio-compute stack replaced synthesized GFX/SDMA/MES stubs with real
-# firmware taken from the driver release matching the guest's amdgpu.ko, so
-# that inventory is now the caller's to assemble (emulation/rocjitsu/docs/
-# qemu-vfio.md upstream). Nothing here can stand in for it.
+# vfio_guest_firmware.py generates the GFX/SDMA/MES header fixtures the driver
+# parses during early init even in emulation mode. Upstream deleted it when
+# qemu-vfio.md moved to "use firmware files from the same public driver release
+# as the guest's amdgpu.ko" -- but no such release exists for gfx1250:
+# amdgpu-dkms-firmware 31.50, the newest driver tree with a 26.04 suite, ships
+# 683 files and not one gc_12_1_0 or sdma_7_1_0 among them. Stubs are therefore
+# still the only way to boot the emulated device, which is why every consumer
+# was pinning this image at rocjitsu.730bc62 to get the generator.
+#
+# Fetched from that commit rather than vendored, so the file stays attributable
+# upstream, and separately from ROCJITSU_COMMIT so the server itself keeps
+# tracking the head of the series.
 #
 # Upstream builds rj-ip-discovery (CMakeLists.txt add_subdirectory) but ships
 # no install() rule for it -- only rocjitsu_bin and rj_pretranslate -- so it
@@ -81,7 +93,13 @@ RUN set -eux; \
     install -m 0755 "${rj_ip_discovery}" /usr/local/bin/rj-ip-discovery; \
     install -m 0755 \
         /build/rocm-systems/emulation/rocjitsu/scripts/run-vfio-guest.py \
-        /usr/local/bin/run-vfio-guest.py
+        /usr/local/bin/run-vfio-guest.py; \
+    git -C /build/rocm-systems fetch --depth 1 origin \
+        "${ROCJITSU_FIRMWARE_GEN_COMMIT}"; \
+    git -C /build/rocm-systems show \
+        "${ROCJITSU_FIRMWARE_GEN_COMMIT}:emulation/rocjitsu/tools/vfio_guest_firmware.py" \
+        > /usr/local/bin/vfio_guest_firmware.py; \
+    chmod 0755 /usr/local/bin/vfio_guest_firmware.py
 
 # Upstream's install(DIRECTORY configs/) already placed these; the tags come from
 # emulation/rocjitsu/cmake/rj_libvfio_user.cmake, which pins what the vfio-user
@@ -99,12 +117,14 @@ RUN cp /build/rocjitsu-commit.txt \
   "libvfio_user_tag": "v0.8",\n\
   "json_c_tag": "json-c-0.18-20240915",\n\
   "vfio_enabled": true,\n\
-  "guest_tools": ["rj-ip-discovery", "run-vfio-guest.py"],\n\
+  "guest_tools": ["rj-ip-discovery", "run-vfio-guest.py", "vfio_guest_firmware.py"],\n\
+  "firmware_gen_commit": "%s",\n\
   "config_dir": "%s"\n\
 }\n' \
         "${ROCJITSU_REPO}" \
         "${ROCJITSU_BRANCH}" \
         "$(cat /build/rocjitsu-commit.txt)" \
+        "${ROCJITSU_FIRMWARE_GEN_COMMIT}" \
         "${ROCJITSU_CONFIG_DIR}" \
         > /usr/local/share/rocjitsu-build.json && \
     mkdir -p "${ROCJITSU_SOCKET_DIR}"
@@ -149,11 +169,23 @@ RUN rocjitsu --config "${ROCJITSU_CONFIG_PATH}" \
 # run-vfio-guest.py needs a kernel and initramfs it cannot have at build time,
 # so --help is as far as it can be exercised -- enough to catch a Python the
 # base image cannot import it under.
+#
+# The stub generator is exercised the same way, and its output is asserted by
+# name: a guest missing one of these five files fails in amdgpu's early init
+# with a firmware load error. The driver also opens gc_12_1_0_mes.bin and
+# gc_12_1_0_mes1.bin, which the generator does not emit -- the uni_mes stub
+# serves for both, copied by the caller, since only the caller knows which MES
+# path its amdgpu.ko takes. See README.md.
 RUN set -eux; \
     rj-ip-discovery gfx1250 /tmp/ip_discovery.bin; \
     test -s /tmp/ip_discovery.bin; \
     run-vfio-guest.py --help > /dev/null; \
-    rm -f /tmp/ip_discovery.bin
+    python3 /usr/local/bin/vfio_guest_firmware.py --output /tmp/fw; \
+    for fw in gc_12_1_0_imu.bin gc_12_1_0_mec.bin gc_12_1_0_rlc_1.bin \
+              gc_12_1_0_uni_mes.bin sdma_7_1_0.bin; do \
+        test -s "/tmp/fw/${fw}"; \
+    done; \
+    rm -rf /tmp/ip_discovery.bin /tmp/fw
 
 RUN rm -rf /build/rocm-systems /tmp/deps
 
