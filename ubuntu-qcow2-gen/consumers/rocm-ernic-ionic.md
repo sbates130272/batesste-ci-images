@@ -1,7 +1,10 @@
 # Guest image request: ROCm/rocm-ernic, ionic device mode
 
 Status: **published**, most recently as
-`20260914-vm.resolute-ionic-qm.737f735-qcow2`. The guest carries the ionic
+`20260916.g0d300a2-vm.resolute-ionic-qm.5d68689-qcow2`. Pin that tag rather
+than the rolling `vm.resolute-ionic-qm.5d68689-qcow2`: the rolling one moves
+with every build of this flavour, and on 2026-09-16 two different guests
+published under it within the hour. The guest carries the ionic
 verbs provider from the archive and the stamp that says so — see
 [rdma-core comes from the archive](#rdma-core-comes-from-the-archive). One
 change is wanted in rocm-ernic to make that stamp take effect.

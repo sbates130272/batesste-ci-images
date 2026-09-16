@@ -108,6 +108,13 @@ The tag variant is the guest release, the flavour and the abbreviated
 `qemu-minimal` commit, for example `vm.resolute-ionic-qm.5d68689`; artifact
 tags carry a `-qcow2` suffix on top.
 
+That variant does not identify a build on its own -- the flavour's packages,
+provision and checks scripts can all change without moving it -- so the fully
+specified tag adds the date and this repo's commit in front:
+`20260916.g0d300a2-vm.resolute-ionic-qm.5d68689-qcow2`. Pin that one. The bare
+variant is rolling and will be replaced by the next build of the same
+flavour.
+
 The guest kernel is deliberately absent from the tag -- it is not knowable
 until the guest has been built. It is in `vm-info.json` instead. See the
 repository [README](../README.md) for the full tag scheme.

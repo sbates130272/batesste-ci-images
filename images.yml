@@ -22,6 +22,12 @@
 #   A leading ! names a Python helper for the rare case a template cannot
 #   express (see VARIANT_HELPERS in ci-images-tool.py).
 #
+#   A `variant:` names the upstream pins and is not asked to identify a build
+#   on its own: the fully specified tag prefixes the release and a fingerprint
+#   of this repo's commit, so a changed Dockerfile or provision script cannot
+#   land on a tag that is already taken. Nothing to declare here -- see
+#   source_fingerprint() -- but it is why a variant need not chase every pin.
+#
 # job
 #   Which CI job builds this image: `bases` (built once, up front),
 #   `matrix` (the flat parallel matrix), `derived` (built after the matrix,

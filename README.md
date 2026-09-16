@@ -542,9 +542,10 @@ in `images.yml`. For example, `ubuntu-qemu-libvfio-user` uses `QEMU_COMMIT` and
 
 ### Image Tags
 
-An image's tag carries both the repository release and the payload that
-distinguishes the build, so two releases with different ROCm or fio versions
-are told apart without pulling them. The payload half is the *variant*:
+An image's tag carries the repository release, a fingerprint of the source it
+was built from, and the payload that distinguishes the build, so two releases
+with different ROCm or fio versions are told apart without pulling them. The
+payload half is the *variant*:
 
 | Image | Variant |
 | --- | --- |
@@ -562,21 +563,39 @@ to a release tag rather than a commit, so it appears as a version the way QEMU
 does. The variants are templates in `images.yml`, so they follow the pins
 automatically.
 
+A variant names the *upstream* pins and nothing else, which is not enough to
+identify a build on its own: a changed provision script, or a pin deliberately
+kept out of the variant string, produces the same tag on the same day and
+replaces what was there. The fully specified tag therefore carries a source
+fingerprint too -- `g` and the first seven characters of this repo's commit,
+matching `org.opencontainers.image.revision`, with `-dirty` appended when the
+tree had uncommitted changes.
+
+The commit rather than a hash of the build recipe: a guest qcow2 is not
+reproducible -- the archive moves daily -- so equal recipes still yield
+different images, and a recipe hash would claim a sameness it cannot deliver.
+The fingerprint claims only which source built the image.
+
 Releasing git tag `v1.1.0` publishes `ubuntu-cuda-rocm` as:
 
 ```text
-1.1.0-rocm10.0-cuda13.4   immutable, fully specified -- pin this in CI
-1.1-rocm10.0-cuda13.4     rolling patch within this variant
-rocm10.0-cuda13.4         rolling latest of this variant
-1.1.0                     release alias
-1.1                       rolling minor alias
-latest                    rolling
-sha-<short>               provenance, traceable to a commit
+1.1.0.g0d300a2-rocm10.0-cuda13.4  immutable, fully specified -- pin this in CI
+1.1-rocm10.0-cuda13.4             rolling patch within this variant
+rocm10.0-cuda13.4                 rolling latest of this variant
+1.1.0                             release alias
+1.1                               rolling minor alias
+latest                            rolling
+sha-0d300a2                       rolling alias for that commit's newest build
 ```
+
+Only the first is fingerprinted. The rest are meant to move, and pinning a
+commit into a tag whose purpose is to follow the newest build would make it
+immovable. One of them -- the bare variant -- is also what a layered image
+pulls as its `BASE_IMAGE`, so it has to resolve on any day from any commit.
 
 The git tag keeps its `v` prefix; the image tag drops it, per OCI convention.
 A local `ci-images-tool.py build` uses the same scheme with `IMAGE_TAG` as the
-base, so `IMAGE_TAG=auto` yields `20260526-rocm10.0-cuda13.4`.
+base, so `IMAGE_TAG=auto` yields `20260526.g0d300a2-rocm10.0-cuda13.4`.
 
 The same facts are recorded as OCI labels, so they can be read without parsing
 a tag:
