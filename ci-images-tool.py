@@ -14,6 +14,7 @@ reads it; adding an image needs a Dockerfile and a YAML entry, not a code change
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import re
@@ -757,17 +758,62 @@ def image_variant(cfg: Config, target: Target) -> str:
     return render(template, values, f"{target.key} variant")
 
 
+@functools.lru_cache(maxsize=1)
+def source_fingerprint() -> str:
+    """This repo's contribution to the tag: ``g<sha7>``, ``-dirty`` if it is.
+
+    The variant fragment names the *upstream* pins and nothing else, so two
+    builds from different commits of this repo -- a changed provision script,
+    a pin that is deliberately not in the variant string -- produce the same
+    tag on the same day, and the second silently replaces the first.  A
+    consumer holding that tag cannot tell which it has.
+
+    The commit rather than a hash of the recipe: a guest qcow2 is not
+    reproducible, so equal recipes on different days still yield different
+    images, and a content hash would claim an identity it cannot deliver.
+    This claims only what it can prove -- which source built it -- and agrees
+    with org.opencontainers.image.revision by construction.
+
+    Empty when there is no revision to be had, so a tarball checkout tags the
+    way it always did rather than failing.
+    """
+
+    revision = _build_stamp()["revision"]
+    if not revision:
+        return ""
+    # A CI checkout is clean by construction, and GITHUB_SHA is how we know we
+    # are in one.
+    dirty = ""
+    if not os.environ.get("GITHUB_SHA"):
+        try:
+            changes = subprocess.run(
+                ["git", "status", "--porcelain"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        except (subprocess.CalledProcessError, OSError):
+            changes = ""
+        if changes:
+            dirty = "-dirty"
+    return f"g{revision[:7]}{dirty}"
+
+
 def tag_set(cfg: Config, target: Target, base_tag: str | None = None) -> list[str]:
     """Every tag this image should be published under, primary first.
 
-    For ``1.1.0`` and variant ``rocm7.14-cuda13.3`` that is::
+    For ``1.1.0``, variant ``rocm7.14-cuda13.3`` and commit ``0d300a2``::
 
-        1.1.0-rocm7.14-cuda13.3   immutable, fully specified
-        1.1-rocm7.14-cuda13.3     rolling patch within the variant
-        rocm7.14-cuda13.3         rolling latest of the variant
-        1.1.0                     release alias
-        1.1                       rolling minor alias
+        1.1.0.g0d300a2-rocm7.14-cuda13.3  immutable, fully specified
+        1.1-rocm7.14-cuda13.3             rolling patch within the variant
+        rocm7.14-cuda13.3                 rolling latest of the variant
+        1.1.0                             release alias
+        1.1                               rolling minor alias
         latest
+
+    Only the first carries the source fingerprint.  Everything below it is
+    meant to move, and pinning a commit into a tag whose whole purpose is to
+    follow the newest build would make it immovable.
     """
 
     base = (base_tag or cfg.image_tag).strip()
@@ -782,7 +828,9 @@ def tag_set(cfg: Config, target: Target, base_tag: str | None = None) -> list[st
             tags.append(tag)
 
     if base != "latest":
-        add(f"{base}-{variant}" if variant else base)
+        fp = source_fingerprint()
+        pinned = f"{base}.{fp}" if fp else base
+        add(f"{pinned}-{variant}" if variant else pinned)
     if minor:
         add(f"{minor}-{variant}" if variant else minor)
     add(variant)
@@ -797,6 +845,17 @@ def primary_ref(cfg: Config, target: Target) -> str:
     return tagged_ref(cfg, target, tag=tag_set(cfg, target)[0])
 
 
+def rolling_ref(cfg: Config, target: Target) -> str:
+    """The newest published ref for this variant, whatever built it.
+
+    Deliberately not primary_ref: that one names a date and a commit, so
+    asking a registry for it only works from the machine and the day that
+    published it.  A local build pulling its base wants the tag that is
+    always there.
+    """
+    return tagged_ref(cfg, target, tag=image_variant(cfg, target) or "latest")
+
+
 def _env_key(name: str) -> str:
     """ubuntu-rocm-ernic -> UBUNTU_ROCM_ERNIC"""
     return name.replace("-", "_").upper()
@@ -805,9 +864,12 @@ def _env_key(name: str) -> str:
 def base_image_for(cfg: Config, target: Target) -> str:
     """The BASE_IMAGE build arg for a layered target, or "" if it has no base.
 
-    Defaults to this run's own tag for the base: ``discover_targets`` orders
-    bases first, so a full build produces and ``--load``s the base before the
-    dependant needs it.
+    Defaults to the base's rolling variant tag: ``discover_targets`` orders
+    bases first, so a full build produces and ``--load``s the base -- under
+    every one of its tags, this included -- before the dependant needs it.
+    The rolling one rather than the fully specified one so that
+    ``--base-from-registry`` works on any day from any commit, which a tag
+    carrying this build's date and SHA would not.
     """
     base = base_target(cfg, target)
     if not base:
@@ -824,7 +886,7 @@ def base_image_for(cfg: Config, target: Target) -> str:
         override = cfg.fio_base_image
     if override:
         return override
-    return primary_ref(cfg, base)
+    return rolling_ref(cfg, base)
 
 
 def build_args_for(
@@ -941,6 +1003,8 @@ def image_labels(cfg: Config, target: Target) -> dict[str, str]:
     # The canonical published base, not whatever scratch ref this particular
     # build layered on: CI points BASE_IMAGE at a per-run GHCR tag that will
     # not exist by the time anyone reads the label.
+    # Fully specified rather than the rolling ref base_image_for pulls, on
+    # purpose: a label is read long after the fact, when "newest" has moved.
     base = base_target(cfg, target)
     if base:
         labels["org.opencontainers.image.base.name"] = primary_ref(cfg, base)

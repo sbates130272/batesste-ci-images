@@ -81,5 +81,9 @@ recorded in `qemu_branch` and in the `…qemu.branch` label.
 
 The tag variant combines the QEMU version and the libvfio-user commit, for
 example `qemu11.1.1-vfu.8039244`. A fork build names the commit instead of a
-version, for example `qemu.98eca1a-vfu.8039244`. See the repository
-[README](../README.md) for the full tag scheme.
+version, for example `qemu.98eca1a-vfu.8039244` -- note that this names the
+pinned QEMU commit, so pinning the fork to a new SHA changes the tag.
+
+The fully specified tag prefixes the date and this repo's commit,
+`20260916.g0d300a2-qemu11.1.1-vfu.8039244`, and is the one to pin. See the
+repository [README](../README.md) for the full tag scheme.
