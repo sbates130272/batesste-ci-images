@@ -12,9 +12,16 @@ while IFS= read -r dockerfile; do
         echo "ERROR: '${dir}/' has a Dockerfile but is missing from ${readme} Project Structure"
         fail=1
     fi
+    # ci-images-tool.py describe pushes this file as the image's Docker Hub
+    # overview, so a missing one is a blank page on the registry, not just a
+    # gap in the repo.
+    if [ ! -f "${dir}/README.md" ]; then
+        echo "ERROR: '${dir}/' has a Dockerfile but no ${dir}/README.md"
+        fail=1
+    fi
 done < <(find . -maxdepth 2 -name "Dockerfile" -type f | sort)
 
 if [ "$fail" -eq 0 ]; then
-    echo "OK: all image directories are documented in ${readme}"
+    echo "OK: all image directories are documented in ${readme} and have their own README.md"
 fi
 exit "$fail"

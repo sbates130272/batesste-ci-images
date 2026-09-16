@@ -294,18 +294,38 @@ LIBVFIO_USER_COMMIT_INFO=$(cat /usr/local/share/libvfio-user-commit.txt \
 QEMU_MINIMAL_COMMIT_INFO=$(cat /build/qemu-minimal-commit.txt \
     2>/dev/null || echo "unknown")
 IMAGE_SIZE=$(stat -c%s "/output/${FINAL_VM_NAME}.qcow2")
-IMAGE_FORMAT=$(/opt/qemu/bin/qemu-img info \
-    "/output/${FINAL_VM_NAME}.qcow2" 2>/dev/null |
-    grep -i "file format" | cut -d: -f2 | xargs || echo "qcow2")
+IMAGE_INFO=$(/opt/qemu/bin/qemu-img info --output=json \
+    "/output/${FINAL_VM_NAME}.qcow2" 2>/dev/null || echo '{}')
+IMAGE_FORMAT=$(echo "${IMAGE_INFO}" | jq -r '.format // "qcow2"')
+# The sparse ceiling the guest filesystem can grow into, as qemu sees it --
+# image_size_bytes is what the payload actually costs to move.
+IMAGE_VIRTUAL_SIZE=$(echo "${IMAGE_INFO}" | jq -r '."virtual-size" // 0')
+QEMU_VERSION=$(/opt/qemu/bin/qemu-system-x86_64 --version 2>/dev/null |
+    head -1 | sed 's/^QEMU emulator version //' || echo "unknown")
+# Identifies the key without publishing it, so a consumer can check that the
+# keypair in the referrer is the one this disk was built with.
+SSH_FINGERPRINT=$(ssh-keygen -lf /output/id_rsa.pub 2>/dev/null |
+    awk '{print $2}' || echo "")
+CHECKS_NAME=none
+if [ -f "${CHECKS}" ]; then
+    CHECKS_NAME="${FLAVOUR}.sh"
+fi
 BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# schema_version 2 adds flavour/kernel_release/vm_playbook/packages_digest and
-# the kernel pin on top of the v1 keys, all of which are kept so existing
-# consumers are unaffected.  kernel_debs carries the resolved filenames, build
-# stamp included, because kernel_ref alone does not identify a build.
+# schema_version 2 added flavour/kernel_release/vm_playbook/packages_digest and
+# the kernel pin on top of the v1 keys; 3 adds the virtual size, the qemu
+# version, the SSH key fingerprint, the checks script and the build-time boot
+# shape.  Every earlier key is kept, so a v1 or v2 consumer is unaffected --
+# read schema_version before reaching for anything newer.
+#
+# kernel_debs carries the resolved filenames, build stamp included, because
+# kernel_ref alone does not identify a build.
+#
+# ci-images-tool.py hoists most of this into the pushed artifact's annotations,
+# so "oras manifest fetch" answers the common questions without the referrer.
 cat > /output/vm-info.json <<EOF
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "vm_name": "${FINAL_VM_NAME}",
   "flavour": "${FLAVOUR}",
   "username": "${FINAL_USERNAME}",
@@ -313,6 +333,8 @@ cat > /output/vm-info.json <<EOF
   "image_path": "/output/${FINAL_VM_NAME}.qcow2",
   "image_format": "${IMAGE_FORMAT}",
   "image_size_bytes": ${IMAGE_SIZE},
+  "image_virtual_size_bytes": ${IMAGE_VIRTUAL_SIZE},
+  "vm_size_gb": ${FINAL_VM_SIZE},
   "release": "${FINAL_RELEASE}",
   "architecture": "${FINAL_ARCH}",
   "kernel_release": "${GUEST_KERNEL}",
@@ -321,20 +343,26 @@ cat > /output/vm-info.json <<EOF
   "backing_file": false,
   "ssh_keys": {
     "private_key_path": "/output/id_rsa",
-    "public_key_path": "/output/id_rsa.pub"
+    "public_key_path": "/output/id_rsa.pub",
+    "fingerprint": "${SSH_FINGERPRINT}"
   },
   "provisioning": {
     "vm_packages": "${FINAL_PACKAGES}",
     "packages_digest": "${PACKAGES_DIGEST}",
     "vm_playbook": "${FINAL_PLAYBOOK}",
     "kernel_ref": "${FINAL_KERNEL_REF}",
-    "kernel_debs": "${KERNEL_DEBS}"
+    "kernel_debs": "${KERNEL_DEBS}",
+    "checks": "${CHECKS_NAME}"
   },
   "build_info": {
+    "qemu_version": "${QEMU_VERSION}",
     "qemu_commit": "${QEMU_COMMIT_INFO}",
     "libvfio_user_commit": "${LIBVFIO_USER_COMMIT_INFO}",
     "qemu_minimal_commit": "${QEMU_MINIMAL_COMMIT_INFO}",
-    "build_timestamp": "${BUILD_TIMESTAMP}"
+    "build_timestamp": "${BUILD_TIMESTAMP}",
+    "build_host_kernel": "${KERNEL_VERSION}",
+    "build_vcpus": ${FINAL_VM_VCPUS},
+    "build_vmem_mib": ${FINAL_VM_VMEM}
   }
 }
 EOF

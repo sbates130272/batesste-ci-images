@@ -27,6 +27,18 @@
 #   `matrix` (the flat parallel matrix), `derived` (built after the matrix,
 #   on top of an image the matrix produced).
 #
+# description
+#   One sentence saying what the image is for. A variant may override it.
+#   This is the single source for the image's OCI
+#   org.opencontainers.image.description label and the short description on
+#   its Docker Hub page, so the two cannot drift. The long-form Hub overview
+#   is the image directory's own README.md.
+#
+#   Docker Hub caps the short description at 100 *bytes*. Anything longer is
+#   trimmed at a word boundary with an ellipsis rather than rejected, but the
+#   page reads better if the sentence fits; `describe --dry-run` shows the
+#   byte count. The OCI label carries the full text either way.
+#
 # overlay
 #   An optional, gitignored images.local.yml beside this file is deep-merged
 #   over it for local experiments -- it can reach anything here, including a
@@ -44,6 +56,20 @@ defaults:
   image_tag: auto
   label_namespace: io.batesste.ci-images
 
+  # Repo-wide provenance. Every image gets these as standard OCI labels, and
+  # `ci-images-tool.py describe` pushes the same facts to the Docker Hub page,
+  # so the registry, the image and the hub page cannot disagree.
+  #
+  # {image} interpolates the image directory. licenses is empty because this
+  # repo carries no LICENSE file; add one and set an SPDX id here to stamp it.
+  metadata:
+    source: https://github.com/sbates130272/batesste-ci-images
+    url: https://github.com/sbates130272/batesste-ci-images
+    documentation: https://github.com/sbates130272/batesste-ci-images/blob/main/{image}/README.md
+    vendor: sbates130272
+    authors: Stephen Bates
+    licenses: ""
+
   # Shared by more than one image, so they cannot be owned by any single one.
   vars:
     libvfio_user_commit: 803924493a7c787b2ba358751f55f07d5dba64b2
@@ -60,6 +86,9 @@ images:
 
   ubuntu-base:
     job: bases
+    description: >-
+      Ubuntu 24.04 base layer every other image here inherits, with
+      build-essential, cmake and ccache.
     variant: "ubuntu{ubuntu_version|ver}"
     labels:
       org.opencontainers.image.base.name: "docker.io/library/ubuntu:{ubuntu_version}"
@@ -67,6 +96,9 @@ images:
 
   ubuntu-libvfio-user:
     job: bases
+    description: >-
+      Ubuntu with libvfio-user built from source, the vfio-user protocol
+      library consumers link against.
     base: ubuntu-base
     build_args:
       LIBVFIO_USER_COMMIT: "{libvfio_user_commit}"
@@ -76,6 +108,9 @@ images:
 
   ubuntu-kernel-build:
     job: matrix
+    description: >-
+      Ubuntu 24.04 carrying bison, flex, libelf and linux-headers-generic for
+      kernel and module builds.
     base: ubuntu-base
     # Adds no pinned payload of its own, so the Ubuntu release is the only
     # thing that can differ between two of its builds.
@@ -83,6 +118,9 @@ images:
 
   ubuntu-cuda-rocm:
     job: matrix
+    description: >-
+      Ubuntu 24.04 carrying nvcc and hipcc, the CUDA and ROCm/HIP toolkits,
+      with no GPU kernel drivers.
     base: ubuntu-base
     # No CI artifact: its only consumer wants a registry ref, so the build job
     # pushes it straight to GHCR instead of round-tripping a ~13 GB tarball.
@@ -111,6 +149,9 @@ images:
 
   ubuntu-cuda-rocm-fio:
     job: derived
+    description: >-
+      fio with AMD libhipfile and NVIDIA libcufile direct-to-GPU engines, on a
+      CUDA + ROCm toolkit base.
     base: ubuntu-cuda-rocm
     vars:
       # Must be a master commit -- the libhipfile engine is not in any fio tag yet
@@ -134,6 +175,9 @@ images:
     variants:
       async-hipfile:
         suffix: "-async-hipfile"
+        description: >-
+          fio from ROCm's unmerged async hipFile branch, adding
+          hipfile_mode=sync|batch|stream to libhipfile.
         # AMD's asynchronous hipFile work: adds hipfile_mode=sync|batch|stream
         # to the libhipfile engine. Published alongside the master build rather
         # than replacing it, so the upstream image keeps tracking axboe HEAD.
@@ -151,6 +195,9 @@ images:
 
   ubuntu-rocm-nixl:
     job: derived
+    description: >-
+      NIXL, NIXLBench and libfabric built from source over a ROCm-enabled UCX,
+      for AMD GPU transfers.
     base: ubuntu-cuda-rocm
     vars:
       nixl_repo: https://github.com/ai-dynamo/nixl.git
@@ -216,6 +263,9 @@ images:
 
   ubuntu-rocm-ernic:
     job: matrix
+    description: >-
+      A source build of rocm-ernic, which emulates an RDMA NIC and serves it to
+      a guest over vfio-user.
     base: ubuntu-libvfio-user
     artifact: true
     vars:
@@ -231,6 +281,9 @@ images:
 
   ubuntu-rocm-rocjitsu:
     job: matrix
+    description: >-
+      An emulated gfx1250 GPU served by rocjitsu over vfio-user, so a guest
+      needs no physical GPU.
     base: ubuntu-base
     artifact: true
     vars:
@@ -279,6 +332,9 @@ images:
   # mounted over.
   ubuntu-qemu-libvfio-user:
     job: matrix
+    description: >-
+      QEMU built with vfio-user, the qemu-tool CLI and ansible-core, but no
+      guest; mount one at /output.
     base: ubuntu-libvfio-user
     artifact: true
     vars:
@@ -306,6 +362,9 @@ images:
     variants:
       sbates-fork:
         suffix: "-sbates-fork"
+        description: >-
+          QEMU from the sbates130272 fork, not the pinned upstream tag, adding
+          unmerged PCI MMIO bridge work.
         vars:
           qemu_repo: https://github.com/sbates130272/qemu.git
           qemu_commit: dev/stephen/pci-mmio-bridge-submit
@@ -324,6 +383,9 @@ images:
   # until the guest is built. It is recorded in vm-info.json instead.
   ubuntu-qcow2-gen:
     job: derived
+    description: >-
+      Ready-to-boot Ubuntu guest disk, cloud-init provisioned and published as
+      a qcow2 ORAS artifact.
     base: ubuntu-qemu-libvfio-user
     publish: artifact
     entitlement: security.insecure
@@ -416,6 +478,9 @@ images:
       # it stays shared with the non-container qemu-tool workflows.
       ionic:
         suffix: "-ionic"
+        description: >-
+          Ubuntu guest disk on a mainline 7.2.3 kernel with the ionic RDMA
+          driver, for rocm-ernic DKMS jobs.
         vars:
           flavour: ionic
           vm_packages: ionic.txt

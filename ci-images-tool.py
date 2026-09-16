@@ -58,6 +58,13 @@ _SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 _VERSION_RE = re.compile(r"^\d+(\.\d+)*$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
+HUB_API = "https://hub.docker.com/v2"
+# Hub counts *bytes*, not characters: it rejects with "Exceeded max number of
+# bytes 100 - actual 102". An ellipsis costs three of them, so the cut has to
+# be made on the encoded form -- see hub_short_description().
+HUB_SHORT_DESCRIPTION_MAX_BYTES = 100
+HUB_ELLIPSIS = "…"
+
 BUILDER_NAME = "builder"
 
 # Media types for the bare qcow2 artifact. Custom rather than an OCI image
@@ -837,17 +844,83 @@ def build_args_for(
     return args
 
 
+def image_description(cfg: Config, target: Target) -> str:
+    """One sentence saying what *target* is for, from the spec.
+
+    Feeds both the OCI description label and the Docker Hub short description,
+    so a reader gets the same sentence whichever one they hit.
+    """
+    text = str(target_attr(cfg, target, "description", "") or "")
+    if not text:
+        return ""
+    return " ".join(
+        render(text, resolve_vars(cfg, target), f"{target.key} description").split()
+    )
+
+
+def _repo_metadata(cfg: Config, target: Target) -> dict[str, str]:
+    """The ``defaults.metadata`` block, with ``{image}`` resolved."""
+    meta = cfg.spec.defaults.get("metadata") or {}
+    return {
+        str(k): str(v or "").replace("{image}", target.image) for k, v in meta.items()
+    }
+
+
+def _build_stamp() -> dict[str, str]:
+    """``revision`` and ``created``, from CI's environment when it is there.
+
+    Falls back to the working tree so a local build is labelled with what it
+    actually built, not with blanks.
+    """
+
+    revision = os.environ.get("GITHUB_SHA", "")
+    if not revision:
+        try:
+            revision = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        except (subprocess.CalledProcessError, OSError):
+            revision = ""
+
+    epoch = os.environ.get("SOURCE_DATE_EPOCH", "")
+    if epoch.isdigit():
+        created = datetime.fromtimestamp(int(epoch), tz=timezone.utc)
+    else:
+        created = datetime.now(tz=timezone.utc)
+    return {"revision": revision, "created": created.strftime("%Y-%m-%dT%H:%M:%SZ")}
+
+
 def image_labels(cfg: Config, target: Target) -> dict[str, str]:
     """OCI labels describing what went into *target*.
 
     The variant tag is a summary for humans; these are the same facts in a
     form a scanner can read without parsing a tag.
+
+    The standard ``org.opencontainers.image.*`` set is emitted here rather than
+    pasted into each build job, so every image carries the same provenance and
+    a new target cannot quietly ship without it.
     """
 
     values = resolve_vars(cfg, target)
+    meta = _repo_metadata(cfg, target)
+    stamp = _build_stamp()
     labels = {
         "org.opencontainers.image.title": repo_name(cfg, target),
+        "org.opencontainers.image.description": image_description(cfg, target),
+        "org.opencontainers.image.version": cfg.image_tag,
+        "org.opencontainers.image.revision": stamp["revision"],
+        "org.opencontainers.image.created": stamp["created"],
+        "org.opencontainers.image.source": meta.get("source", ""),
+        "org.opencontainers.image.url": meta.get("url", ""),
+        "org.opencontainers.image.documentation": meta.get("documentation", ""),
+        "org.opencontainers.image.vendor": meta.get("vendor", ""),
+        "org.opencontainers.image.authors": meta.get("authors", ""),
+        "org.opencontainers.image.licenses": meta.get("licenses", ""),
         f"{cfg.spec.label_ns}.variant": image_variant(cfg, target),
+        f"{cfg.spec.label_ns}.target": target.key,
     }
     # The canonical published base, not whatever scratch ref this particular
     # build layered on: CI points BASE_IMAGE at a per-run GHCR tag that will
@@ -1314,6 +1387,64 @@ def cmd_push_artifact(args: argparse.Namespace) -> None:
     )
 
 
+def artifact_annotations(
+    cfg: Config, target: Target, info: dict, title: str
+) -> dict[str, str]:
+    """Annotations for the pushed qcow2 artifact.
+
+    A bare artifact has no config blob and therefore no labels, so everything a
+    consumer can learn without downloading gigabytes has to be here.  The
+    ``org.opencontainers.image.*`` half is the same provenance
+    :func:`image_labels` stamps on the container images, so the disk and the
+    toolchain that built it describe themselves identically; the ``vm.*`` half
+    is what :file:`vm-info.json` says about the guest, hoisted so
+    ``oras manifest fetch`` answers "what is this?" on its own.
+
+    ``password`` is deliberately not hoisted.  It is in vm-info.json by design,
+    but that is a referrer a consumer asks for, not something every registry
+    listing shows.
+    """
+
+    provisioning = info.get("provisioning") or {}
+    build_info = info.get("build_info") or {}
+    meta = _repo_metadata(cfg, target)
+    stamp = _build_stamp()
+
+    annotations = {
+        "org.opencontainers.image.title": title,
+        "org.opencontainers.image.description": image_description(cfg, target),
+        "org.opencontainers.image.version": cfg.image_tag,
+        "org.opencontainers.image.revision": stamp["revision"],
+        "org.opencontainers.image.created": build_info.get("build_timestamp")
+        or stamp["created"],
+        "org.opencontainers.image.source": meta.get("source", ""),
+        "org.opencontainers.image.url": meta.get("url", ""),
+        "org.opencontainers.image.documentation": meta.get("documentation", ""),
+        "org.opencontainers.image.vendor": meta.get("vendor", ""),
+        "org.opencontainers.image.authors": meta.get("authors", ""),
+        "org.opencontainers.image.licenses": meta.get("licenses", ""),
+        "vm.schema_version": str(info.get("schema_version", "")),
+        "vm.name": info.get("vm_name", ""),
+        "vm.flavour": info.get("flavour", ""),
+        "vm.release": info.get("release", ""),
+        "vm.architecture": info.get("architecture", ""),
+        "vm.kernel_release": info.get("kernel_release", ""),
+        "vm.username": info.get("username", ""),
+        "vm.image_format": info.get("image_format", ""),
+        "vm.image_size_bytes": str(info.get("image_size_bytes", "")),
+        "vm.packages": provisioning.get("vm_packages", ""),
+        "vm.packages_digest": provisioning.get("packages_digest", ""),
+        "vm.playbook": provisioning.get("vm_playbook", ""),
+        "vm.kernel_ref": provisioning.get("kernel_ref", ""),
+        "vm.kernel_debs": provisioning.get("kernel_debs", ""),
+        "vm.qemu_commit": build_info.get("qemu_commit", ""),
+        "vm.qemu_minimal_commit": build_info.get("qemu_minimal_commit", ""),
+        "vm.libvfio_user_commit": build_info.get("libvfio_user_commit", ""),
+        f"{cfg.spec.label_ns}.target": target.key,
+    }
+    return {k: str(v) for k, v in annotations.items() if v not in ("", "unknown")}
+
+
 def push_artifact(
     cfg: Config,
     target: Target,
@@ -1393,14 +1524,10 @@ def push_artifact(
         )
         blob = qcow2.with_suffix(qcow2.suffix + ".zst")
 
-        annotations = [
-            f"vm.release={info.get('release', '')}",
-            f"vm.flavour={info.get('flavour', '')}",
-            f"vm.kernel_release={info.get('kernel_release', '')}",
-            f"vm.username={info.get('username', '')}",
-            f"org.opencontainers.image.title={blob.name}",
+        annotations = artifact_annotations(cfg, target, info, blob.name)
+        annotation_args = [
+            a for k, v in annotations.items() for a in ("--annotation", f"{k}={v}")
         ]
-        annotation_args = [a for pair in annotations for a in ("--annotation", pair)]
 
         # The keypair rides with vm-info.json in the referrer rather than in the
         # image artifact: it is metadata about how to reach the guest, it is
@@ -1412,11 +1539,35 @@ def push_artifact(
             if (work / name).exists()
         ]
 
+        # The referrer describes the same guest, but a consumer that discovers
+        # it without the subject in hand still has to be able to tell what it
+        # belongs to, so the identifying subset rides here too.
+        referrer_annotations = {
+            k: annotations[k]
+            for k in (
+                "org.opencontainers.image.description",
+                "org.opencontainers.image.revision",
+                "org.opencontainers.image.created",
+                "vm.flavour",
+                "vm.release",
+                "vm.kernel_release",
+                f"{cfg.spec.label_ns}.target",
+            )
+            if k in annotations
+        }
+        referrer_args = [
+            a
+            for k, v in referrer_annotations.items()
+            for a in ("--annotation", f"{k}={v}")
+        ]
+
         if dry_run:
             for tag in tags:
                 console.print(f"[yellow]Would push[/] {repo}:{tag}")
             attached = ["vm-info.json"] + [f.split(":", 1)[0] for f in metadata_files]
             console.print("[yellow]Would attach[/] " + ", ".join(attached))
+            for key, value in annotations.items():
+                console.print(f"  [dim]{key}[/] = {value}")
             return
 
         # One push carries every tag; the referrer attaches to the first.
@@ -1439,6 +1590,7 @@ def push_artifact(
                 "attach",
                 "--artifact-type",
                 VM_INFO_ARTIFACT_TYPE,
+                *referrer_args,
                 f"{repo}:{tags[0]}",
                 "vm-info.json:application/json",
                 *metadata_files,
@@ -1929,6 +2081,224 @@ def _query_registry(cfg: Config, repo_name: str) -> None:
     console.print(table)
 
 
+# ── Docker Hub API ─────────────────────────────────────
+#
+# A third API surface, and not the one `push` or `status` use. Pushing goes
+# through the registry endpoint; `status` reads the Registry HTTP API v2 at
+# registry-1.docker.io. Repository *metadata* -- the description and the
+# overview rendered on the hub.docker.com page -- lives only on the Hub API,
+# which has its own JWT and its own scope rules.
+
+
+def _hub_token(cfg: Config) -> str:
+    """Exchange the registry credentials for a Hub API JWT.
+
+    ``/v2/auth/token`` is the current endpoint and takes a personal access
+    token; ``/v2/users/login`` is the older one and is tried second so an
+    account password still works. Writing metadata needs a PAT scoped
+    read/write/delete -- a read/write one authenticates here and is then
+    refused by the PATCH, so say that up front rather than at the failure.
+    """
+
+    if not (cfg.registry_username and cfg.registry_password):
+        console.print(
+            "[red]Error:[/] REGISTRY_USERNAME and REGISTRY_PASSWORD are "
+            "required to update Docker Hub metadata"
+        )
+        sys.exit(1)
+
+    attempts = (
+        (
+            f"{HUB_API}/auth/token",
+            {"identifier": cfg.registry_username, "secret": cfg.registry_password},
+            "access_token",
+        ),
+        (
+            f"{HUB_API}/users/login",
+            {"username": cfg.registry_username, "password": cfg.registry_password},
+            "token",
+        ),
+    )
+
+    last = ""
+    for url, payload, key in attempts:
+        try:
+            resp = requests.post(url, json=payload, timeout=30)
+        except requests.RequestException as exc:
+            last = str(exc)
+            continue
+        if resp.ok:
+            token = resp.json().get(key, "")
+            if token:
+                return str(token)
+        last = f"HTTP {resp.status_code}: {resp.text[:200]}"
+
+    console.print(f"[red]Error:[/] Docker Hub login failed -- {last}")
+    console.print(
+        "[dim]A personal access token needs the read/write/delete scope to "
+        "change repository metadata.[/]"
+    )
+    sys.exit(1)
+
+
+def hub_short_description(text: str) -> str:
+    """*text* trimmed to fit Docker Hub's short-description field.
+
+    The limit is 100 **bytes**, not characters, so the cut is made on the
+    encoded form: decoding with ``errors="ignore"`` drops a trailing partial
+    character rather than sending a broken one, and the ellipsis is paid for
+    out of the same budget.  Backing up to a word boundary keeps the page
+    showing a phrase rather than a fragment, but only when that does not throw
+    away half the sentence.
+    """
+
+    encoded = text.encode()
+    if len(encoded) <= HUB_SHORT_DESCRIPTION_MAX_BYTES:
+        return text
+
+    budget = HUB_SHORT_DESCRIPTION_MAX_BYTES - len(HUB_ELLIPSIS.encode())
+    clipped = encoded[:budget].decode(errors="ignore")
+    head, sep, _ = clipped.rpartition(" ")
+    if sep and len(head.encode()) >= budget // 2:
+        clipped = head
+    return clipped.rstrip(" ,;:-") + HUB_ELLIPSIS
+
+
+def _hub_error(resp: requests.Response) -> str:
+    """The actionable part of a Hub error body.
+
+    Hub buries the reason in ``errinfo.fielderrors``; the envelope around it is
+    the same on every failure, so showing the raw body just pushes the one
+    useful sentence off the end of the column.
+    """
+
+    try:
+        body = resp.json()
+    except ValueError:
+        return resp.text[:160]
+    fields = (body.get("errinfo") or {}).get("fielderrors") or {}
+    if fields:
+        return "; ".join(f"{k}: {v}" for k, v in fields.items())[:160]
+    return str(body.get("message") or body.get("detail") or resp.text)[:160]
+
+
+def _hub_repo(cfg: Config, target: Target) -> tuple[str, str] | None:
+    """``(namespace, repository)`` on Docker Hub, or None if not Docker Hub."""
+
+    if cfg.registry not in ("docker.io", "registry-1.docker.io"):
+        console.print(
+            f"[yellow]Skipping[/] {target.key}: {cfg.registry} is not Docker Hub"
+        )
+        return None
+    ref = full_image_ref(cfg, target)
+    if "/" not in ref:
+        console.print(
+            f"[yellow]Skipping[/] {target.key}: no namespace in '{ref}'; set "
+            "REGISTRY_USERNAME"
+        )
+        return None
+    namespace, _, repository = ref.partition("/")
+    return namespace, repository
+
+
+def readme_for(cfg: Config, target: Target) -> Path:
+    """The image directory's README, which becomes the Hub overview.
+
+    Variants share their image's README: they are the same Dockerfile built
+    against different pins, so one document describes both and the
+    per-variant difference is carried by the description and the tags.
+    """
+    return cfg.workdir / target.image / README_FILE
+
+
+def cmd_describe(args: argparse.Namespace) -> None:
+    """Push each target's description and README to its Docker Hub page."""
+
+    cfg = load_config(
+        env_file=args.env_file,
+        password_file=getattr(args, "password_file", None),
+    )
+    targets = resolve_targets(cfg, args.image)
+
+    token = "" if args.dry_run else _hub_token(cfg)
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+    table = Table(title="Docker Hub metadata")
+    table.add_column("Target")
+    table.add_column("Repository")
+    table.add_column("Overview", justify="right")
+    table.add_column("Status")
+
+    failed = False
+    previews: list[tuple[str, str]] = []
+    for target in targets:
+        where = _hub_repo(cfg, target)
+        if where is None:
+            continue
+        namespace, repository = where
+
+        readme = readme_for(cfg, target)
+        if not readme.is_file():
+            console.print(
+                f"[yellow]Skipping[/] {target.key}: no {target.image}/{README_FILE}"
+            )
+            failed = True
+            continue
+
+        full = readme.read_text()
+        short = image_description(cfg, target)
+        if not short:
+            console.print(
+                f"[yellow]Warning:[/] {target.key} has no description in {SPEC_FILE}"
+            )
+        trimmed = hub_short_description(short)
+        if trimmed != short:
+            console.print(
+                f"[yellow]Note:[/] {target.key} description trimmed to "
+                f"{HUB_SHORT_DESCRIPTION_MAX_BYTES} bytes for Docker Hub; "
+                f"shorten it in {SPEC_FILE} to control the cut"
+            )
+        short = trimmed
+
+        size = f"{len(full.encode()) / 1024:.1f} KiB"
+        previews.append((target.key, short))
+        if args.dry_run:
+            table.add_row(target.key, repository, size, "[yellow]dry-run[/]")
+            continue
+
+        url = f"{HUB_API}/repositories/{namespace}/{repository}"
+        try:
+            resp = requests.patch(
+                url,
+                headers=headers,
+                json={"description": short, "full_description": full},
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            table.add_row(target.key, repository, size, f"[red]{exc}[/]")
+            failed = True
+            continue
+
+        if resp.ok:
+            table.add_row(target.key, repository, size, "[green]updated[/]")
+        else:
+            detail = _hub_error(resp)
+            table.add_row(
+                target.key,
+                repository,
+                size,
+                f"[red]HTTP {resp.status_code}[/] {detail}",
+            )
+            failed = True
+
+    console.print(table)
+    if args.dry_run:
+        for key, short in previews:
+            console.print(f"[dim]{key}[/] ({len(short.encode())}B): {short}")
+    if failed:
+        sys.exit(1)
+
+
 # ── argparse ───────────────────────────────────────────
 
 TARGET_HELP = "Target name: <image> or <image>@<variant>"
@@ -2258,6 +2628,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common_args(p_status)
 
+    # ── describe ──
+    p_describe = sub.add_parser(
+        "describe",
+        help="Push descriptions and READMEs to the Docker Hub pages",
+    )
+    p_describe.add_argument(
+        "image",
+        nargs="?",
+        default=None,
+        metavar="TARGET",
+        help=f"{TARGET_HELP} (updates all if omitted)",
+    )
+    p_describe.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be sent without contacting Docker Hub",
+    )
+    p_describe.add_argument(
+        "--password-file",
+        metavar="FILE",
+        help="File containing registry password",
+    )
+    _add_common_args(p_describe)
+
     return parser
 
 
@@ -2278,6 +2672,7 @@ DISPATCH = {
     "config": cmd_config,
     "inspect": cmd_inspect,
     "status": cmd_status,
+    "describe": cmd_describe,
 }
 
 
