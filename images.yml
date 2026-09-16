@@ -398,7 +398,7 @@ images:
         # this is not one.
         vars:
           qemu_repo: https://github.com/sbates130272/qemu.git
-          qemu_commit: 98eca1a522557f6c5a1a9fed4a41a0acb5277560
+          qemu_commit: 7794baafe95677c0aa0bf5356f3ae1813391ba55
           qemu_branch: dev/stephen/pci-mmio-bridge-submit
 
   # Guest qcow2 images. One parameterised Dockerfile, one repository per
