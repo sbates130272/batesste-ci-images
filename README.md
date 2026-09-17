@@ -280,10 +280,11 @@ Specify a password file for registry authentication:
 
 #### Image Layering and Build Caches
 
-The images form a chain rather than eight independent builds:
+The images form a chain rather than a set of independent builds:
 
 ```text
-ubuntu-base ─┬─ ubuntu-cuda-rocm ── ubuntu-cuda-rocm-fio
+ubuntu-base ─┬─ ubuntu-cuda-rocm ─┬─ ubuntu-cuda-rocm-fio
+             │                    └─ ubuntu-rocm-nixl
              ├─ ubuntu-kernel-build
              ├─ ubuntu-rocm-rocjitsu
              ├─ ubuntu-spdk-libvfio-user
