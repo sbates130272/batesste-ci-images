@@ -80,6 +80,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # privileged container, and nothing here drives an NVMe controller from the
 # host side. --with-vfio-user is the whole point of the image.
 #
+# --target-arch: configure defaults to `native`, which puts -march=native into
+# SPDK's own CFLAGS and -Dcpu_instruction_set=native into DPDK's meson. That
+# bakes the *builder's* CPU into the binary, so the image only runs on a host
+# at least as capable -- and a layer cache shared between two machines turns
+# that into a SIGILL at startup rather than a build error. corei7 is the value
+# DPDK's own `generic` resolves to on x86 (dpdk/config/meson.build), so it is
+# the vendor's baseline rather than a number picked here; `generic` itself
+# cannot be used because gcc rejects it as a -march.
+#
 # PATH rather than CC="ccache gcc": SPDK's makefiles re-exec the compiler by
 # name, so a recorded "ccache gcc" is not preserved the way QEMU's configure
 # preserves it.
@@ -88,7 +97,8 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     cd "${SPDK_DIR}" && \
     PATH=/usr/lib/ccache:${PATH} ./configure \
         --with-vfio-user \
-        --without-nvme-cuse && \
+        --without-nvme-cuse \
+        --target-arch=corei7 && \
     PATH=/usr/lib/ccache:${PATH} make -j"$(nproc)" && \
     test -x "${SPDK_DIR}/build/bin/nvmf_tgt"
 
@@ -106,7 +116,8 @@ RUN ln -sf "${SPDK_DIR}/build/bin/nvmf_tgt" /usr/local/bin/nvmf_tgt && \
   "spdk_commit": "%s",\n\
   "libvfio_user_commit": "%s",\n\
   "libvfio_user_source": "spdk-submodule",\n\
-  "configure_flags": ["--with-vfio-user", "--without-nvme-cuse"],\n\
+  "configure_flags": ["--with-vfio-user", "--without-nvme-cuse",\n\
+                      "--target-arch=corei7"],\n\
   "rbd_enabled": false,\n\
   "kv_backends": ["mem"]\n\
 }\n' \

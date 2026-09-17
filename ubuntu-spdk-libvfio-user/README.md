@@ -46,7 +46,8 @@ Retire the fork when that work lands upstream.
 
 ## What is installed
 
-- SPDK at `/opt/spdk`, built `--with-vfio-user --without-nvme-cuse`. The target
+- SPDK at `/opt/spdk`, built
+  `--with-vfio-user --without-nvme-cuse --target-arch=corei7`. The target
   binary is symlinked to `/usr/local/bin/nvmf_tgt` and the RPC client to
   `/usr/local/bin/rpc.py`.
 - Provenance at `/usr/local/share/spdk-commit.txt`,
@@ -56,6 +57,15 @@ Retire the fork when that work lands upstream.
 `--without-nvme-cuse`: the CUSE character devices need `/dev/fuse` and a
 privileged container, and nothing here drives an NVMe controller from the host
 side.
+
+`--target-arch=corei7`: SPDK's `configure` defaults to `native`, which compiles
+both SPDK and its bundled DPDK for whatever CPU did the build. The resulting
+image runs only on a host at least as capable as the builder, and fails with
+`Illegal instruction` rather than a legible error when it is not — including
+across a shared layer cache, where the machine that compiled SPDK and the
+machine that runs it need not be the same. `corei7` is what DPDK's own
+`generic` resolves to on x86, so the floor is the vendor's baseline rather than
+a number chosen here.
 
 **No Ceph, deliberately.** The image builds without `--with-rbd`, so
 `CONFIG_RBD` is off. `module/kvdev/Makefile` keeps `mem` in `DIRS-y`
