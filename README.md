@@ -34,6 +34,7 @@ adding an image or a variant adds its row.
 [![qemu-minimal 5d68689](https://img.shields.io/badge/qemu--minimal-5d68689-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/5d6868914873757ff1c51dec3ca95a3fa0b2e9d9)
 [![rocm-ernic c34d798](https://img.shields.io/badge/rocm--ernic-c34d798-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/c34d79894cb41b0c33c21b773ee9752c53ead5b0)
 [![rocjitsu be38974](https://img.shields.io/badge/rocjitsu-be38974-ED1C24)](https://github.com/ROCm/rocm-systems/commit/be38974c9e74ef11bb27448d05264f9d3431dd0b)
+[![spdk 18d1d8d](https://img.shields.io/badge/spdk-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
 [![fio 6bc57a9](https://img.shields.io/badge/fio-6bc57a9-4B8BBE)](https://github.com/axboe/fio/commit/6bc57a931f04fa3f50348d8c8f087187f050c6e1)
 [![ucx 12d6aa6](https://img.shields.io/badge/ucx-12d6aa6-4B8BBE)](https://github.com/openucx/ucx/commit/12d6aa65956996625c8daf39cbb3475ef4a1a35b)
 [![etcd-cpp-apiv3 7c6e714](https://img.shields.io/badge/etcd--cpp--apiv3-7c6e714-419EDA)](https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3/commit/7c6e714f188f9576e25e0350cac4181139eec23e)
@@ -54,6 +55,7 @@ adding an image or a variant adds its row.
 | [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-rocm-nixl | [![ubuntu-rocm-nixl main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-rocm-nixl)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-rocm-ernic | [![ubuntu-rocm-ernic main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-rocm-ernic)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-rocm-rocjitsu | [![ubuntu-rocm-rocjitsu main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-rocm-rocjitsu)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-spdk-libvfio-user | [![ubuntu-spdk-libvfio-user main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-spdk-libvfio-user)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-qemu-libvfio-user | [![ubuntu-qemu-libvfio-user main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qemu-libvfio-user)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-qemu-libvfio-user-sbates-fork (job: ubuntu-qemu-libvfio-user@sbates-fork) | [![ubuntu-qemu-libvfio-user-sbates-fork main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qemu-libvfio-user%40sbates-fork)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen | [![ubuntu-qcow2-gen main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
@@ -108,6 +110,18 @@ and pushing of these images.
   That branch is the tip of the stacked review series in PRs #11391–#11397, so
   expect the pin to move while it is under review and to return to `develop`
   once the series lands. See `ubuntu-rocm-rocjitsu/` for details.
+- **ubuntu-spdk-libvfio-user**: SPDK's NVMe-oF target built from source and
+  served over vfio-user, so a guest gets an emulated NVMe controller carrying
+  any mix of LBA namespaces (memory or file backed) and Key Value namespaces
+  (memory backed). It is the storage counterpart to `ubuntu-rocm-ernic`'s NIC
+  and `ubuntu-rocm-rocjitsu`'s GPU. Built from `mmgaggle/spdk@rados-nkv`
+  because upstream SPDK v26.05 added the KV command set to the NVMe
+  *initiator* only — the target-side `kvdev` layer exists nowhere upstream, so
+  the fork is the only tree that can serve a KV namespace. Layered on
+  `ubuntu-base` rather than `ubuntu-libvfio-user`, since SPDK's vfio-user
+  target needs libvfio-user's own `spdk` branch from its submodule. No Ceph:
+  built without `--with-rbd`, which leaves `kvdev_mem` and drops `kvdev_rados`.
+  See `ubuntu-spdk-libvfio-user/` for details.
 - **ubuntu-qcow2-gen**: Guest VM disk images (qcow2), not a runnable container.
   Built on `ubuntu-qemu-libvfio-user` and published `FROM scratch` with nothing
   but `/output` in it, one Docker Hub repository per flavour
@@ -190,6 +204,10 @@ batesste-ci-images/
 │   └── Dockerfile
 ├── ubuntu-rocm-rocjitsu/      # rocjitsu vfio-user emulated GPU image
 │   └── Dockerfile
+├── ubuntu-spdk-libvfio-user/  # SPDK vfio-user NVMe target (LBA + KV namespaces)
+│   ├── Dockerfile
+│   ├── entrypoint.sh
+│   └── README.md
 ├── ubuntu-qcow2-gen/          # Guest qcow2 images, one flavour per variant
 │   ├── Dockerfile
 │   ├── build-vm.sh
@@ -262,12 +280,14 @@ Specify a password file for registry authentication:
 
 #### Image Layering and Build Caches
 
-The images form a chain rather than eight independent builds:
+The images form a chain rather than a set of independent builds:
 
 ```text
-ubuntu-base ─┬─ ubuntu-cuda-rocm ── ubuntu-cuda-rocm-fio
+ubuntu-base ─┬─ ubuntu-cuda-rocm ─┬─ ubuntu-cuda-rocm-fio
+             │                    └─ ubuntu-rocm-nixl
              ├─ ubuntu-kernel-build
              ├─ ubuntu-rocm-rocjitsu
+             ├─ ubuntu-spdk-libvfio-user
              └─ ubuntu-libvfio-user ─┬─ ubuntu-qemu-libvfio-user ── ubuntu-qcow2-gen
                                      └─ ubuntu-rocm-ernic
 ```
@@ -568,10 +588,14 @@ payload half is the *variant*:
 | `ubuntu-rocm-rocjitsu` | `rocjitsu.<sha>` |
 | `ubuntu-rocm-nixl` | `nixl1.4.1-ucx.<sha>` |
 | `ubuntu-qemu-libvfio-user` | `qemu11.1.1-vfu.<sha>` |
+| `ubuntu-spdk-libvfio-user` | `spdk.<sha>` |
 | `ubuntu-kernel-build` | `ubuntu24.04` |
 
 `<sha>` is the pinned upstream commit abbreviated to seven characters;
-`vfu` is libvfio-user, which both of those images link against. NIXL is pinned
+`vfu` is libvfio-user, which both of those images link against.
+`ubuntu-spdk-libvfio-user` links against it too but carries no `vfu` half: it
+builds SPDK's own submodule rather than this repo's shared pin, so there is no
+second pin two of its builds could differ in. NIXL is pinned
 to a release tag rather than a commit, so it appears as a version the way QEMU
 does. The variants are templates in `images.yml`, so they follow the pins
 automatically.

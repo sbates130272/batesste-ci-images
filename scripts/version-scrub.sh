@@ -214,6 +214,28 @@ if check_nonempty "$ROCJITSU_LATEST" "ROCJITSU HEAD" \
         "$REPO_ROOT/ubuntu-rocm-rocjitsu/Dockerfile"
 fi
 
+echo "==> Fetching latest SPDK HEAD..."
+# SPDK tracks a *fork* branch (mmgaggle/spdk@rados-nkv) because the target-side
+# KV command set exists nowhere upstream. A fork branch can be force-pushed or
+# deleted under us, so both the repo and the branch are read from the pin rather
+# than hardcoded: retargeting at spdk/spdk once the KV work lands upstream is
+# then an images.yml edit, not a change here.
+SPDK_REPO_URL=$(current_pin ubuntu-spdk-libvfio-user spdk_repo)
+SPDK_SLUG=${SPDK_REPO_URL#https://github.com/}
+SPDK_SLUG=${SPDK_SLUG%.git}
+SPDK_BRANCH=$(current_pin ubuntu-spdk-libvfio-user spdk_branch)
+SPDK_LATEST=$(gh_curl \
+    "https://api.github.com/repos/${SPDK_SLUG}/commits/${SPDK_BRANCH}" \
+    | jq -r '.sha')
+SPDK_CURRENT=$(current_pin ubuntu-spdk-libvfio-user spdk_commit)
+echo "    current: $SPDK_CURRENT  latest: $SPDK_LATEST  (${SPDK_SLUG}@${SPDK_BRANCH})"
+if check_nonempty "$SPDK_LATEST" "SPDK HEAD" \
+    && [[ "$SPDK_CURRENT" != "$SPDK_LATEST" ]]; then
+    replace_in_yaml "$SPDK_CURRENT" "$SPDK_LATEST"
+    replace_in_files "$SPDK_CURRENT" "$SPDK_LATEST" \
+        "$REPO_ROOT/ubuntu-spdk-libvfio-user/Dockerfile"
+fi
+
 echo "==> Fetching latest fio HEAD..."
 # fio must track master: the libhipfile engine is not in any release tag yet.
 FIO_LATEST=$(gh_curl \
