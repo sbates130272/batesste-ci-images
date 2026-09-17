@@ -2143,10 +2143,78 @@ def cmd_status(args: argparse.Namespace) -> None:
         env_file=args.env_file,
         password_file=getattr(args, "password_file", None),
     )
+    targets = resolve_targets(cfg, args.image)
 
-    for target in resolve_targets(cfg, args.image):
-        console.rule(f"[bold]{target.key}[/]")
-        _query_registry(cfg, full_image_ref(cfg, target))
+    if not args.summary:
+        # The per-tag table reads every manifest anyway -- that is where its
+        # Metadata column comes from -- so --layers has nothing to add here.
+        if args.layers:
+            err_console.print(
+                "[yellow]Note:[/] --layers applies to --summary; the per-tag "
+                "table already reads each manifest"
+            )
+        for target in targets:
+            console.rule(f"[bold]{target.key}[/]")
+            _query_registry(cfg, full_image_ref(cfg, target))
+        return
+
+    # The repository name is the registry image plus the target key, so a
+    # column of them next to the targets would carry one shared prefix and
+    # nothing else; it goes in the title instead.
+    table = Table(title=f"{cfg.registry}/{cfg.registry_image}-*")
+    table.add_column("Target", overflow="fold")
+    table.add_column("Tags", justify="right")
+    table.add_column("Layers", justify="right")
+    table.add_column("Layer size", justify="right")
+    table.add_column("Published tag", overflow="fold")
+    table.add_column("Pushed", overflow="fold")
+    table.add_column("Oldest tag", overflow="fold")
+
+    empty = "[dim]-[/]"
+    with requests.Session() as session:
+        for target in targets:
+            tags = _repo_tag_info(
+                cfg, full_image_ref(cfg, target), session, deep=args.layers
+            )
+            if not tags:
+                table.add_row(
+                    target.key, "0", empty, empty, "[dim]none[/]", empty, empty
+                )
+                continue
+
+            layers = {layer for tag in tags for layer in tag.layers}
+            if args.layers:
+                layer_count = str(len(layers))
+                layer_size = _hub_size(sum(size for _, size in layers))
+            else:
+                layer_count = layer_size = empty
+
+            # The fingerprinted tag is the one a consumer should pin, so it is
+            # what "published" means here, exactly as in `describe`. Tags are
+            # newest first, so the first match is the current one.
+            pinned = next(
+                (t for t in tags if _FINGERPRINTED_TAG_RE.search(t.name)),
+                None,
+            )
+            dated = [t for t in tags if t.pushed]
+            oldest = min(dated, key=lambda t: t.pushed) if dated else None
+
+            table.add_row(
+                target.key,
+                str(len(tags)),
+                layer_count,
+                layer_size,
+                pinned.name if pinned else "[dim]none[/]",
+                _hub_when(pinned.pushed) if pinned and pinned.pushed else empty,
+                _hub_when(oldest.pushed) if oldest else empty,
+            )
+
+    console.print(table)
+    if not args.layers:
+        console.print(
+            "[dim]Layer counts need one manifest read per distinct image; "
+            "add --layers to include them.[/]"
+        )
 
 
 def _registry_base_url(registry: str) -> str:
@@ -2158,16 +2226,29 @@ def _registry_base_url(registry: str) -> str:
     return registry
 
 
-def _docker_hub_token(repo: str) -> str | None:
-    """Obtain a Docker Hub bearer token for public
-    read access."""
+def _is_docker_hub(registry: str) -> bool:
+    """Whether *registry* is Docker Hub under either of its names."""
+    return registry in ("docker.io", "registry-1.docker.io")
+
+
+def _docker_hub_token(repo: str, cfg: Config | None = None) -> str | None:
+    """Obtain a Docker Hub bearer token for pull access.
+
+    Authenticated when credentials are available: the manifest fetches this
+    token is for are pulls as far as Hub's rate limiter is concerned, and the
+    anonymous allowance is per source IP and small enough that walking a few
+    repositories exhausts it.
+    """
     url = (
         "https://auth.docker.io/token"
         "?service=registry.docker.io"
         f"&scope=repository:{repo}:pull"
     )
+    auth = None
+    if cfg and cfg.registry_username and cfg.registry_password:
+        auth = (cfg.registry_username, cfg.registry_password)
     try:
-        resp = requests.get(url, timeout=15)
+        resp = requests.get(url, auth=auth, timeout=15)
     except requests.RequestException as exc:
         console.print(
             f"[yellow]Warning:[/] Failed to obtain Docker Hub token for "
@@ -2183,11 +2264,93 @@ def _query_registry(cfg: Config, repo_name: str) -> None:
     """Fetch tags and manifests for *repo_name* from the
     remote registry and print a Rich table."""
 
-    base = _registry_base_url(cfg.registry)
-    headers: dict[str, str] = {}
+    with requests.Session() as session:
+        tags = _repo_tag_info(cfg, repo_name, session)
+    if not tags:
+        return
 
-    if cfg.registry in ("docker.io", "registry-1.docker.io"):
-        token = _docker_hub_token(repo_name)
+    table = Table(title=f"{cfg.registry}/{repo_name}")
+    table.add_column("Tag", overflow="fold")
+    table.add_column("Digest")
+    table.add_column("Type")
+    table.add_column("Image", justify="right")
+    table.add_column("Metadata", justify="right")
+    table.add_column("Pushed", overflow="fold")
+
+    for tag in tags:
+        digest = tag.digest or "n/a"
+        short_digest = digest[:25] + "..." if len(digest) > 28 else digest
+        table.add_row(
+            tag.name,
+            short_digest,
+            _media_short(tag.content_type),
+            _hub_size(tag.image_size),
+            _hub_size(tag.metadata_size),
+            _hub_when(tag.pushed) if tag.pushed else "[dim]-[/]",
+        )
+
+    console.print(table)
+
+
+#: Media types, shortened for a column. The full string is three times the
+#: width of the digest it sits next to and carries no more information.
+_MEDIA_NAMES = {
+    "application/vnd.oci.image.index.v1+json": "oci index",
+    "application/vnd.oci.image.manifest.v1+json": "oci manifest",
+    "application/vnd.docker.distribution.manifest.list.v2+json": "docker list",
+    "application/vnd.docker.distribution.manifest.v2+json": "docker v2",
+}
+
+#: Everything the registry might answer a manifest request with. The v2 API
+#: content-negotiates, so anything left out here comes back converted (or 404s
+#: on a registry that cannot convert it) rather than as what was pushed.
+_MANIFEST_ACCEPT = ", ".join(_MEDIA_NAMES)
+
+#: An index can point at manifests, which for an attestation-carrying push
+#: point at further manifests. Two levels covers that; the bound is here so a
+#: malformed or self-referential index cannot spin.
+_MANIFEST_MAX_DEPTH = 2
+
+#: Hub pages tags 100 at a time. Deep enough for a repository that has never
+#: been pruned, which is the one this is most needed for.
+HUB_TAG_MAX_PAGES = 20
+
+
+@dataclass(frozen=True)
+class TagInfo:
+    """One remote tag, sized.
+
+    ``image_size`` is the layer bytes -- compressed, as stored and downloaded.
+    ``metadata_size`` is everything else the registry holds for the tag: the
+    manifest documents and the config blob. They are separate columns because
+    prune reclaims them differently: layers are shared between tags and only
+    free space once the last tag referencing them goes, metadata is the tag's
+    own. ``layers`` carries ``(digest, size)`` so a caller can union across
+    tags and get both the count and the bytes.
+    """
+
+    name: str
+    digest: str
+    content_type: str
+    image_size: int
+    metadata_size: int
+    layers: frozenset[tuple[str, int]]
+    pushed: str
+
+
+def _media_short(ctype: str) -> str:
+    """A manifest media type, without the parameters or the vendor prefix."""
+
+    base = ctype.partition(";")[0].strip()
+    return _MEDIA_NAMES.get(base, base or "n/a")
+
+
+def _registry_headers(cfg: Config, repo_name: str) -> dict[str, str]:
+    """Authorization for the v2 API, anonymous if none is available."""
+
+    headers: dict[str, str] = {}
+    if _is_docker_hub(cfg.registry):
+        token = _docker_hub_token(repo_name, cfg)
         if token:
             headers["Authorization"] = f"Bearer {token}"
     elif cfg.registry_username and cfg.registry_password:
@@ -2195,69 +2358,262 @@ def _query_registry(cfg: Config, repo_name: str) -> None:
             cfg.registry_username,
             cfg.registry_password,
         )
+    return headers
+
+
+def _repo_tag_info(
+    cfg: Config,
+    repo_name: str,
+    session: requests.Session,
+    deep: bool = True,
+) -> list[TagInfo]:
+    """Every tag in *repo_name*, newest push first.
+
+    Two sources, because neither answers everything. The Hub API lists a whole
+    repository in one paged request with the size and push time already on
+    each tag, and does not charge the request against the pull limit -- but it
+    knows nothing about layers. The v2 API has the manifests, and reading one
+    costs a pull; ``deep`` therefore controls whether the manifests are read
+    at all, and they are cached by digest so the rolling aliases pushed
+    alongside a fingerprinted tag cost nothing extra.
+
+    Off Docker Hub there is no Hub API, so the v2 API is the only source and
+    push times come back empty -- the v2 API does not record them.
+    """
+
+    if _is_docker_hub(cfg.registry) and "/" in repo_name:
+        infos = _hub_tag_info(cfg, repo_name, session, deep)
+    else:
+        infos = _v2_tag_info(cfg, repo_name, session)
+
+    # Newest first, undated last: the interesting end of a tag list is the
+    # recent one, and for prune the interesting end is what falls off it.
+    infos.sort(key=lambda t: (t.pushed != "", t.pushed, t.name), reverse=True)
+    return infos
+
+
+def _hub_tag_info(
+    cfg: Config,
+    repo_name: str,
+    session: requests.Session,
+    deep: bool,
+) -> list[TagInfo]:
+    """Tags for a Docker Hub repository, from the Hub API."""
+
+    namespace, _, repository = repo_name.partition("/")
+    entries = _hub_tags(namespace, repository, session)
+    if not entries:
+        console.print(f"  [dim]No tags found in {repo_name}[/]")
+        return []
+
+    base = _registry_base_url(cfg.registry)
+    headers = _registry_headers(cfg, repo_name) if deep else {}
+    cache: dict[str, dict] = {}
+
+    infos: list[TagInfo] = []
+    for entry in entries:
+        name = str(entry.get("name") or "")
+        if not name:
+            continue
+        digest = str(entry.get("digest") or "")
+        size = entry.get("full_size")
+        pushed = entry.get("tag_last_pushed") or entry.get("last_updated") or ""
+        ctype = str(entry.get("content_type") or "")
+        metadata_size = 0
+        layers: frozenset[tuple[str, int]] = frozenset()
+
+        if deep and digest:
+            manifest = _manifest_info(session, base, repo_name, digest, headers, cache)
+            if manifest:
+                ctype = manifest["content_type"] or ctype
+                metadata_size = manifest["metadata_size"]
+                layers = manifest["layers"]
+
+        infos.append(
+            TagInfo(
+                name=name,
+                digest=digest,
+                content_type=ctype,
+                image_size=int(size) if isinstance(size, (int, float)) else 0,
+                metadata_size=metadata_size,
+                layers=layers,
+                pushed=str(pushed),
+            )
+        )
+    return infos
+
+
+def _v2_tag_info(
+    cfg: Config,
+    repo_name: str,
+    session: requests.Session,
+) -> list[TagInfo]:
+    """Tags for a non-Hub registry, from the Registry HTTP API v2."""
+
+    base = _registry_base_url(cfg.registry)
+    headers = _registry_headers(cfg, repo_name)
 
     tags_url = f"{base}/v2/{repo_name}/tags/list"
     try:
-        resp = requests.get(tags_url, headers=headers, timeout=15)
+        resp = session.get(tags_url, headers=headers, timeout=15)
     except requests.RequestException:
         console.print(f"  [red]Cannot reach registry:[/] {base}")
-        return
+        return []
 
     if resp.status_code == 401:
         console.print("  [red]Unauthorized:[/] check credentials")
-        return
+        return []
     if resp.status_code == 404:
         console.print(f"  [yellow]Repository not found:[/] {repo_name}")
-        return
+        return []
     if not resp.ok:
         console.print(f"  [red]HTTP {resp.status_code}[/]: {resp.text[:200]}")
-        return
+        return []
 
-    tags = resp.json().get("tags") or []
-    if not tags:
-        console.print("  [dim]No tags found[/]")
-        return
+    names = resp.json().get("tags") or []
+    if not names:
+        console.print(f"  [dim]No tags found in {repo_name}[/]")
+        return []
 
-    table = Table(title=f"{cfg.registry}/{repo_name}")
-    table.add_column("Tag")
-    table.add_column("Digest")
-    table.add_column("Content-Type")
+    cache: dict[str, dict] = {}
+    infos: list[TagInfo] = []
+    for name in sorted(names):
+        info = _manifest_info(session, base, repo_name, name, headers, cache)
+        if info is None:
+            console.print(f"  [yellow]No manifest for tag '{name}'[/]")
+            info = {
+                "digest": "n/a",
+                "content_type": "",
+                "image_size": 0,
+                "metadata_size": 0,
+                "layers": frozenset(),
+            }
+        infos.append(TagInfo(name=name, pushed="", **info))
+    return infos
 
-    accept = (
-        "application/vnd.docker.distribution"
-        ".manifest.v2+json, "
-        "application/vnd.oci.image.index.v1+json"
-    )
 
-    for tag in sorted(tags):
-        manifest_url = f"{base}/v2/{repo_name}/manifests/{tag}"
+def _manifest_info(
+    session: requests.Session,
+    base: str,
+    repo_name: str,
+    ref: str,
+    headers: dict[str, str],
+    cache: dict[str, dict],
+    depth: int = 0,
+) -> dict | None:
+    """Digest, media type, sizes and layer set behind one tag or digest."""
+
+    if ref in cache:
+        return cache[ref]
+
+    url = f"{base}/v2/{repo_name}/manifests/{ref}"
+    try:
+        resp = session.get(
+            url,
+            headers={**headers, "Accept": _MANIFEST_ACCEPT},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        console.print(f"  [yellow]Failed to fetch manifest for '{ref}':[/] {exc}")
+        return None
+    if not resp.ok:
+        console.print(
+            f"  [yellow]Manifest request for '{ref}' failed with "
+            f"HTTP {resp.status_code}[/]"
+        )
+        return None
+
+    digest = resp.headers.get("Docker-Content-Digest", "")
+    ctype = resp.headers.get("Content-Type", "")
+    try:
+        body = resp.json()
+    except ValueError:
+        return None
+
+    image_size = 0
+    metadata_size = len(resp.content)
+    layers: set[tuple[str, int]] = set()
+
+    children = body.get("manifests")
+    if children:
+        for child in children:
+            child_digest = child.get("digest")
+            if not child_digest or depth >= _MANIFEST_MAX_DEPTH:
+                continue
+            sub = _manifest_info(
+                session, base, repo_name, child_digest, headers, cache, depth + 1
+            )
+            if sub is None:
+                continue
+            image_size += sub["image_size"]
+            metadata_size += sub["metadata_size"]
+            layers |= sub["layers"]
+    else:
+        config = body.get("config") or {}
+        metadata_size += int(config.get("size") or 0)
+        for layer in body.get("layers") or []:
+            size = int(layer.get("size") or 0)
+            image_size += size
+            if layer.get("digest"):
+                layers.add((str(layer["digest"]), size))
+
+    info = {
+        "digest": digest,
+        "content_type": ctype,
+        "image_size": image_size,
+        "metadata_size": metadata_size,
+        "layers": frozenset(layers),
+    }
+    cache[ref] = info
+    if digest:
+        cache[digest] = info
+    return info
+
+
+def _hub_tags(
+    namespace: str,
+    repository: str,
+    session: requests.Session,
+) -> list[dict]:
+    """Every tag record the Hub API holds for a repository, newest first.
+
+    Anonymous: the tag list is public for a public repository, which is what
+    everything here publishes. A private repository comes back empty, the same
+    answer an anonymous ``docker pull`` would give.
+    """
+
+    out: list[dict] = []
+    url: str | None = f"{HUB_API}/repositories/{namespace}/{repository}/tags"
+    params: dict[str, object] | None = {
+        "page_size": HUB_TAG_PAGE_SIZE,
+        "ordering": "last_updated",
+    }
+    for _ in range(HUB_TAG_MAX_PAGES):
+        if not url:
+            break
         try:
-            mresp = requests.head(
-                manifest_url,
-                headers={**headers, "Accept": accept},
-                timeout=15,
-            )
+            resp = session.get(url, params=params, timeout=30)
         except requests.RequestException as exc:
+            console.print(f"  [yellow]Tag lookup for {repository} failed:[/] {exc}")
+            break
+        if resp.status_code == 404:
+            console.print(f"  [yellow]Repository not found:[/] {repository}")
+            break
+        if not resp.ok:
             console.print(
-                f"  [yellow]Failed to fetch manifest for tag '{tag}':[/] {exc}"
+                f"  [yellow]Tag lookup for {repository} returned "
+                f"HTTP {resp.status_code}[/]"
             )
-            digest = "n/a"
-            ctype = "n/a"
-        else:
-            if not mresp.ok:
-                console.print(
-                    f"  [yellow]Manifest request for tag '{tag}' failed with "
-                    f"HTTP {mresp.status_code}[/]"
-                )
-                digest = "n/a"
-                ctype = "n/a"
-            else:
-                digest = mresp.headers.get("Docker-Content-Digest", "n/a")
-                ctype = mresp.headers.get("Content-Type", "n/a")
-        short_digest = digest[:25] + "..." if len(digest) > 28 else digest
-        table.add_row(tag, short_digest, ctype)
-
-    console.print(table)
+            break
+        try:
+            body = resp.json()
+        except ValueError:
+            break
+        out.extend(body.get("results") or [])
+        # `next` is a full URL with the page cursor already in it.
+        url = body.get("next")
+        params = None
+    return out
 
 
 # ── Docker Hub API ─────────────────────────────────────
@@ -2386,9 +2742,10 @@ def _hub_repo(cfg: Config, target: Target) -> tuple[str, str] | None:
 #: base (``1.1.0.g0d300a2-…``) as well as the ``auto`` date one.
 _FINGERPRINTED_TAG_RE = re.compile(r"\.g[0-9a-f]{7}(-dirty)?(-|$)")
 
-#: How many tags to ask the Hub for. Ordered newest first, so this only has to
-#: be deep enough to reach past the rolling aliases -- latest, the variant, the
-#: minor -- that a single push updates alongside the fingerprinted one.
+#: How many tags to ask the Hub for per request. `describe` reads one page,
+#: ordered newest first, which only has to reach past the rolling aliases --
+#: latest, the variant, the minor -- that a single push updates alongside the
+#: fingerprinted one. `status` pages through the lot, HUB_TAG_MAX_PAGES deep.
 HUB_TAG_PAGE_SIZE = 100
 
 
@@ -2918,6 +3275,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="TARGET",
         help=f"{TARGET_HELP} (queries all if omitted)",
+    )
+    p_status.add_argument(
+        "--summary",
+        action="store_true",
+        help=(
+            "One row per target: tag count, published tag, and the date of "
+            "the oldest tag still in the repository"
+        ),
+    )
+    p_status.add_argument(
+        "--layers",
+        action="store_true",
+        help=(
+            "With --summary, also count the unique layers behind each "
+            "repository (one manifest read per distinct image)"
+        ),
     )
     p_status.add_argument(
         "--password-file",
