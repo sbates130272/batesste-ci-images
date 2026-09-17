@@ -109,6 +109,26 @@ serve today. It is a spec var so a variant built against a different upstream
 ref can point at a renamed or newly added profile without touching the
 Dockerfile.
 
+## Logging
+
+The server is built with `RJ_LOG_GROUPS=CP`, so the command processor --
+doorbell, dispatch, completion -- narrates itself on stdout as `[rj log CP]`.
+That is the path a guest drives through the vfio-user front end, and the one
+worth having when a dispatch is accepted but never completes.
+
+It is compiled in, not switched on: `util/log.h` reads the cmake value into a
+`constexpr` bitmask and there is no environment variable to quieten it. Every
+covered event prints, through a shared mutex, for the life of the container.
+The other groups (`VM`, `DBT_HOOKS`, `PLUGINS`, `DRIVER`) are off for that
+reason -- `VM` logs instruction execution, which is not a thing to leave on in
+a server a guest is booting against.
+
+Change it with the `rocjitsu_log_groups` var in [`images.yml`](../images.yml),
+or `ROCM_ROCJITSU_LOG_GROUPS` in the environment: `OFF`, `ALL`, a
+comma-separated subset, or a raw bitmask. The value is recorded in the
+`…rocjitsu.log-groups` label and in `rocjitsu-build.json`, so what an image
+prints can be read off the image.
+
 ## Pin
 
 `rocjitsu_commit` in [`images.yml`](../images.yml), tracking
@@ -122,5 +142,5 @@ is the whole reason the pin is temporary.
 
 ## Tags
 
-The tag variant is the abbreviated commit, for example `rocjitsu.909c17f`. See
+The tag variant is the abbreviated commit, for example `rocjitsu.be38974`. See
 the repository [README](../README.md) for the full tag scheme.

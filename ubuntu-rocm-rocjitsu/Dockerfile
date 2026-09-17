@@ -17,7 +17,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 ARG ROCJITSU_REPO=https://github.com/ROCm/rocm-systems.git
 ARG ROCJITSU_BRANCH=users/agutierr/gfx1250-vfio-compute-6
-ARG ROCJITSU_COMMIT=909c17fe35e9739cd7cd30b8532c02be0ddd4f6c
+ARG ROCJITSU_COMMIT=be38974c9e74ef11bb27448d05264f9d3431dd0b
 # Which config the vfio-user probe below and the default CMD serve. A build
 # variant pinned to a different upstream ref can point at a renamed or newly
 # added profile from images.yml without editing this file.
@@ -27,6 +27,9 @@ ARG ROCJITSU_CONFIG=gfx1250_mi455x.json
 # stub generator was deleted upstream and no public firmware release replaces
 # it for gfx1250. See the install step below.
 ARG ROCJITSU_FIRMWARE_GEN_COMMIT=730bc62d60191337a07da50892538475370cb071
+# Compile-time log groups; see rj_log.cmake. Nothing gates these at runtime, so
+# a group named here prints for every event it covers.
+ARG ROCJITSU_LOG_GROUPS=CP
 
 WORKDIR /build
 
@@ -58,6 +61,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     -DCMAKE_INSTALL_PREFIX=/usr/local \
     -DFETCHCONTENT_BASE_DIR=/tmp/deps \
     -DROCJITSU_ENABLE_VFIO=ON \
+    "-DRJ_LOG_GROUPS=${ROCJITSU_LOG_GROUPS}" \
     -DBUILD_TESTING=OFF && \
     cmake --build /build/rocm-systems/build \
           --parallel "$(nproc)" && \
@@ -117,6 +121,7 @@ RUN cp /build/rocjitsu-commit.txt \
   "libvfio_user_tag": "v0.8",\n\
   "json_c_tag": "json-c-0.18-20240915",\n\
   "vfio_enabled": true,\n\
+  "log_groups": "%s",\n\
   "guest_tools": ["rj-ip-discovery", "run-vfio-guest.py", "vfio_guest_firmware.py"],\n\
   "firmware_gen_commit": "%s",\n\
   "config_dir": "%s"\n\
@@ -124,6 +129,7 @@ RUN cp /build/rocjitsu-commit.txt \
         "${ROCJITSU_REPO}" \
         "${ROCJITSU_BRANCH}" \
         "$(cat /build/rocjitsu-commit.txt)" \
+        "${ROCJITSU_LOG_GROUPS}" \
         "${ROCJITSU_FIRMWARE_GEN_COMMIT}" \
         "${ROCJITSU_CONFIG_DIR}" \
         > /usr/local/share/rocjitsu-build.json && \

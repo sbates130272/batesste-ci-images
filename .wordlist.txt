@@ -157,3 +157,6 @@ GDA
 passthrough
 ABI
 libibverbs
+bitmask
+mutex
+stdout

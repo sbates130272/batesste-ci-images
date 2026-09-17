@@ -33,7 +33,7 @@ adding an image or a variant adds its row.
 [![libvfio-user 8039244](https://img.shields.io/badge/libvfio--user-8039244-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/803924493a7c787b2ba358751f55f07d5dba64b2)
 [![qemu-minimal 5d68689](https://img.shields.io/badge/qemu--minimal-5d68689-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/5d6868914873757ff1c51dec3ca95a3fa0b2e9d9)
 [![rocm-ernic c34d798](https://img.shields.io/badge/rocm--ernic-c34d798-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/c34d79894cb41b0c33c21b773ee9752c53ead5b0)
-[![rocjitsu 909c17f](https://img.shields.io/badge/rocjitsu-909c17f-ED1C24)](https://github.com/ROCm/rocm-systems/commit/909c17fe35e9739cd7cd30b8532c02be0ddd4f6c)
+[![rocjitsu be38974](https://img.shields.io/badge/rocjitsu-be38974-ED1C24)](https://github.com/ROCm/rocm-systems/commit/be38974c9e74ef11bb27448d05264f9d3431dd0b)
 [![fio 6bc57a9](https://img.shields.io/badge/fio-6bc57a9-4B8BBE)](https://github.com/axboe/fio/commit/6bc57a931f04fa3f50348d8c8f087187f050c6e1)
 [![ucx 12d6aa6](https://img.shields.io/badge/ucx-12d6aa6-4B8BBE)](https://github.com/openucx/ucx/commit/12d6aa65956996625c8daf39cbb3475ef4a1a35b)
 [![etcd-cpp-apiv3 7c6e714](https://img.shields.io/badge/etcd--cpp--apiv3-7c6e714-419EDA)](https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3/commit/7c6e714f188f9576e25e0350cac4181139eec23e)
@@ -373,6 +373,19 @@ Push the descriptions to Docker Hub, all targets or one:
 Variants share their image's README — they are the same Dockerfile against
 different pins, so one document describes both and the per-variant difference
 is carried by the description and the tags.
+
+The table also reports what is actually on each Hub page: the newest published
+tag carrying a source fingerprint — the fully specified
+`<date>.g<sha7>-<variant>` one, not a rolling alias — with that tag's size and
+when it was pushed. It answers "is the page I am about to rewrite describing a
+build I recognise?" without a second trip to the registry. The lookup is a
+public read, so `--dry-run` reports it too; a repository with nothing pushed,
+or a private one read without credentials, shows `none`.
+
+`Overview` is the size of the README being uploaded; `Image` is the size of
+the published tag as Hub reports it, which is the **compressed** registry size
+— what a `docker pull` transfers, not what `docker images` shows once it is
+unpacked.
 
 Hub's short description is capped at 100 **bytes**, not characters — it rejects
 anything longer with `Exceeded max number of bytes 100`. Longer sentences are
