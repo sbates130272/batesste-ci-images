@@ -101,6 +101,15 @@ docker run --rm \
   docker.io/sbates130272/batesste-ci-images-ubuntu-spdk-libvfio-user:latest
 ```
 
+A KV namespace alone, for a consumer that wants no block device in the way:
+
+```bash
+docker run --rm \
+  -v /tmp/vfio-sockets:/tmp/vfio-sockets \
+  -e NVME_NAMESPACES='kv:mem' \
+  docker.io/sbates130272/batesste-ci-images-ubuntu-spdk-libvfio-user:latest
+```
+
 Any argument other than `--probe` is run instead of the target, so the image
 doubles as its own client:
 
@@ -108,6 +117,26 @@ doubles as its own client:
 docker exec <container> rpc.py nvmf_get_subsystems
 docker exec <container> rpc.py kvdev_mem_get_entry KvMem0 mykey
 ```
+
+In `nvmf_get_subsystems` output a namespace carrying a `kvdev_name` key is a KV
+namespace and one without it is LBA -- the same discriminator the probe uses.
+
+### Checking a configuration without serving it
+
+`--probe` configures the target, asserts the socket appeared and asserts the
+target reports the namespaces at the NSIDs asked for, then tears down. It is
+what the image build runs, and it works just as well as a check for a
+namespace list you are about to deploy:
+
+```bash
+docker run --rm \
+  -e NVME_NAMESPACES='kv:mem,lba:malloc:1G' \
+  docker.io/sbates130272/batesste-ci-images-ubuntu-spdk-libvfio-user:latest \
+  --probe
+```
+
+Exit 0 means the target really built what was requested, rather than that the
+RPC calls returned success.
 
 ### Namespace grammar
 
@@ -166,6 +195,8 @@ transport will not carry. Clients that default to a larger value size (rocm-xio'
 | `SPDK_HUGE` | `auto` | `auto`, `on` or `off`; anything else is a startup error |
 | `SPDK_MEM_SIZE` | `1024` | `-s`, in MiB, when hugepages are off |
 | `SPDK_AIO_DEFAULT_SIZE` | `1G` | size of an `lba:aio` file created on demand |
+| `SPDK_QUEUE_DEPTH` | `1024` | `nvmf_create_transport -q` |
+| `SPDK_MAX_QPAIRS` | `16` | `nvmf_create_transport -m` |
 | `SPDK_JSON_CONFIG` | unset | an SPDK JSON config naming the transports, bdevs, kvdevs, subsystems and listeners itself |
 
 `SPDK_JSON_CONFIG` skips the RPC generation above and execs
@@ -198,11 +229,46 @@ docker run --rm --privileged \
   docker.io/sbates130272/batesste-ci-images-ubuntu-spdk-libvfio-user:latest
 ```
 
+## Lifetime and cleanup
+
+**The container's lifetime is the controller's lifetime.** A guest attached to
+a server that exits sees a surprise device removal, so stop the guest first.
+
+**Prefer `docker stop` to `docker kill`.** The entrypoint traps TERM and INT,
+waits for `nvmf_tgt` to shut down and removes the socket; a `SIGKILL` bypasses
+all of that and leaves a stale socket in the shared mount, which the next
+listener refuses to bind and the next QEMU gets `ECONNREFUSED` from. Startup
+removes a leftover socket, so the recovery is to start again -- or
+`rm -f /tmp/vfio-sockets/nvme/cntrl` by hand.
+
+**KV contents do not survive a restart.** `kvdev_mem` is memory backed and
+there is no durable alternative in this image; see the note on `--with-rbd`
+above. An `lba:aio` namespace is the only backing here that outlives the
+container.
+
 ## Attaching a guest
 
 `ubuntu-qemu-libvfio-user`'s entrypoint takes a `VFIO_USER_SOCKET` and sets up
 the `memory-backend-memfd,share=on` the device needs to reach guest RAM, so no
-change to that image is required:
+change to that image is required. That substitution is the reason to go through
+the entrypoint rather than hand-rolling the QEMU line: without the shared
+backend the device sees no guest memory and every DMA fails. It also waits up
+to 30s for the socket, so the two containers can start in either order.
+
+`VFIO_USER_SOCKET` is `amd64` only -- QEMU there is built
+`--target-list=x86_64-softmmu`, and the entrypoint rejects any other arch
+rather than starting a guest with no device.
+
+The QEMU image carries no guest of its own. Extract one from a published
+`ubuntu-qcow2-gen` payload first, where `VM_NAME` matches the payload's
+`vm-info.json`, since the entrypoint looks for `/output/${VM_NAME}.qcow2`:
+
+```bash
+mkdir -p vm
+cid=$(docker create \
+  docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen:latest)
+docker cp "$cid:/output/." vm && docker rm "$cid"
+```
 
 ```bash
 docker run --rm \
@@ -215,10 +281,31 @@ docker run --rm \
 ```
 
 In the guest, `nvme list` shows an "SPDK bdev Controller" and
-`nvme list-ns --csi` distinguishes the LBA and KV namespaces.
+`nvme list-ns --csi` distinguishes the LBA and KV namespaces. Exercising the KV
+command set needs a KV-aware client -- `nvme-cli` does not speak it -- and that
+client has to be told a value size at or under the 128 KiB ceiling above.
 
 That entrypoint takes one socket, so this and a rocjitsu GPU cannot currently
 be attached to the same guest through it.
+
+### Compose
+
+[`compose/docker-compose.yml`](../compose/docker-compose.yml) wires QEMU to
+rocjitsu and rocm-ernic over a named `vfio-sockets` volume and has no service
+for this image. To use this server there, add one:
+
+```yaml
+  spdk-nvme:
+    image: batesste-ci-images-ubuntu-spdk-libvfio-user:latest
+    volumes:
+      - vfio-sockets:/tmp/vfio-sockets
+    environment:
+      NVME_NAMESPACES: "kv:mem,lba:malloc:1G"
+```
+
+then point the `qemu` service at `/tmp/vfio-sockets/nvme/cntrl` and add
+`spdk-nvme` to its `depends_on`. Per the one-socket limit above, that replaces
+the rocjitsu attachment rather than joining it.
 
 ## Pins
 

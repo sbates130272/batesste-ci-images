@@ -123,6 +123,7 @@ MiB
 Ansible
 CLI
 DKMS
+DMA
 Dockerfile
 Dockerfiles
 MMIO
