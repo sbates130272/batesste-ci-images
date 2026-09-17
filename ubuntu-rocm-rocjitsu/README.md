@@ -30,10 +30,12 @@ transport has to be the one upstream tested against.
   `install()` rule, so it is lifted out of the build tree by hand.
 - **`run-vfio-guest.py`** -- upstream's harness for booting a prepared guest
   against the vfio-user socket
-- **`vfio_guest_firmware.py`** -- generates the GFX/SDMA/MES firmware-format
-  fixtures the driver parses during early init. Upstream deleted it; this image
-  fetches it from the last commit that had it, pinned separately from the
-  server's own commit. See [Firmware](#firmware) below.
+- **`vfio_guest_firmware.py`** -- generates the complete guest firmware set: the
+  GFX/SDMA/MES firmware-format fixtures the driver parses during early init,
+  `ip_discovery.bin`, and a manifest naming every file. The upstream generator
+  covers the fixtures alone; this image fetches it from the last commit that had
+  it, pinned separately from the server's own commit, and wraps it. See
+  [Firmware](#firmware) below.
 - the config profiles under `/usr/local/share/rocjitsu/configs`
 - `/usr/local/share/rocjitsu-build.json`, recording the repo, branch, commit,
   the libvfio-user and json-c tags built against, and the guest tools shipped
@@ -49,7 +51,9 @@ is legible rather than as a hung guest:
    an empty `ip_discovery.bin` hangs in `hw_init` instead of failing cleanly
 3. `run-vfio-guest.py --help` must run, which catches a Python the base image
    cannot import it under
-4. `vfio_guest_firmware.py` must emit all five of its fixtures by name
+4. `vfio_guest_firmware.py` must emit every file its own manifest names, the
+   two MES aliases must carry the `uni_mes` bytes, and a config it has no
+   firmware for must be refused rather than served gfx1250 stubs
 
 ## Firmware
 
@@ -64,24 +68,92 @@ the emulated device, and this image keeps shipping the generator --
 `…rocjitsu.firmware-gen-commit` label and in `rocjitsu-build.json`. Retire the
 pin when real gfx1250 firmware is published.
 
+One call produces the whole set:
+
 ```bash
 docker run --rm -v "$PWD/fw:/out" "$IMAGE" \
     python3 /usr/local/bin/vfio_guest_firmware.py --output /out
-docker run --rm -v "$PWD/fw:/out" "$IMAGE" \
-    rj-ip-discovery gfx1250 /out/ip_discovery.bin
 ```
 
-That produces `gc_12_1_0_imu.bin`, `gc_12_1_0_mec.bin`, `gc_12_1_0_rlc_1.bin`,
-`gc_12_1_0_uni_mes.bin` and `sdma_7_1_0.bin`, plus `ip_discovery.bin`. Two more
-files are the caller's to make, because only the caller knows which MES path its
-`amdgpu.ko` takes: copy `gc_12_1_0_uni_mes.bin` to `gc_12_1_0_mes.bin` and
-`gc_12_1_0_mes1.bin`. The 7.1.3 driver also opens `psp_15_0_8_toc_1.bin`, which
-nothing public provides and this generator does not emit; the similarly named
+That writes `gc_12_1_0_imu.bin`, `gc_12_1_0_mec.bin`, `gc_12_1_0_mes.bin`,
+`gc_12_1_0_mes1.bin`, `gc_12_1_0_rlc_1.bin`, `gc_12_1_0_uni_mes.bin`,
+`sdma_7_1_0.bin`, `ip_discovery.bin` and a `manifest.json` naming them:
+
+```json
+{
+  "generation": "gfx1250",
+  "gfx_target_version": 120500,
+  "config": "gfx1250_mi455x.json",
+  "files": ["gc_12_1_0_imu.bin", "..."]
+}
+```
+
+Copy the files into the guest's `/lib/firmware/amdgpu/` and assert against the
+manifest rather than a filename of your own -- then a firmware file added here
+needs no change on the consuming side.
+
+The 7.1.3 driver also opens `psp_15_0_8_toc_1.bin`, which nothing public
+provides and this generator does not emit; the similarly named
 `psp_15_0_0_toc.bin` and `psp_15_0_9_toc.bin` are different parts and must not
 be substituted.
 
 `ip_discovery.bin` must come from the same rocjitsu commit that serves the
 device, which is why it is generated here rather than shipped in a guest disk.
+
+### Which generation
+
+`--config` takes the same config the server takes -- a name under
+`ROCJITSU_CONFIG_DIR` or a path -- and the generation is derived from its
+`gfx_target_version`, so a caller never names one:
+
+```bash
+docker run --rm -v "$PWD/fw:/out" -e ROCJITSU_CONFIG_PATH \
+    "$IMAGE" python3 /usr/local/bin/vfio_guest_firmware.py \
+    --config gfx1250_mi455x.json --output /out
+```
+
+It defaults to `ROCJITSU_CONFIG_PATH`, so a stack that already configures which
+config the server serves gets matching firmware by passing that through.
+
+Only gfx1250 has stubs. The fixture filenames carry IP versions -- `gc_12_1_0`,
+`sdma_7_1_0` -- so upstream's table is that generation's alone, and
+`rj-ip-discovery` knows one generation too. The other thirteen profiles are
+refused by name:
+
+```
+$ vfio_guest_firmware.py --config gfx950_mi355x.json --output /out
+vfio guest firmware generation failed: gfx950_mi355x.json models gfx950
+(gfx_target_version 90500); stub generation covers gfx1250 only
+```
+
+That is the point of deriving it: before, a non-gfx1250 config got gfx1250 stubs
+and failed as a guest that never brought up a GPU.
+
+Pass `--no-ip-discovery` to emit the header fixtures alone and leave
+`ip_discovery.bin` to a separate `rj-ip-discovery` call. The manifest then names
+only what was written.
+
+### The two MES aliases
+
+`gc_12_1_0_mes.bin` and `gc_12_1_0_mes1.bin` are byte-identical to
+`gc_12_1_0_uni_mes.bin`, and that is correct rather than a shortcut. Real
+`mes.bin` (the pipe 0 scheduler) and `mes1.bin` (the kernel interface queue)
+are distinct blobs, but these are headers over a sentinel payload, not
+microcode: `amdgpu` parses the header and the version word in
+`amdgpu_mes_init_microcode()` and never executes what follows. One fixture is
+therefore right under all three names, which is why the generator emits them
+here instead of leaving callers to copy the file.
+
+### Wrapping upstream
+
+The upstream generator is installed at
+`/usr/local/lib/rocjitsu/vfio_guest_firmware_upstream.py` and
+`/usr/local/bin/vfio_guest_firmware.py` is this repo's wrapper around it
+([`vfio-guest-firmware.py`](vfio-guest-firmware.py)). The fixture bytes are
+still upstream's -- the wrapper calls its builders rather than copying them --
+so an upstream change to a header flows through untouched. What the wrapper adds
+is everything a consumer would otherwise have to know about this device model:
+the MES aliases, the generation, and the manifest.
 
 ## Usage
 

@@ -100,10 +100,25 @@ RUN set -eux; \
         /usr/local/bin/run-vfio-guest.py; \
     git -C /build/rocm-systems fetch --depth 1 origin \
         "${ROCJITSU_FIRMWARE_GEN_COMMIT}"; \
+    mkdir -p /usr/local/lib/rocjitsu; \
     git -C /build/rocm-systems show \
         "${ROCJITSU_FIRMWARE_GEN_COMMIT}:emulation/rocjitsu/tools/vfio_guest_firmware.py" \
-        > /usr/local/bin/vfio_guest_firmware.py; \
-    chmod 0755 /usr/local/bin/vfio_guest_firmware.py
+        > /usr/local/lib/rocjitsu/vfio_guest_firmware_upstream.py; \
+    chmod 0644 /usr/local/lib/rocjitsu/vfio_guest_firmware_upstream.py
+
+# Upstream's generator lands on a library path and the wrapper takes the name
+# consumers already call, because upstream's output is not a firmware set a
+# guest can use as-is: it emits five fixtures under hardwired gfx12.1 names and
+# nothing that says what they are. Every consumer then reinvents the same three
+# facts about this device model -- fabricate the two MES names the driver opens,
+# hardcode a filename to prove the set arrived, and name a generation on the
+# rj-ip-discovery call -- and each is a place a change here silently breaks
+# them. The wrapper emits the complete set, runs rj-ip-discovery for the
+# generation it derived from the config, and writes a manifest naming every
+# file. The fixture bytes stay upstream's: it calls upstream's builders.
+COPY ubuntu-rocm-rocjitsu/vfio-guest-firmware.py \
+     /usr/local/bin/vfio_guest_firmware.py
+RUN chmod 0755 /usr/local/bin/vfio_guest_firmware.py
 
 # Upstream's install(DIRECTORY configs/) already placed these; the tags come from
 # emulation/rocjitsu/cmake/rj_libvfio_user.cmake, which pins what the vfio-user
@@ -176,24 +191,34 @@ RUN rocjitsu --config "${ROCJITSU_CONFIG_PATH}" \
 # so --help is as far as it can be exercised -- enough to catch a Python the
 # base image cannot import it under.
 #
-# The stub generator is exercised the same way, and its output is asserted by
-# name: a guest missing one of these five files fails in amdgpu's early init
-# with a firmware load error. The driver also opens gc_12_1_0_mes.bin and
-# gc_12_1_0_mes1.bin, which the generator does not emit -- the uni_mes stub
-# serves for both, copied by the caller, since only the caller knows which MES
-# path its amdgpu.ko takes. See README.md.
+# The stub generator is exercised the same way. Its output is asserted against
+# its own manifest rather than a list repeated here: a guest missing any one of
+# these files fails in amdgpu's early init with a firmware load error, and the
+# point of the manifest is that adding a file needs no edit in the places that
+# check for it. What is still asserted by name is the property the manifest
+# cannot state -- that the two MES aliases carry the uni_mes bytes -- and that
+# a config this generator has no firmware for is refused rather than served
+# gfx1250 stubs under a different GPU's name.
 RUN set -eux; \
     rj-ip-discovery gfx1250 /tmp/ip_discovery.bin; \
     test -s /tmp/ip_discovery.bin; \
     run-vfio-guest.py --help > /dev/null; \
     python3 /usr/local/bin/vfio_guest_firmware.py --output /tmp/fw; \
-    for fw in gc_12_1_0_imu.bin gc_12_1_0_mec.bin gc_12_1_0_rlc_1.bin \
-              gc_12_1_0_uni_mes.bin sdma_7_1_0.bin; do \
-        test -s "/tmp/fw/${fw}"; \
-    done; \
+    listed=$(python3 -c \
+        'import json;print("\n".join(json.load(open("/tmp/fw/manifest.json"))["files"]))'); \
+    for fw in ${listed}; do test -s "/tmp/fw/${fw}"; done; \
+    test "$(ls /tmp/fw | grep -v '^manifest\.json$' | sort)" \
+       = "$(printf '%s\n' ${listed} | sort)"; \
+    cmp /tmp/fw/gc_12_1_0_mes.bin /tmp/fw/gc_12_1_0_uni_mes.bin; \
+    cmp /tmp/fw/gc_12_1_0_mes1.bin /tmp/fw/gc_12_1_0_uni_mes.bin; \
+    ! python3 /usr/local/bin/vfio_guest_firmware.py \
+        --config gfx950_mi355x.json --output /tmp/fw-unsupported; \
+    test ! -e /tmp/fw-unsupported; \
     rm -rf /tmp/ip_discovery.bin /tmp/fw
 
-RUN rm -rf /build/rocm-systems /tmp/deps
+# The build check above imports the upstream generator, which leaves a
+# __pycache__ beside it that a consumer would otherwise ship and never use.
+RUN rm -rf /build/rocm-systems /tmp/deps /usr/local/lib/rocjitsu/__pycache__
 
 ENV PATH=/usr/local/bin:${PATH}
 

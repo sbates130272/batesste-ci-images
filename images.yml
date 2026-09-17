@@ -344,6 +344,13 @@ images:
       # keeps shipping the generator from here. A SHA, not a branch, and not
       # scrubbed: it names a deleted file, so it can only ever move backwards.
       # Retire it when upstream publishes real gfx1250 firmware.
+      #
+      # The file lands on a library path and is wrapped rather than run
+      # directly -- see ubuntu-rocm-rocjitsu/vfio-guest-firmware.py -- because
+      # upstream emits five fixtures under hardwired gfx12.1 names and nothing
+      # that says what they are, leaving each consumer to reinvent the same
+      # gfx1250 facts. The wrapper calls upstream's builders, so the fixture
+      # bytes still move with this pin.
       rocjitsu_firmware_gen_commit:
         value: 730bc62d60191337a07da50892538475370cb071
         env: ROCM_ROCJITSU_FIRMWARE_GEN_COMMIT
