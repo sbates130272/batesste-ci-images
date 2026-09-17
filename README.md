@@ -332,11 +332,26 @@ Inspect a locally-built image (size, layers, tags):
 ./ci-images-tool.py inspect ubuntu-qemu-libvfio-user
 ```
 
-Check what tags exist on the remote registry:
+Check what tags exist on the remote registry, with the digest, the
+compressed image size, the manifest and config bytes, and when each tag
+was last pushed:
 
 ```bash
-./ci-images-tool.py status
+./ci-images-tool.py status ubuntu-qemu-libvfio-user
 ```
+
+Or one row per target instead of one table per target -- tag count,
+the current fingerprinted tag, and how far back the oldest tag in the
+repository goes. `--layers` adds the unique layer count and the bytes
+behind it, at the cost of one manifest read per distinct image:
+
+```bash
+./ci-images-tool.py status --summary
+./ci-images-tool.py status --summary --layers
+```
+
+Push times come from the Docker Hub API; on another registry those
+columns read as `-`, since the Registry v2 API does not record them.
 
 Show the tags and labels an image would be published under, without
 building it:
