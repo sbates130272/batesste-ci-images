@@ -311,8 +311,13 @@ images:
       rocjitsu_branch:
         value: users/agutierr/gfx1250-vfio-compute-6
         env: ROCM_ROCJITSU_BRANCH
+      # Deliberately NOT the branch head, and the scrub will not move it while
+      # ubuntu-rocm-rocjitsu/patches/ is non-empty. This is the commit the
+      # local series was proven against end to end on a real guest; a bump
+      # without rebasing the series just fails the build in `git apply --3way`.
+      # Move both together, or empty patches/ and let the scrub resume.
       rocjitsu_commit:
-        value: be38974c9e74ef11bb27448d05264f9d3431dd0b
+        value: 20d4ce1c914454999ab6c4f17643269372ba3777
         env: ROCM_ROCJITSU_COMMIT
       # Compile-time log groups (emulation/rocjitsu/cmake/rj_log.cmake): OFF,
       # ALL, a comma-separated subset of VM, CP, DBT_HOOKS, PLUGINS, DRIVER, or

@@ -37,12 +37,39 @@ transport has to be the one upstream tested against.
   it, pinned separately from the server's own commit, and wraps it. See
   [Firmware](#firmware) below.
 - the config profiles under `/usr/local/share/rocjitsu/configs`
+- **`/usr/local/share/rocjitsu/rocjitsu-scratch-repro.hip`** -- a standalone
+  reproducer for the scratch defect patch 0005 fixes. Staged, not built: there
+  is no `hipcc` here and no GPU to run it on. Copy it into the guest.
 - `/usr/local/share/rocjitsu-build.json`, recording the repo, branch, commit,
-  the libvfio-user and json-c tags built against, and the guest tools shipped
+  the local patches applied, the libvfio-user and json-c tags built against,
+  and the guest tools shipped. The dependency tags are read out of
+  `cmake/rj_libvfio_user.cmake` at build time rather than restated, so an
+  upstream bump cannot leave them lying.
+- `/usr/local/share/rocjitsu/patches.diffstat`, the `git diff --stat` of what
+  was actually applied
+
+## Local patches
+
+The pinned commit does not boot a guest unmodified. Five patches in
+[`patches/`](patches/) are applied with `git apply --3way` between the checkout
+and `cmake`; [`patches/README.md`](patches/README.md) indexes them and states
+the policy. In short: four undo a regression introduced inside the `-6` branch
+itself, and the fifth closes a vfio-user scratch gap that hangs any dispatch
+needing private memory.
+
+Two consequences worth knowing:
+
+- **The pin is frozen while `patches/` is non-empty.**
+  `scripts/version-scrub.sh` will not bump `rocjitsu_commit`, because the series
+  is applied against exactly that commit and a bump without a rebase is a red
+  build, not a newer image. It still reports when the branch has moved.
+- **Read `local_patches` before trusting an image.** A patched and an
+  unpatched build are otherwise indistinguishable without diffing binaries.
+  See [Verifying a patched image](#verifying-a-patched-image).
 
 ### Build-time verification
 
-Four checks run in the image build, so a broken stack fails where the output
+Five checks run in the image build, so a broken stack fails where the output
 is legible rather than as a hung guest:
 
 1. `rocjitsu` is started against the pinned config and must log `vfu: serving`
@@ -54,6 +81,13 @@ is legible rather than as a hung guest:
 4. `vfio_guest_firmware.py` must emit every file its own manifest names, the
    two MES aliases must carry the `uni_mes` bytes, and a config it has no
    firmware for must be refused rather than served gfx1250 stubs
+5. the patch series must have applied and still be a non-empty diff --
+   `local_patches` non-empty and `patches.diffstat` non-empty. A series that
+   has silently become a no-op after a pin bump fails here rather than shipping
+   an image that claims patches it does not carry.
+
+None of these exercise what the patches do. See
+[Verifying a patched image](#verifying-a-patched-image).
 
 ## Firmware
 
@@ -201,18 +235,63 @@ comma-separated subset, or a raw bitmask. The value is recorded in the
 `…rocjitsu.log-groups` label and in `rocjitsu-build.json`, so what an image
 prints can be read off the image.
 
+## Verifying a patched image
+
+A green `docker build` proves the patches applied, not that they work. The
+build-time checks are cheap and catch most regressions:
+
+```bash
+# expect the pinned commit and five entries in local_patches
+docker run --rm --entrypoint sh "$IMAGE" -c \
+    'cat /usr/local/share/rocjitsu-build.json'
+# expect an 848-byte discovery table
+docker run --rm --entrypoint sh "$IMAGE" -c \
+    'rj-ip-discovery gfx1250 /tmp/x.bin && wc -c /tmp/x.bin'
+```
+
+The real acceptance test is a guest:
+
+1. Boot a guest against the image and probe `amdgpu` with `emu_mode=1
+   fw_load_type=0 discovery=2 ip_block_mask=0x3f vm_update_mode=3
+   gpu_recovery=0 vramlimit=256`. Patches 0001–0003 are what get you past this.
+   Without them: `Timeout waiting for VM flush ACK!` followed by >100k
+   identical MES warnings against `0x6c00001260`, or `ring sdma0.0 timeout,
+   signaled seq=2, emitted seq=3` in `kfd_ioctl_acquire_vm`.
+2. Build and run `rocjitsu-scratch-repro.hip` in the guest. Patch 0005 is what
+   gets you past this; without it the dispatch hangs forever with no error.
+3. Run `rocm-xio`'s `test-vm-nvme` with `ROCJITSU_IMAGE` pointed at the
+   candidate. Judge the image on steps 1 and 2 -- the `nvme` label is not
+   currently green on any image, patched or not.
+
+### Limits of the emulation these patches do not lift
+
+- The emulated device backs roughly 43 MB of scratch in total, and ROCr
+  provisions for full occupancy regardless of grid size, so a kernel needing
+  more than about 1300 B/thread of private segment fails or hangs anyway.
+- A second `modprobe amdgpu` against a live rocjitsu hangs in
+  `sdma_v7_1_ring_test_ring`. Not root-caused. CI boots fresh and probes once,
+  so it only bites interactive debugging.
+- Upstream ROCr has a one-queue scratch deadlock in `AcquireQueueMainScratch`
+  -- not a rocjitsu defect, and not fixed here.
+
 ## Pin
 
-`rocjitsu_commit` in [`images.yml`](../images.yml), tracking
-`rocjitsu_branch`. That branch is currently
+`rocjitsu_commit` in [`images.yml`](../images.yml). The branch is
 `users/agutierr/gfx1250-vfio-compute-6`, the tip of a stacked review series,
-not `develop`: the vfio-user compute path only exists there. Expect
-force-pushes while the stack is in review -- `scripts/version-scrub.sh` bumps
-the pin on every reviewer round-trip and warns rather than bumps once the
-branches are deleted. Both should go back to `develop` after the merge; that
-is the whole reason the pin is temporary.
+not `develop`: the vfio-user compute path only exists there. Both should go
+back to `develop` after the merge; that is the whole reason the pin is
+temporary.
+
+The pin does **not** track that branch's head while
+[`patches/`](patches/) is non-empty -- see [Local patches](#local-patches).
+`scripts/version-scrub.sh` reports when the branch has moved and leaves the pin
+alone. Moving it is a deliberate step: rebase the series, bump
+`images.yml` and the Dockerfile `ARG` together, and re-prove against a guest.
 
 ## Tags
 
-The tag variant is the abbreviated commit, for example `rocjitsu.be38974`. See
-the repository [README](../README.md) for the full tag scheme.
+The tag variant is the abbreviated commit, for example `rocjitsu.20d4ce1`. The
+patch series is not in the variant and does not need to be: the full tag also
+carries `g<sha7>` of this repository, and `patches/` lives here, so editing a
+patch necessarily moves the tag. See the repository
+[README](../README.md) for the full tag scheme.

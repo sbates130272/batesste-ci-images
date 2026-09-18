@@ -207,7 +207,28 @@ ROCJITSU_LATEST=$(gh_curl \
     | jq -r '.sha')
 ROCJITSU_CURRENT=$(current_pin ubuntu-rocm-rocjitsu rocjitsu_commit)
 echo "    current: $ROCJITSU_CURRENT  latest: $ROCJITSU_LATEST  (branch: $ROCJITSU_BRANCH)"
-if check_nonempty "$ROCJITSU_LATEST" "ROCJITSU HEAD" \
+# The pin is frozen while local patches are carried. The series is applied with
+# `git apply --3way` against exactly this commit, so an automatic bump does not
+# produce a newer image -- it produces a red build, on
+# every reviewer round-trip of the upstream stack. Rebasing the series is a
+# human step: do it, move the pin by hand, and re-prove it against a guest.
+# Emptying patches/ resumes the scrub with no change here.
+# The -d test is load-bearing: find exits non-zero on a missing directory, and
+# under `set -euo pipefail` that would kill the scrub right here -- silently,
+# since find's message is discarded -- leaving every pin below unscrubbed.
+if [[ -d "$REPO_ROOT/ubuntu-rocm-rocjitsu/patches" ]]; then
+    ROCJITSU_PATCHES=$(find "$REPO_ROOT/ubuntu-rocm-rocjitsu/patches" \
+        -maxdepth 1 -name '*.patch' | wc -l)
+else
+    ROCJITSU_PATCHES=0
+fi
+if [[ "$ROCJITSU_PATCHES" -gt 0 ]]; then
+    echo "    pinned: $ROCJITSU_PATCHES local patches carried, not bumping"
+    if [[ "$ROCJITSU_CURRENT" != "$ROCJITSU_LATEST" ]]; then
+        echo "    note: branch has moved to $ROCJITSU_LATEST -- rebase" \
+             "ubuntu-rocm-rocjitsu/patches/ onto it to take the bump"
+    fi
+elif check_nonempty "$ROCJITSU_LATEST" "ROCJITSU HEAD" \
     && [[ "$ROCJITSU_CURRENT" != "$ROCJITSU_LATEST" ]]; then
     replace_in_yaml "$ROCJITSU_CURRENT" "$ROCJITSU_LATEST"
     replace_in_files "$ROCJITSU_CURRENT" "$ROCJITSU_LATEST" \

@@ -1,0 +1,346 @@
+Subject: [PATCH] request scratch backing from the guest runtime
+
+A dispatch that needs private memory hangs the guest on the vfio-user path.
+init_wavefront_regs() probes the per-wave scratch slice, the probe comes back
+Faulted, and the CP returns Faulted at command_processor.cpp:726-728 without
+ever dispatching the wave. HIP sees a dispatch that never retires.
+
+Instrumenting the CP shows why. The queue's amd_queue_t is being read
+correctly -- read_dispatch_id_field_base_byte_offset reads back as 128, exactly
+the offset the CP subtracted to find the struct, and the scratch SRD carries
+ROCr's format and swizzle bits -- but every scratch field in it is empty:
+
+  compute_tmpring_size          0
+  scratch_resource_descriptor   base 0, num_records 0 (config dwords set)
+  scratch_backing_memory_location   0
+  scratch_backing_memory_byte_size  0
+  alt_scratch_*                 0
+  queue_inactive_signal         non-null
+
+So the guest runtime published no scratch, and the CP fell back to the
+hardcoded 0x1_0000_0000 pool at :658-661, which nothing on this path ever maps.
+Even a single byte there faults.
+
+That is not a guest bug. gfx12 ROCr allocates scratch on demand, not at queue
+creation: it leaves the fields zero and waits for the packet processor to ask
+through the queue-inactive signal. AqlQueue::DynamicQueueEventsHandler gates on
+`error_code & 0x401`, scans the ring from read_dispatch_id for the first packet
+declaring a private segment, sizes a pool for it, fills the queue's scratch
+fields in, clears the signal and re-rings the doorbell. The non-null
+queue_inactive_signal above is the runtime saying it is listening. rocJITsu
+never asks, so the fields stay zero forever.
+
+The emulator cannot paper over this by allocating the pool itself. On this path
+snapshot_gpu_access() walks the guest's live amdgpu page tables and the CP is
+only a reader of them -- there is no map API, and a fabricated base would have
+to be backed by forging PTEs behind amdgpu's back. The scratch_allocator_ and
+scratch_resolver_ hooks that would otherwise repair this are installed only
+from kmd/linux/simulated_kfd.cpp, so they are dead code here; the instrumented
+run confirms both are empty.
+
+So: ask. When the queue publishes a zero backing location and no resolver is
+installed, store the insufficient-scratch code into the queue-inactive signal,
+poke the event mailbox, raise the interrupt, and return Blocked so the packet
+stays pending. ROCr's handler needs to find the dispatch still sitting at
+read_dispatch_id, so retiring it would break the handshake. When admission
+retries, the location is real and the existing probe passes on its own merits.
+
+Bit 10 of the code selects the lane count ROCr sizes the pool for, so it is set
+from the dispatch's own wave size rather than assumed.
+
+A zero backing is not the only shortfall, because the runtime answers the
+question it was asked. It sizes the pool for the dispatch it found in the ring
+and no larger, so the next dispatch wanting more per lane runs off the end of a
+pool that is, by every field it can see, present and valid. A reproducer that
+asks for 288 bytes of private segment and then 1056 shows it exactly: the
+second dispatch gets a mapped pool base and an unmapped wave slice, because
+ROCr published compute_tmpring_size 0x24200 -- 512 waves per shader engine at
+36 granules of 256 bytes, so 9216 bytes per wave over a 9 MiB pool -- while
+slot 512 of a 33792-byte stride lands 17.3 MiB in.
+
+So the size is asked for on the same terms as the location. The comparison is
+made against scratch_wave64_lane_byte_size rather than by decoding
+compute_tmpring_size, because that field times 64 is the published per-wave
+stride by construction, with no granule or shader-engine count to assume (144 *
+64 = 9216 on the run above, exactly). Both conditions raise the same request
+over the same signal, since to the runtime they are the same event.
+
+The probe at :726-728 is left exactly as it is. It is the only bound anywhere
+between a fabricated scratch base and guest memory -- nothing reads
+scratch_backing_memory_byte_size and the CDNA5 address calculation applies no
+limit -- so relaxing it would turn a loud hang into silent corruption. The
+point of this change is that the probe now has real backing to pass against.
+
+Three guards on the request itself. If the queue has no usable inactive signal
+there is nobody to ask, so the old Faulted result stands, with a log line
+saying so instead of a bare probe refusal. If the packet declares no private
+segment -- only the kernel descriptor does -- the request is skipped, because
+ROCr keys its ring scan on the packet's private_segment_size and would find
+nothing to size, leaving a raised code no retry could clear. And the queue
+records the largest per-wave size it has asked for, so a request answered with
+less than it asked for is not made twice: the runtime has given what it can,
+and the probe reports the shortfall rather than the two sides trading requests
+forever. What counts as answered has to be chosen carefully. Most of the
+retries that follow a request arrive while the runtime is still working, and
+the clear of the inactive signal is observable before the published fields
+land, so a guard that reads only the signal abandons requests that were about
+to be answered -- which it did, intermittently, until the witness below was
+added. So the queue also records the geometry it was publishing when the
+request went out, and only a geometry that has since moved counts as an
+answer. The fields do not land together either, so a retry that sees the new
+stride against a location still reading zero waits as well rather than calling
+that a shortfall. The guard matters at all because the emulator rounds its
+per-wave stride up to 1024 bytes while the runtime's gfx12 granule is 256, so
+there are sizes the runtime cannot satisfy exactly. Everything after the
+compare-exchange either completes or rolls the signal back, for the same
+reason.
+
+One answer is not a shortfall but a refusal. If the runtime cannot acquire a
+pool at all it returns without publishing, and its handler then suspends the
+queue and stores -1 into the inactive signal. That is read as a refusal and
+faulted on, because waiting for an answer that is never coming is a hang whose
+cause is already known.
+
+Not every refusal arrives that way, though, and the largest dispatch in the
+reproducer shows the gap. 10272 bytes of private segment over 1024 slots is
+336 MB against a guest GPU given 256, and the request for it is raised once
+and then never answered: no publication, no sign bit, and no diagnostic from
+the runtime, for as long as the dispatch is left waiting. A request the
+runtime drops in silence therefore still hangs the queue, which needs a bound
+on how long it will wait to be answered. That bound is not in this change.
+
+Not fixed here, and worth separating. The emulator computes the wave slice with
+its own 1024-byte-rounded stride instead of the stride the runtime published,
+so the two agree only when the requirement is already 1024-aligned. And the
+per-CP scratch geometry is never configured on this path (scratch_xcc_count_
+stays 1, scratch_wave_divisor_ stays 1 while scratch_waves_per_se_ is 1024), so
+slot indices are computed against 16384 slots while the guest is told the
+device has 1024. Both are latent for small dispatches and need their own
+change.
+
+--- a/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/command_processor.cpp
++++ b/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/command_processor.cpp
+@@ -242,6 +242,148 @@
+   return {.status = AqlAdmissionStatus::Malformed};
+ }
+ 
++// gfx12 ROCr does not allocate a scratch pool when it creates a queue. It
++// publishes amd_queue_t with a zero scratch_backing_memory_location, a zero-base
++// scratch SRD and a zero compute_tmpring_size, then waits to be asked: the
++// packet processor stores an insufficient-scratch code into the queue-inactive
++// signal, and AqlQueue::DynamicScratchHandler allocates a pool sized for the
++// dispatch it finds at read_dispatch_id, fills the queue's scratch fields in,
++// clears the signal and re-rings the doorbell.
++//
++// Bit 0 is the request itself; bit 10 tells ROCr the dispatch is wave32 so it
++// sizes the pool per 32 lanes rather than 64. Both are read straight out of the
++// runtime: amd_aql_queue.cpp gates on `error_code & 0x401` and derives
++// `lanes_per_wave = (error_code & 0x400) ? 32 : 64`.
++constexpr uint64_t kScratchRequestInsufficient = 0x1;
++constexpr uint64_t kScratchRequestWave32 = 0x400;
++
++// amd_signal_t places the value at +8, the event mailbox pointer at +16 and the
++// event id at +24. Same layout CompletionTracker uses to publish queue-idle.
++constexpr uint64_t kSignalValueOffset = 8;
++// AqlQueue's error handler stores -1 into the inactive signal on its way out.
++constexpr uint64_t kSignalTerminated = 0x8000000000000000ULL;
++constexpr uint64_t kSignalMailboxPointerOffset = 16;
++constexpr uint64_t kSignalEventIdOffset = 24;
++
++/// @brief Ask the guest runtime to back this queue's scratch.
++///
++/// @details Returns Blocked on success rather than retiring the packet: ROCr's
++/// handler scans the ring from read_dispatch_id for the first dispatch that
++/// declares a private segment, so the packet has to still be pending when it
++/// runs. Blocked is also the answer while a request is outstanding --
++/// re-interrupting a handler that is already working would race it.
++///
++/// Returns nullopt for the one case that is not worth asking about: the runtime
++/// has already answered a request for this much and published less. Admission
++/// then continues and the per-wave probe reports the shortfall, which is a
++/// better failure than the two sides trading requests forever.
++///
++/// The queue's request bookkeeping is advanced here, at the point the request
++/// actually goes out.
++std::optional<AqlAdmissionResult> request_queue_scratch(const GpuVmAccess &access,
++                                                        uint64_t queue_ptr, AqlQueueRecord &queue,
++                                                        bool wave32, uint64_t required_per_wave,
++                                                        uint64_t published_per_wave) {
++  const AtomicLoadResult handle = access.atomic_load(
++      queue_ptr + offsetof(amd_queue_t, queue_inactive_signal), sizeof(uint64_t));
++  if (handle.outcome != VmAccessOutcome::Complete)
++    return admission_from_vm_outcome(handle.outcome);
++  // A 64-byte-aligned non-null handle is the only shape amd_signal_t takes;
++  // anything else means the field is not a signal and cannot carry the request.
++  if (handle.value == 0 || (handle.value & 0x3f) != 0) {
++    util::Logger::warn(std::format(
++        "cp: queue {:#x} published no scratch backing and has no usable queue-inactive "
++        "signal ({:#x}); the dispatch cannot be backed",
++        queue_ptr, handle.value));
++    return AqlAdmissionResult{.status = AqlAdmissionStatus::Faulted,
++                              .diagnostic = AqlPacketDiagnostic::InvalidSignalAddress};
++  }
++
++  const AtomicLoadResult pending =
++      access.atomic_load(handle.value + kSignalValueOffset, sizeof(uint64_t));
++  if (pending.outcome != VmAccessOutcome::Complete)
++    return admission_from_vm_outcome(pending.outcome);
++
++  // The runtime writes the sign bit into the signal when it gives up on the
++  // queue: HandleInsufficientScratch returns without publishing if it cannot
++  // acquire a pool, and the handler then suspends the queue and stores -1.
++  // Waiting on that is a hang with a known cause, so report it instead.
++  if ((pending.value & kSignalTerminated) != 0) {
++    util::Logger::warn(std::format(
++        "cp: queue {:#x} asked the runtime for {} bytes of scratch per wave and the runtime "
++        "gave up on the queue (inactive signal now {:#x}); the device cannot back this dispatch",
++        queue_ptr, required_per_wave, pending.value));
++    return AqlAdmissionResult{.status = AqlAdmissionStatus::Faulted,
++                              .diagnostic = AqlPacketDiagnostic::ScratchUnavailable};
++  }
++
++  // Any other non-zero value is a request still being answered.
++  if (pending.value != 0)
++    return AqlAdmissionResult{.status = AqlAdmissionStatus::Blocked};
++
++  // A clear signal is not on its own proof that the runtime has answered: the
++  // CP can observe the clear before the published fields land. Published
++  // geometry that has moved since the request is proof, and if it moved and is
++  // still short then the runtime has given what it can.
++  if (queue.requested_scratch_per_wave >= required_per_wave) {
++    // Nothing has moved yet, or the stride has arrived and the location has
++    // not. The runtime publishes the geometry field by field, so a retry that
++    // catches it mid-publish has to wait rather than judge it.
++    if (published_per_wave == queue.scratch_published_at_request ||
++        published_per_wave >= required_per_wave)
++      return AqlAdmissionResult{.status = AqlAdmissionStatus::Blocked};
++    util::Logger::warn(std::format(
++        "cp: queue {:#x} answered a request for {} bytes of scratch per wave with {}; "
++        "not asking again",
++        queue_ptr, required_per_wave, published_per_wave));
++    return std::nullopt;
++  }
++
++  // Read the mailbox before raising the request. Everything after the
++  // compare-exchange has to either complete or be rolled back, because a raised
++  // code that never reaches the runtime is a hang the retry cannot clear.
++  const AtomicLoadResult mailbox =
++      access.atomic_load(handle.value + kSignalMailboxPointerOffset, sizeof(uint64_t));
++  if (mailbox.outcome != VmAccessOutcome::Complete)
++    return admission_from_vm_outcome(mailbox.outcome);
++  const AtomicLoadResult event = access.atomic_load(handle.value + kSignalEventIdOffset, 4);
++  if (event.outcome != VmAccessOutcome::Complete)
++    return admission_from_vm_outcome(event.outcome);
++  const auto event_id = static_cast<uint32_t>(event.value);
++
++  const uint64_t error_code =
++      kScratchRequestInsufficient | (wave32 ? kScratchRequestWave32 : uint64_t{0});
++  const AtomicCompareExchangeResult raised =
++      access.compare_exchange(handle.value + kSignalValueOffset, sizeof(uint64_t), 0, error_code);
++  if (raised.outcome != VmAccessOutcome::Complete)
++    return admission_from_vm_outcome(raised.outcome);
++  if (!raised.exchanged)
++    return AqlAdmissionResult{.status = AqlAdmissionStatus::Blocked};
++  queue.requested_scratch_per_wave = required_per_wave;
++  queue.scratch_published_at_request = published_per_wave;
++
++  if (mailbox.value != 0) {
++    const VmAccessOutcome stored =
++        access.atomic_store(mailbox.value, sizeof(uint64_t), uint64_t{event_id});
++    if (stored != VmAccessOutcome::Complete) {
++      const AtomicCompareExchangeResult cleared = access.compare_exchange(
++          handle.value + kSignalValueOffset, sizeof(uint64_t), error_code, 0);
++      static_cast<void>(cleared);
++      return admission_from_vm_outcome(stored);
++    }
++  }
++
++  util::Logger::warn(std::format(
++      "cp: queue {:#x} needs {} bytes of {} scratch per wave; requesting it from the runtime "
++      "(inactive signal {:#x}, event {})",
++      queue_ptr, required_per_wave, wave32 ? "wave32" : "wave64", handle.value, event_id));
++
++  if (event_id != 0)
++    queue.interrupt_sink.deliver(queue.process_id, event_id);
++  queue.interrupt_sink.deliver(queue.process_id, 0);
++  return AqlAdmissionResult{.status = AqlAdmissionStatus::Blocked};
++}
++
+ std::optional<AqlPacketDiagnostic> validate_cluster_shape(const DispatchEntry &dp) {
+   if (!dp.has_workgroup_clusters())
+     return std::nullopt;
+@@ -2781,6 +2923,41 @@
+       if (loaded.outcome != VmAccessOutcome::Complete)
+         return admission_from_vm_outcome(loaded.outcome);
+       scratch_backing_addr = loaded.value;
++
++      // The runtime states its per-slot stride as a wave64 lane size, so the
++      // pool it published covers lane_size * 64 bytes per wave. It sizes that
++      // for the dispatch it was last asked about, which means a later, hungrier
++      // dispatch overruns the pool exactly the way a zero backing does, only
++      // further in. Both are the same conversation, so both ask.
++      const AtomicLoadResult lane = read_gpu_u64(
++          transaction_access, queue_ptr + offsetof(amd_queue_t, scratch_wave64_lane_byte_size));
++      if (lane.outcome != VmAccessOutcome::Complete)
++        return admission_from_vm_outcome(lane.outcome);
++      const uint64_t published_per_wave = (lane.value & 0xffffffffULL) * 64;
++      const uint64_t required_per_wave =
++          static_cast<uint64_t>(private_segment_fixed_size) * wave_size;
++
++      // A zero location is not an error on this path, it is the runtime waiting
++      // to be asked. scratch_resolver_ is the SimulatedKfd answer to the same
++      // question (SET_SCRATCH_BACKING_VA), so defer to it where it is installed;
++      // with a real guest runtime there is nothing to defer to and the request
++      // has to go out over the queue-inactive signal.
++      if (!scratch_resolver_ &&
++          (scratch_backing_addr == 0 || published_per_wave < required_per_wave)) {
++        if (pkt.private_segment_size == 0) {
++          // ROCr keys its ring scan on the packet's own private_segment_size,
++          // not on the kernel descriptor, so a request raised for a packet that
++          // declares zero would find no dispatch to size and never be answered.
++          util::Logger::warn(std::format(
++              "cp: queue {:#x} needs {} bytes of scratch per wave but the packet declares no "
++              "private segment (kernel descriptor asks for {} bytes); cannot request a pool",
++              queue_ptr, required_per_wave, kd.private_segment_fixed_size));
++        } else if (const std::optional<AqlAdmissionResult> requested =
++                       request_queue_scratch(transaction_access, queue_ptr, queue, wave_size == 32,
++                                             required_per_wave, published_per_wave)) {
++          return *requested;
++        }
++      }
+     }
+   }
+ 
+--- a/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/dispatch_entry.h
++++ b/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/dispatch_entry.h
+@@ -616,6 +616,19 @@
+   /// that owns the queue.
+   bool fanout_replica = false;
+   Status status = Status::Idle;
++  /// Largest per-wave scratch, in bytes, this CP has asked the guest runtime to
++  /// back on this queue. gfx12 runtimes publish no scratch until the packet
++  /// processor requests it, and size the pool for the dispatch they were asked
++  /// about, so a hungrier dispatch has to ask again. Recording the high-water
++  /// mark keeps that from becoming a trade: if the runtime answers a request
++  /// with less than it was asked for, it has given what it can and asking a
++  /// second time would only spin.
++  uint64_t requested_scratch_per_wave = 0;
++  /// Per-wave scratch the queue was publishing when that request went out.
++  /// The runtime clears the inactive signal as the last step of answering, but
++  /// the CP can observe the clear before the published fields land, so a clear
++  /// signal alone does not mean answered. A changed geometry does.
++  uint64_t scratch_published_at_request = 0;
+   std::deque<DispatchEntry> entries;
+   /// @brief Total entries accepted by this queue, for tests.
+   /// @details A replica's entry list is otherwise unobservable after its packets
+--- a/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/aql_packet_processor.h
++++ b/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/aql_packet_processor.h
+@@ -46,6 +46,8 @@
+   LdsCapacityExceeded,
+   InvalidClusterShape,
+   InvalidSignalAddress,
++  /// The guest runtime was asked to back this queue's scratch and declined.
++  ScratchUnavailable,
+   MissingSignalReader,
+   MissingAdmissionCallback,
+ };

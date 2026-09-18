@@ -56,10 +56,17 @@ systemd
 uboot
 amdgpu
 amdkfd
+CP
+GFXHUB
+IB
 KFD
 memfd
+PDE
 rocjitsu
+rocJITsu
+ROCr
 simdojo
+VRAM
 vfio
 virt
 virtio
@@ -136,6 +143,7 @@ ROCm
 SDMA
 buildx
 config
+dereferenced
 deps
 ernic
 gitignored
@@ -143,6 +151,9 @@ keypair
 libvfio
 pipx
 pullable
+rebase
+rebasing
+unpatched
 rdma
 repo
 rocm
