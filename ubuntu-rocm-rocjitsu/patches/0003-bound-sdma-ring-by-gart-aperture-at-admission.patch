@@ -1,0 +1,119 @@
+Subject: [PATCH] bound an SDMA ring by the GART aperture at queue admission
+
+Patch 0002 makes Gfx12GartTranslator::translate() pass an out-of-aperture
+address through to local memory, which the driver needs: its indirect buffers
+and its own page tables live in the frame buffer, outside the aperture. But
+that also removed a check upstream states explicitly in
+GpuDeviceSdma.RegisterBackedQueueRejectsAddressesOutsideTheGartAperture --
+"an address outside it must fault rather than being reinterpreted as a
+local-memory address" -- and that test is right.
+
+Both are right because they are about different things. Measured against a real
+amdgpu on gfx1250:
+
+  SDMA ring                    0x6c00209000    inside  [0x6c00000000, 0x6c1fffffff]
+  indirect buffer, page tables 0x68ec000       outside
+
+The translator cannot tell a ring fetch from an IB fetch -- it is one level
+below the distinction -- so enforcing ring bounds there also faults the IB and
+deadlocks the driver. Enforce it at the layer that does know: refuse to arm a
+register-backed SDMA queue whose ring does not lie wholly inside the published
+aperture, and leave the translator permissive.
+
+GpuVm gains gart_config() for this, recording the configuration publish_gart()
+accepted and dropping it in clear_gart_binding(). With this, patch 0002 keeps
+the driver working and the upstream test passes unmodified.
+
+diff --git a/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/gpu_vm.cpp b/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/gpu_vm.cpp
+index 80022dbb75..e120aaa777 100644
+--- a/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/gpu_vm.cpp
++++ b/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/gpu_vm.cpp
+@@ -822,12 +822,18 @@ bool GpuVm::publish_gart(const GartConfig &config, std::shared_ptr<PhysicalMemor
+   advance_access_state_locked(*binding);
+   binding->translator = std::move(translator);
+   binding->physical_memory = std::move(memory);
++  gart_config_ = config;
+   ++binding->translation_epoch;
+   if (binding->translation_epoch == 0)
+     ++binding->translation_epoch;
+   return true;
+ }
+ 
++std::optional<GartConfig> GpuVm::gart_config() const {
++  std::lock_guard lock(mutex_);
++  return gart_config_;
++}
++
+ bool GpuVm::clear_gart_binding() {
+   std::lock_guard lock(mutex_);
+   Binding *binding = find_locked(gart_address_space_);
+@@ -838,6 +844,7 @@ bool GpuVm::clear_gart_binding() {
+   binding->access_state = std::make_shared<GpuVmAccessState>();
+   binding->translator.reset();
+   binding->physical_memory.reset();
++  gart_config_.reset();
+   ++binding->translation_epoch;
+   if (binding->translation_epoch == 0)
+     ++binding->translation_epoch;
+diff --git a/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/gpu_vm.h b/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/gpu_vm.h
+index 2b535657dc..9866135946 100644
+--- a/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/gpu_vm.h
++++ b/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/gpu_vm.h
+@@ -533,6 +533,13 @@ public:
+   [[nodiscard]] bool clear_gart_binding();
+   /// @brief Current device-global VMID-0 identity, or an invalid handle.
+   [[nodiscard]] AddressSpaceHandle gart_address_space() const;
++  /// @brief Last configuration accepted by @ref publish_gart, if any.
++  /// @details The translator passes an out-of-aperture address through to local
++  /// memory, because a VMID-0 engine legitimately reaches page tables and
++  /// indirect buffers that live in the frame buffer. Ring buffers are the
++  /// exception: the aperture bounds where a queue's ring may sit, so the
++  /// admission gate needs the published bounds to enforce that itself.
++  [[nodiscard]] std::optional<GartConfig> gart_config() const;
+   /// @brief Advance the translation version after a page-table invalidation.
+   [[nodiscard]] bool invalidate(AddressSpaceHandle handle);
+   /// @brief Retain an address space for a queue and return its routing metadata atomically.
+@@ -615,6 +622,7 @@ private:
+   std::vector<uint32_t> free_slots_;
+   std::unordered_map<uint32_t, AddressSpaceHandle> vmid_handles_;
+   AddressSpaceHandle gart_address_space_;
++  std::optional<GartConfig> gart_config_;
+   uint64_t reset_epoch_ = 1;
+   Gfx12VmConfig gfx12_config_;
+ };
+diff --git a/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/pci/sdma_block_model.cpp b/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/pci/sdma_block_model.cpp
+index 0055c0a15f..e776de0ab0 100644
+--- a/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/pci/sdma_block_model.cpp
++++ b/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/pci/sdma_block_model.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <algorithm>
+ #include <format>
++#include <optional>
+ #include <utility>
+ 
+ namespace rocjitsu {
+@@ -144,6 +145,23 @@ amdgpu::QueueSubmissionStatus SdmaBlockModel::process_queue(Queue &queue, uint64
+       !queue.address_space || soc_ == nullptr || queue_binding_factory_ == nullptr)
+     return amdgpu::QueueSubmissionStatus::Faulted;
+ 
++  // VMID 0 is bounded by the programmed GART aperture. The translator lets an
++  // out-of-aperture address through to local memory, because a VMID-0 engine
++  // legitimately reaches page tables and indirect buffers sitting in the frame
++  // buffer -- but a ring is not one of those. A ring outside the aperture is a
++  // misprogrammed queue, so refuse it here rather than reinterpreting it as a
++  // local-memory address.
++  const std::optional<amdgpu::GartConfig> gart = soc_->gpu_vm().gart_config();
++  if (!gart || queue.ring_base < gart->aperture_start ||
++      queue.ring_base > gart->aperture_end ||
++      queue.ring_bytes - 1 > gart->aperture_end - queue.ring_base) {
++    queue.faulted = true;
++    util::Logger::warn(std::format(
++        "{}: SDMA{} ring [{:#x}+{:#x}] lies outside the GART aperture", registers_.owner(),
++        queue.engine, queue.ring_base, queue.ring_bytes));
++    return amdgpu::QueueSubmissionStatus::Faulted;
++  }
++
+   if (!queue.queue_handle) {
+     queue.queue_handle = soc_->queue_registry().register_queue({
+         .identity = {.address_space = queue.address_space,

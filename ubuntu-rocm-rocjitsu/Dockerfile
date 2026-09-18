@@ -17,7 +17,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 ARG ROCJITSU_REPO=https://github.com/ROCm/rocm-systems.git
 ARG ROCJITSU_BRANCH=users/agutierr/gfx1250-vfio-compute-6
-ARG ROCJITSU_COMMIT=be38974c9e74ef11bb27448d05264f9d3431dd0b
+# Not the head of the branch: this is the commit the patches/ series below was
+# proven against, end to end, on a real guest. The scrub leaves it alone while
+# patches are carried -- see scripts/version-scrub.sh.
+ARG ROCJITSU_COMMIT=20d4ce1c914454999ab6c4f17643269372ba3777
 # Which config the vfio-user probe below and the default CMD serve. A build
 # variant pinned to a different upstream ref can point at a renamed or newly
 # added profile from images.yml without editing this file.
@@ -39,6 +42,37 @@ RUN git init /build/rocm-systems && \
     git -C /build/rocm-systems checkout FETCH_HEAD && \
     git -C /build/rocm-systems rev-parse HEAD \
         > /build/rocjitsu-commit.txt
+
+# Local patches against ROCJITSU_COMMIT, applied in filename order. The pinned
+# head does not boot a guest unmodified: four of these undo a regression
+# introduced inside this same branch by aac939813f, and the fifth closes a gap
+# in the vfio-user scratch path that hangs any dispatch needing private memory.
+# Each patch states its own case in its header; patches/README.md is the index.
+#
+# --3way so a pin bump fails loudly rather than silently not applying, and
+# `test -s` so a series that has become a no-op -- every hunk already upstream
+# -- fails the build here rather than shipping an image that claims patches it
+# does not carry. Note that 0005 carries no `index` blob lines, so git cannot
+# 3-way it and falls back to a direct apply: a stale base still fails the
+# build, it just reports "patch does not apply" instead of leaving conflict
+# markers. Re-exporting the series with `git format-patch` would fix that.
+#
+# Keep the series short. A patch that survives more than a couple of pin bumps
+# belongs upstream, not here.
+COPY ubuntu-rocm-rocjitsu/patches/ /build/patches/
+RUN set -eu; \
+    git -C /build/rocm-systems config user.email ci-images@invalid; \
+    git -C /build/rocm-systems config user.name "ci-images build"; \
+    : > /build/rocjitsu-patch-list.txt; \
+    for patch in /build/patches/*.patch; do \
+        echo "applying $(basename "${patch}")"; \
+        git -C /build/rocm-systems apply --3way --verbose "${patch}"; \
+        basename "${patch}" >> /build/rocjitsu-patch-list.txt; \
+    done; \
+    git -C /build/rocm-systems diff --stat HEAD \
+        > /build/rocjitsu-local-patches.txt; \
+    test -s /build/rocjitsu-local-patches.txt; \
+    cat /build/rocjitsu-local-patches.txt
 
 # _Static_assert is a C11 keyword with no C++ spelling, and libvfio-user v0.8's
 # pci_caps/{common,msix}.h use it; rocjitsu includes those from C++ in
@@ -120,21 +154,46 @@ COPY ubuntu-rocm-rocjitsu/vfio-guest-firmware.py \
      /usr/local/bin/vfio_guest_firmware.py
 RUN chmod 0755 /usr/local/bin/vfio_guest_firmware.py
 
-# Upstream's install(DIRECTORY configs/) already placed these; the tags come from
-# emulation/rocjitsu/cmake/rj_libvfio_user.cmake, which pins what the vfio-user
-# transport is actually built against.
+# Acceptance test for patch 0005, shipped beside the server because that is what
+# a consumer has in hand when a dispatch never retires. It is a guest-side
+# artefact -- there is no hipcc here and no GPU to run it on -- so it is only
+# staged: copy it into the guest and build it there. Without 0005 it hangs
+# forever with no error, which is the whole reason it exists.
+COPY ubuntu-rocm-rocjitsu/rocjitsu-scratch-repro.hip \
+     /usr/local/share/rocjitsu/rocjitsu-scratch-repro.hip
+
+# Upstream's install(DIRECTORY configs/) already placed the configs.
 ENV ROCJITSU_CONFIG_DIR=/usr/local/share/rocjitsu/configs
 ENV ROCJITSU_SOCKET_DIR=/run/rocjitsu
 ENV ROCJITSU_CONFIG_PATH=${ROCJITSU_CONFIG_DIR}/${ROCJITSU_CONFIG}
 
-RUN cp /build/rocjitsu-commit.txt \
-        /usr/local/share/rocjitsu-commit.txt && \
+# The dependency tags are read out of the cmake that pins them rather than
+# restated here, so a bump upstream cannot leave this metadata lying about what
+# the vfio-user transport was built against.
+#
+# local_patches and patches.diffstat are the point of this block now: without
+# them there is no way to tell a patched image from an unpatched one at
+# runtime, which is exactly the confusion that made the consumer pin a
+# hand-built image in the first place.
+RUN set -eu; \
+    cmake_pins=/build/rocm-systems/emulation/rocjitsu/cmake/rj_libvfio_user.cmake; \
+    libvfio_user_tag="$(awk '/libvfio-user.git/{getline; print $2}' "${cmake_pins}")"; \
+    json_c_tag="$(awk '/json-c.git/{getline; print $2}' "${cmake_pins}")"; \
+    test -n "${libvfio_user_tag}"; \
+    test -n "${json_c_tag}"; \
+    cp /build/rocjitsu-commit.txt /usr/local/share/rocjitsu-commit.txt; \
+    cp /build/rocjitsu-local-patches.txt \
+        /usr/local/share/rocjitsu/patches.diffstat; \
+    patches_json="$(awk '{printf "%s\"%s\"", (NR>1 ? ", " : ""), $0}' \
+        /build/rocjitsu-patch-list.txt)"; \
     printf '{\n\
   "rocjitsu_repo": "%s",\n\
   "rocjitsu_branch": "%s",\n\
   "rocjitsu_commit": "%s",\n\
-  "libvfio_user_tag": "v0.8",\n\
-  "json_c_tag": "json-c-0.18-20240915",\n\
+  "local_patches": [%s],\n\
+  "patches_diffstat": "/usr/local/share/rocjitsu/patches.diffstat",\n\
+  "libvfio_user_tag": "%s",\n\
+  "json_c_tag": "%s",\n\
   "vfio_enabled": true,\n\
   "log_groups": "%s",\n\
   "guest_tools": ["rj-ip-discovery", "run-vfio-guest.py", "vfio_guest_firmware.py"],\n\
@@ -144,10 +203,14 @@ RUN cp /build/rocjitsu-commit.txt \
         "${ROCJITSU_REPO}" \
         "${ROCJITSU_BRANCH}" \
         "$(cat /build/rocjitsu-commit.txt)" \
+        "${patches_json}" \
+        "${libvfio_user_tag}" \
+        "${json_c_tag}" \
         "${ROCJITSU_LOG_GROUPS}" \
         "${ROCJITSU_FIRMWARE_GEN_COMMIT}" \
         "${ROCJITSU_CONFIG_DIR}" \
-        > /usr/local/share/rocjitsu-build.json && \
+        > /usr/local/share/rocjitsu-build.json; \
+    cat /usr/local/share/rocjitsu-build.json; \
     mkdir -p "${ROCJITSU_SOCKET_DIR}"
 
 # Prove the vfio-user front end reaches a usable device, not just that it linked.
@@ -215,6 +278,18 @@ RUN set -eux; \
         --config gfx950_mi355x.json --output /tmp/fw-unsupported; \
     test ! -e /tmp/fw-unsupported; \
     rm -rf /tmp/ip_discovery.bin /tmp/fw
+
+# The patch series is the difference between an image that serves a device and
+# one a guest can run kernels on, so assert the metadata names it rather than
+# leaving "was this built patched?" to a diff of two binaries. Asserted against
+# patches.diffstat -- which is generated from what git actually applied -- so
+# adding a patch needs no edit here.
+RUN set -eux; \
+    applied=$(python3 -c \
+        'import json;print(len(json.load(open("/usr/local/share/rocjitsu-build.json"))["local_patches"]))'); \
+    test "${applied}" -gt 0; \
+    test -s /usr/local/share/rocjitsu/patches.diffstat; \
+    cat /usr/local/share/rocjitsu/patches.diffstat
 
 # The build check above imports the upstream generator, which leaves a
 # __pycache__ beside it that a consumer would otherwise ship and never use.

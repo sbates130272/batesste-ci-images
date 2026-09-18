@@ -1,0 +1,81 @@
+Subject: [PATCH] let a GART-bound queue reach memory outside the aperture
+
+Second defect introduced by aac939813f, same shape as the first: a permissive
+path in Gfx12GartTranslator::translate() replaced by a hard reject. The older
+577edec042 line of development passed an out-of-aperture address through as a
+direct VmMemoryDomain::Local access; this head faults it.
+
+That breaks the driver's own SDMA page table update. The page tables live in
+VRAM -- on this device the PTE store targets 0x68ec000, beside the page
+directory root at 0x6900000 and far outside the aperture at
+[0x6c00000000, 0x6c1fffffff]. Measured on an instrumented build:
+
+  vm: access fault at 0x68ec000 (base 0x68ec000 +0) size=4096 kind=1 outcome=2
+  sdma: latching faulted at cursor 0x1a8 ring=[0x6c00209000+0x2000] fetched=24
+    words=[0x00000004 0x00223000 0x0000006c 0x00000008 0x00000000 0x00000000]
+
+Read that packet with the model's own decoder: word 0 is opcode 4, kOpIndirect,
+and join(word1, word2) puts the indirect buffer at 0x6c00223000 -- inside the
+aperture, so the IB fetch itself succeeds. kind=1 is VmAccessKind::Write and
+outcome=2 is VmAccessOutcome::Faulted, so what actually fails is the 4096-byte
+PTE write to 0x68ec000 that the IB carries; the IB is merely the frame that
+latches the fault. The fence never signals and the guest hangs in
+kfd_ioctl_acquire_vm with "ring sdma0.0 timeout, signaled seq=2, emitted
+seq=3". A control image built from 909c17f runs the same guest with zero SDMA
+timeouts.
+
+Note for review: the GART walk's own PTE reads are NOT affected by this check.
+Gfx12GartTranslator reads its entry via memory_->read(VmMemoryDomain::Local,
+...) directly, below translation, so the aperture check never sees them. Only
+driver-issued traffic routed through GpuVmAccess is affected.
+
+Restore the pass-through, keeping the head's in-aperture body unchanged.
+
+Two limitations this inherits from the pass-through it restores, both worth
+fixing separately rather than silently: the aperture_start_ != 0 sentinel means
+a GART legitimately published with aperture_start == 0 disables translation for
+the whole space, and the pass-through grants Mtype::RW with full RWX to any
+64-bit address with no bound against local memory size.
+
+diff --git a/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/gpu_vm.cpp b/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/gpu_vm.cpp
+index 77c5adc5d8..180358fda6 100644
+--- a/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/gpu_vm.cpp
++++ b/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vm/amdgpu/gpu_vm.cpp
+@@ -526,8 +537,35 @@ VmTranslationResult Gfx12GartTranslator::translate(uint64_t address, std::size_t
+   if (size == 0 || size - 1 > std::numeric_limits<uint64_t>::max() - address)
+     return {.outcome = VmAccessOutcome::Malformed, .translation = {}};
+ 
+-  if (address < aperture_start_ || address > aperture_end_)
+-    return {.outcome = VmAccessOutcome::Faulted, .translation = {}};
++  // A GART-bound queue does not only touch the GART. The driver's own SDMA page
++  // table update carries a write to the page tables themselves, which live in
++  // VRAM: on this device the PTE store targets 0x68ec000, beside the page
++  // directory root at 0x6900000 and far outside the aperture at
++  // [0x6c00000000, 0x6c1fffffff]. Faulting everything outside the aperture kills
++  // that update -- the write returns Faulted, the indirect buffer carrying it
++  // latches the fault, the fence never signals, and the guest hangs in
++  // kfd_ioctl_acquire_vm with "ring sdma0.0 timeout, signaled seq=2, emitted
++  // seq=3". Pass an out-of-aperture address through as a direct local access,
++  // clamping the reported run so a range starting below the aperture cannot
++  // claim to cover into it.
++  const bool in_aperture =
++      aperture_start_ != 0 && address >= aperture_start_ && address <= aperture_end_;
++  if (!in_aperture) {
++    uint64_t contiguous_bytes = size;
++    if (aperture_start_ != 0 && address < aperture_start_)
++      contiguous_bytes = std::min<uint64_t>(contiguous_bytes, aperture_start_ - address);
++    return {
++        .outcome = VmAccessOutcome::Complete,
++        .translation =
++            {
++                .domain = VmMemoryDomain::Local,
++                .address = address,
++                .contiguous_bytes = contiguous_bytes,
++                .mtype = Mtype::RW,
++                .permissions = {.readable = true, .writable = true, .executable = true},
++            },
++    };
++  }
+ 
+   const uint64_t pte_address_mask = gfx12_pte_address_mask(config_);
+   const uint64_t table = page_table_base_ & pte_address_mask;

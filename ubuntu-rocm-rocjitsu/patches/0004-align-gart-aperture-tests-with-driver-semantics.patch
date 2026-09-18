@@ -1,0 +1,133 @@
+Subject: [PATCH] state the GART aperture semantics the driver actually needs
+
+Patches 0002 and 0003 change two behaviours that HEAD locks in with tests, so
+those tests have to say what the hardware says instead. Both are semantic
+corrections, not test-chasing:
+
+  Gfx12GartFaultsOutsideTheConfiguredAperture
+    -> Gfx12GartPassesThroughAccessesOutsideTheConfiguredAperture
+
+  The aperture says which addresses are translated, not which addresses a
+  GART-bound engine may reach. Kernel SDMA rings bind to the one GART address
+  space (GpuVm exposes no separate physical handle they could use), and the
+  driver points them at VRAM -- rings, indirect buffers, and the page-table
+  stores the driver itself issues all land in the frame buffer, outside the
+  aperture. A VMID-0 engine addressing the frame buffer is a pass-through, not
+  a fault. Faulting it deadlocks amdgpu in kfd_ioctl_acquire_vm with "ring
+  sdma0.0 timeout". (The walker's own PTE reads are not at issue: those go
+  straight to PhysicalMemoryAccess, below translation.)
+
+  Gfx12GartUsesByteBoundariesAndPtePermissions
+
+  Same change for the one aperture_end + 1 expectation. The byte-boundary and
+  permission expectations either side of it are untouched.
+
+  GpuVmRejectsUnusableGartPublications
+
+  Drops the page_table_base = 0x1001 case and adds
+  GpuVmAcceptsAGartRootCarryingPdeFlagBits in its place.
+  amdgpu_gmc_pd_addr() ORs the PDE control bits into PAGE_TABLE_BASE_ADDR
+  before the driver writes it, so a real root arrives as 0x6900005 and is never
+  4 KiB aligned. The other four rejections -- empty config, unaligned aperture
+  start, inverted range, short range -- still hold.
+
+  The new test also pins the width check the masked validation must keep:
+  a root with bits above the physical address width is still refused.
+
+diff --git a/emulation/rocjitsu/tests/gpu_vm_translation_test.cpp b/emulation/rocjitsu/tests/gpu_vm_translation_test.cpp
+index 2d21f9e0d4..78274eca64 100644
+--- a/emulation/rocjitsu/tests/gpu_vm_translation_test.cpp
++++ b/emulation/rocjitsu/tests/gpu_vm_translation_test.cpp
+@@ -444,7 +444,15 @@ TEST(GpuVmTranslation, TypedFailuresDistinguishMissingBackingFromInvalidMapping)
+             VmAccessOutcome::Malformed);
+ }
+ 
+-TEST(GpuVmTranslation, Gfx12GartFaultsOutsideTheConfiguredAperture) {
++// The GART aperture says which addresses are *translated*, not which addresses
++// a GART-bound engine may reach. Kernel SDMA rings bind to the single GART
++// address space (GpuVm::gart_address_space()), and the driver legitimately
++// points them at VRAM: rings, indirect buffers and the page-table stores the
++// driver itself issues all land in the frame buffer, outside the aperture. A
++// VMID-0 engine addressing the frame buffer directly is a pass-through, so an
++// out-of-aperture access resolves to VmMemoryDomain::Local at the same address,
++// clipped so the next byte re-enters the walk at the aperture boundary.
++TEST(GpuVmTranslation, Gfx12GartPassesThroughAccessesOutsideTheConfiguredAperture) {
+   auto physical = std::make_shared<TestPhysicalMemory>();
+   constexpr uint64_t table = 0x1000;
+   constexpr uint64_t aperture_start = 0x10000;
+@@ -452,16 +460,21 @@ TEST(GpuVmTranslation, Gfx12GartFaultsOutsideTheConfiguredAperture) {
+   physical->store_qword(VmMemoryDomain::Local, table,
+                         system_page | kPdePte | kValid | kSystem | kReadable);
+   physical->system[system_page] = std::byte{0xbb};
++  physical->local[aperture_start - 1] = std::byte{0xdd};
+   Gfx12GartTranslator translator(physical, table, aperture_start, aperture_start + 0xfff);
+ 
+   std::array<std::byte, 2> value{};
+   std::ranges::fill(value, std::byte{0xcc});
+   EXPECT_EQ(read_translated(translator, *physical, aperture_start - 1, value),
+-            VmAccessOutcome::Faulted);
+-  EXPECT_TRUE(std::ranges::all_of(value, [](std::byte byte) { return byte == std::byte{0xcc}; }));
++            VmAccessOutcome::Complete);
++  EXPECT_EQ(value[0], std::byte{0xdd});
++  EXPECT_EQ(value[1], std::byte{0xbb});
+ 
+   const VmTranslationResult local = translator.translate(aperture_start - 1, 2, VmAccessKind::Read);
+-  EXPECT_EQ(local.outcome, VmAccessOutcome::Faulted);
++  ASSERT_TRUE(local);
++  EXPECT_EQ(local.translation.domain, VmMemoryDomain::Local);
++  EXPECT_EQ(local.translation.address, aperture_start - 1);
++  EXPECT_EQ(local.translation.contiguous_bytes, 1u);
+ 
+   const VmTranslationResult system = translator.translate(aperture_start, 1, VmAccessKind::Read);
+   ASSERT_TRUE(system);
+@@ -524,8 +537,10 @@ TEST(GpuVmTranslation, Gfx12GartUsesByteBoundariesAndPtePermissions) {
+   EXPECT_FALSE(last_byte.translation.permissions.executable);
+   EXPECT_EQ(translator.translate(aperture_end, 1, VmAccessKind::Write).outcome,
+             VmAccessOutcome::Faulted);
+-  EXPECT_EQ(translator.translate(aperture_end + 1, 1, VmAccessKind::Read).outcome,
+-            VmAccessOutcome::Faulted);
++  const VmTranslationResult past_end = translator.translate(aperture_end + 1, 1, VmAccessKind::Read);
++  ASSERT_TRUE(past_end);
++  EXPECT_EQ(past_end.translation.domain, VmMemoryDomain::Local);
++  EXPECT_EQ(past_end.translation.address, aperture_end + 1);
+ }
+ 
+ TEST(GpuVmTranslation, GpuVmRejectsUnusableGartPublications) {
+@@ -534,8 +549,6 @@ TEST(GpuVmTranslation, GpuVmRejectsUnusableGartPublications) {
+   ASSERT_TRUE(gpu_vm.initialize_gart_address_space());
+ 
+   EXPECT_FALSE(gpu_vm.publish_gart({}, physical));
+-  EXPECT_FALSE(gpu_vm.publish_gart(
+-      {.page_table_base = 0x1001, .aperture_start = 0x10000, .aperture_end = 0x10fff}, physical));
+   EXPECT_FALSE(gpu_vm.publish_gart(
+       {.page_table_base = 0x1000, .aperture_start = 0x10001, .aperture_end = 0x10fff}, physical));
+   EXPECT_FALSE(gpu_vm.publish_gart(
+@@ -546,6 +559,28 @@ TEST(GpuVmTranslation, GpuVmRejectsUnusableGartPublications) {
+   EXPECT_FALSE(gpu_vm.lookup(gpu_vm.gart_address_space())->ready);
+ }
+ 
++// amdgpu_gmc_pd_addr() ORs the PDE control bits into PAGE_TABLE_BASE_ADDR
++// before the driver writes it, so a real GART root arrives with its low bits
++// set (0x6900005 on gfx1250) and is never 4 KiB aligned. Validate the masked
++// root, not the raw register, or every real publication is refused.
++TEST(GpuVmTranslation, GpuVmAcceptsAGartRootCarryingPdeFlagBits) {
++  GpuVm gpu_vm;
++  auto physical = std::make_shared<TestPhysicalMemory>();
++  ASSERT_TRUE(gpu_vm.initialize_gart_address_space());
++
++  EXPECT_TRUE(gpu_vm.publish_gart(
++      {.page_table_base = 0x1005, .aperture_start = 0x10000, .aperture_end = 0x10fff}, physical));
++  ASSERT_TRUE(gpu_vm.lookup(gpu_vm.gart_address_space()));
++  EXPECT_TRUE(gpu_vm.lookup(gpu_vm.gart_address_space())->ready);
++
++  // Accepting flag bits must not also accept a root that overruns the
++  // configured physical address width.
++  EXPECT_FALSE(gpu_vm.publish_gart({.page_table_base = (uint64_t{1} << 60) | 0x1005,
++                                    .aperture_start = 0x10000,
++                                    .aperture_end = 0x10fff},
++                                   physical));
++}
++
+ TEST(GpuVmTranslation, GpuVmUsesTranslatedBindingAndAdvancesEpochOnRootReplacement) {
+   GpuMemory compatibility_memory("memory");
+   GpuVm gpu_vm;

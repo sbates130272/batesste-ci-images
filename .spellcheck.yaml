@@ -6,7 +6,14 @@ matrix:
   sources:
   - '**/*.md'
   pipeline:
-  - pyspelling.filters.markdown
+  # fenced_code so ``` blocks become <pre><code> and are ignored below. Without
+  # it Python-Markdown reads a fence as an inline code span, which any blank
+  # line or leading-# comment inside the block splits -- so a shell snippet
+  # carrying comments is spellchecked as prose, and its ATX-looking lines are
+  # parsed as headings. Every code block in this repo is a fence.
+  - pyspelling.filters.markdown:
+      markdown_extensions:
+      - fenced_code
   # Check rendered prose only. Without this, aspell also reads href targets and
   # image alt text, so every badge URL puts its commit SHA fragments and org
   # names ("ofiwg", "openucx", "beebf") in front of the dictionary -- and the
