@@ -72,6 +72,16 @@
 //     kmd/linux/simulated_kfd.cpp -- never on the vfio-user path -- so on this
 //     path it is dead code and every wave of every scratch kernel is faulted
 //     before a single instruction issues.
+//
+// STATUS
+//     Fixed upstream. The 2026-09-08 rewrite of this branch added
+//     CommandProcessor::request_dynamic_scratch() and its reclaim counterpart,
+//     which do what the local patch this file was written against did and more
+//     -- they also handle the case where the runtime provisions a pool sized
+//     for an earlier, smaller dispatch. The forensics above are left as a
+//     record of the defect; the program itself is kept because it is still the
+//     cheapest way to tell a server that asks the runtime for scratch from one
+//     that does not, and nothing in the image build can tell them apart.
 
 #include <hip/hip_runtime.h>
 

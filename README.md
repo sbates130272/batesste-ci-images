@@ -33,7 +33,7 @@ adding an image or a variant adds its row.
 [![libvfio-user 8039244](https://img.shields.io/badge/libvfio--user-8039244-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/803924493a7c787b2ba358751f55f07d5dba64b2)
 [![qemu-minimal 5d68689](https://img.shields.io/badge/qemu--minimal-5d68689-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/5d6868914873757ff1c51dec3ca95a3fa0b2e9d9)
 [![rocm-ernic 6ca9a46](https://img.shields.io/badge/rocm--ernic-6ca9a46-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/6ca9a465a8362dda078fdc4d80b4268f377c1628)
-[![rocjitsu 20d4ce1](https://img.shields.io/badge/rocjitsu-20d4ce1-ED1C24)](https://github.com/ROCm/rocm-systems/commit/20d4ce1c914454999ab6c4f17643269372ba3777)
+[![rocjitsu 2d8a73f](https://img.shields.io/badge/rocjitsu-2d8a73f-ED1C24)](https://github.com/ROCm/rocm-systems/commit/2d8a73ff0a28aabe7554b99c58565ef63b635f75)
 [![spdk 18d1d8d](https://img.shields.io/badge/spdk-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
 [![fio 6bc57a9](https://img.shields.io/badge/fio-6bc57a9-4B8BBE)](https://github.com/axboe/fio/commit/6bc57a931f04fa3f50348d8c8f087187f050c6e1)
 [![ucx 12d6aa6](https://img.shields.io/badge/ucx-12d6aa6-4B8BBE)](https://github.com/openucx/ucx/commit/12d6aa65956996625c8daf39cbb3475ef4a1a35b)
@@ -135,11 +135,11 @@ and pushing of these images.
 
 Simulation configs are installed by upstream's own CMake install rule at
 `/usr/local/share/rocjitsu/configs` (also exported as `ROCJITSU_CONFIG_DIR`),
-and build provenance is at `/usr/local/share/rocjitsu-build.json`. Read its
-`local_patches` key before trusting an image: the pinned upstream commit does
-not boot a guest unmodified, and a patched and an unpatched build are otherwise
-indistinguishable without diffing binaries. The `git diff --stat` of what was
-applied is beside it at `/usr/local/share/rocjitsu/patches.diffstat`.
+and build provenance is at `/usr/local/share/rocjitsu-build.json`. Its
+`local_patches` key is empty: this image carried a local series until the
+2026-09-18 bump, because the commit it was pinned to could not boot a guest
+unmodified, and all of it is now upstream. The key stays in the schema so an
+image that starts carrying patches again says so.
 
 Only `gfx1250_mi455x.json` can be served over vfio-user. Upstream publishes an
 IP discovery table for exactly one target -- `kGfx1250TargetVersion` (120500) in
@@ -213,7 +213,6 @@ batesste-ci-images/
 ├── ubuntu-rocm-rocjitsu/      # rocjitsu vfio-user emulated GPU image
 │   ├── Dockerfile
 │   ├── README.md
-│   ├── patches/               # local series the pinned commit needs to boot
 │   ├── rocjitsu-scratch-repro.hip
 │   └── vfio-guest-firmware.py
 ├── ubuntu-spdk-libvfio-user/  # SPDK vfio-user NVMe target (LBA + KV namespaces)

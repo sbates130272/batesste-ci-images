@@ -311,13 +311,17 @@ images:
       rocjitsu_branch:
         value: users/agutierr/gfx1250-vfio-compute-6
         env: ROCM_ROCJITSU_BRANCH
-      # Deliberately NOT the branch head, and the scrub will not move it while
-      # ubuntu-rocm-rocjitsu/patches/ is non-empty. This is the commit the
-      # local series was proven against end to end on a real guest; a bump
-      # without rebasing the series just fails the build in `git apply --3way`.
-      # Move both together, or empty patches/ and let the scrub resume.
+      # The branch head, and tracking it again. This pin was frozen for as long
+      # as ubuntu-rocm-rocjitsu/patches/ carried a five-patch series the image
+      # could not boot a guest without; the 2026-09-08 force-push brought all
+      # five upstream, patches/ is gone, and the scrub resumed. Expect it to
+      # move on every reviewer round-trip until the stack merges.
+      #
+      # A bump is no longer free, though: the Dockerfile asserts the three
+      # upstream behaviours that replaced the series, so a rebase that drops
+      # one fails the build rather than shipping a guest that hangs.
       rocjitsu_commit:
-        value: 20d4ce1c914454999ab6c4f17643269372ba3777
+        value: 2d8a73ff0a28aabe7554b99c58565ef63b635f75
         env: ROCM_ROCJITSU_COMMIT
       # Compile-time log groups (emulation/rocjitsu/cmake/rj_log.cmake): OFF,
       # ALL, a comma-separated subset of VM, CP, DBT_HOOKS, PLUGINS, DRIVER, or

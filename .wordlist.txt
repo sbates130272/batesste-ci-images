@@ -57,6 +57,7 @@ uboot
 amdgpu
 amdkfd
 CP
+GART
 GFXHUB
 IB
 KFD
