@@ -325,17 +325,19 @@ images:
         env: ROCM_ROCJITSU_COMMIT
       # Compile-time log groups (emulation/rocjitsu/cmake/rj_log.cmake): OFF,
       # ALL, a comma-separated subset of VM, CP, DBT_HOOKS, PLUGINS, DRIVER, or
-      # a raw bitmask. CP is the command processor -- doorbell, dispatch,
-      # completion -- which is the path a guest exercises through the vfio-user
-      # front end and the one worth seeing when a dispatch never lands.
+      # a raw bitmask.
       #
       # There is no runtime gate: util/log.h reads this into a constexpr, so a
       # group compiled in prints unconditionally, mutex-serialised, for every
-      # event. That is the cost of CP, and it is why the other groups -- VM
-      # especially, which logs instruction execution -- are left off. Set this
-      # to OFF to get a quiet server back without touching the Dockerfile.
+      # event. CP -- the command processor's doorbell, dispatch and completion
+      # path -- was on while the patch series was being proven out, and it is
+      # too noisy to leave on for ordinary use: it narrates every dispatch a
+      # guest makes. Set it back to CP for a build you are debugging a stuck
+      # dispatch on. Warnings and errors print either way, so the vfio-user
+      # front end still says what it is serving and still says when it fails.
+      # Quoted: bare OFF is a YAML 1.1 boolean and reaches cmake as "False".
       rocjitsu_log_groups:
-        value: CP
+        value: "OFF"
         env: ROCM_ROCJITSU_LOG_GROUPS
       # Only gfx_target_version 120500 has an IP discovery profile upstream, so
       # this is the only config the vfio-user front end can actually serve. It

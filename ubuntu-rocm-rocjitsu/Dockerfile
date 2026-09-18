@@ -32,7 +32,7 @@ ARG ROCJITSU_CONFIG=gfx1250_mi455x.json
 ARG ROCJITSU_FIRMWARE_GEN_COMMIT=730bc62d60191337a07da50892538475370cb071
 # Compile-time log groups; see rj_log.cmake. Nothing gates these at runtime, so
 # a group named here prints for every event it covers.
-ARG ROCJITSU_LOG_GROUPS=CP
+ARG ROCJITSU_LOG_GROUPS=OFF
 
 WORKDIR /build
 

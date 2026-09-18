@@ -224,17 +224,22 @@ Dockerfile.
 
 ## Logging
 
-The server is built with `RJ_LOG_GROUPS=CP`, so the command processor --
-doorbell, dispatch, completion -- narrates itself on stdout as `[rj log CP]`.
-That is the path a guest drives through the vfio-user front end, and the one
-worth having when a dispatch is accepted but never completes.
+The server is built with `RJ_LOG_GROUPS=OFF`. Group logging is compiled in,
+not switched on: `util/log.h` reads the cmake value into a `constexpr` bitmask
+and there is no environment variable to quieten it. Every covered event prints,
+through a shared mutex, for the life of the container -- so a group left on is
+a group that narrates every event it covers, at whatever rate a guest generates
+them.
 
-It is compiled in, not switched on: `util/log.h` reads the cmake value into a
-`constexpr` bitmask and there is no environment variable to quieten it. Every
-covered event prints, through a shared mutex, for the life of the container.
-The other groups (`VM`, `DBT_HOOKS`, `PLUGINS`, `DRIVER`) are off for that
-reason -- `VM` logs instruction execution, which is not a thing to leave on in
-a server a guest is booting against.
+`CP` -- the command processor's doorbell, dispatch and completion path -- was
+on while the patch series was being proven out, and it is the group to turn
+back on when a dispatch is accepted but never completes. It is off by default
+because that volume is not worth paying for a server that is working. `VM` logs
+instruction execution and is not a thing to leave on in a server a guest is
+booting against at all.
+
+Warnings and errors are not part of this and print regardless, which is why the
+build-time `vfu: serving` probe still works with every group off.
 
 Change it with the `rocjitsu_log_groups` var in [`images.yml`](../images.yml),
 or `ROCM_ROCJITSU_LOG_GROUPS` in the environment: `OFF`, `ALL`, a
