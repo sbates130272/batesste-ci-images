@@ -207,12 +207,14 @@ ROCJITSU_LATEST=$(gh_curl \
     | jq -r '.sha')
 ROCJITSU_CURRENT=$(current_pin ubuntu-rocm-rocjitsu rocjitsu_commit)
 echo "    current: $ROCJITSU_CURRENT  latest: $ROCJITSU_LATEST  (branch: $ROCJITSU_BRANCH)"
-# The pin is frozen while local patches are carried. The series is applied with
-# `git apply --3way` against exactly this commit, so an automatic bump does not
-# produce a newer image -- it produces a red build, on
-# every reviewer round-trip of the upstream stack. Rebasing the series is a
-# human step: do it, move the pin by hand, and re-prove it against a guest.
-# Emptying patches/ resumes the scrub with no change here.
+# The pin is frozen while local patches are carried. patches/ is empty today --
+# the series it held landed upstream -- so this branch is dormant and the scrub
+# tracks the branch head. It is kept because the condition it guards is a
+# property of how the Dockerfile applies patches, not of any one series: a
+# series is applied with `git apply --3way` against exactly this commit, so an
+# automatic bump would not produce a newer image, it would produce a red build,
+# on every reviewer round-trip of the upstream stack. Re-adding patches/
+# re-freezes the pin with no change here.
 # The -d test is load-bearing: find exits non-zero on a missing directory, and
 # under `set -euo pipefail` that would kill the scrub right here -- silently,
 # since find's message is discarded -- leaving every pin below unscrubbed.

@@ -17,10 +17,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 ARG ROCJITSU_REPO=https://github.com/ROCm/rocm-systems.git
 ARG ROCJITSU_BRANCH=users/agutierr/gfx1250-vfio-compute-6
-# Not the head of the branch: this is the commit the patches/ series below was
-# proven against, end to end, on a real guest. The scrub leaves it alone while
-# patches are carried -- see scripts/version-scrub.sh.
-ARG ROCJITSU_COMMIT=20d4ce1c914454999ab6c4f17643269372ba3777
+# The head of the branch. This tracks again: the local series that used to
+# freeze this pin landed upstream in the 2026-09-08 force-push, so
+# scripts/version-scrub.sh bumps it on every reviewer round-trip.
+ARG ROCJITSU_COMMIT=2d8a73ff0a28aabe7554b99c58565ef63b635f75
 # Which config the vfio-user probe below and the default CMD serve. A build
 # variant pinned to a different upstream ref can point at a renamed or newly
 # added profile from images.yml without editing this file.
@@ -32,7 +32,7 @@ ARG ROCJITSU_CONFIG=gfx1250_mi455x.json
 ARG ROCJITSU_FIRMWARE_GEN_COMMIT=730bc62d60191337a07da50892538475370cb071
 # Compile-time log groups; see rj_log.cmake. Nothing gates these at runtime, so
 # a group named here prints for every event it covers.
-ARG ROCJITSU_LOG_GROUPS=CP
+ARG ROCJITSU_LOG_GROUPS=OFF
 
 WORKDIR /build
 
@@ -43,36 +43,11 @@ RUN git init /build/rocm-systems && \
     git -C /build/rocm-systems rev-parse HEAD \
         > /build/rocjitsu-commit.txt
 
-# Local patches against ROCJITSU_COMMIT, applied in filename order. The pinned
-# head does not boot a guest unmodified: four of these undo a regression
-# introduced inside this same branch by aac939813f, and the fifth closes a gap
-# in the vfio-user scratch path that hangs any dispatch needing private memory.
-# Each patch states its own case in its header; patches/README.md is the index.
-#
-# --3way so a pin bump fails loudly rather than silently not applying, and
-# `test -s` so a series that has become a no-op -- every hunk already upstream
-# -- fails the build here rather than shipping an image that claims patches it
-# does not carry. Note that 0005 carries no `index` blob lines, so git cannot
-# 3-way it and falls back to a direct apply: a stale base still fails the
-# build, it just reports "patch does not apply" instead of leaving conflict
-# markers. Re-exporting the series with `git format-patch` would fix that.
-#
-# Keep the series short. A patch that survives more than a couple of pin bumps
-# belongs upstream, not here.
-COPY ubuntu-rocm-rocjitsu/patches/ /build/patches/
-RUN set -eu; \
-    git -C /build/rocm-systems config user.email ci-images@invalid; \
-    git -C /build/rocm-systems config user.name "ci-images build"; \
-    : > /build/rocjitsu-patch-list.txt; \
-    for patch in /build/patches/*.patch; do \
-        echo "applying $(basename "${patch}")"; \
-        git -C /build/rocm-systems apply --3way --verbose "${patch}"; \
-        basename "${patch}" >> /build/rocjitsu-patch-list.txt; \
-    done; \
-    git -C /build/rocm-systems diff --stat HEAD \
-        > /build/rocjitsu-local-patches.txt; \
-    test -s /build/rocjitsu-local-patches.txt; \
-    cat /build/rocjitsu-local-patches.txt
+# This tree is built unmodified. It used to carry a five-patch series against
+# ROCJITSU_COMMIT without which the served device could not boot a guest, let
+# alone run a kernel needing private memory; all five landed upstream in the
+# 2026-09-08 rewrite of this branch. If a future head regresses, re-add the
+# series and the pin freeze together -- git log for the patches/ directory.
 
 # _Static_assert is a C11 keyword with no C++ spelling, and libvfio-user v0.8's
 # pci_caps/{common,msix}.h use it; rocjitsu includes those from C++ in
@@ -154,11 +129,14 @@ COPY ubuntu-rocm-rocjitsu/vfio-guest-firmware.py \
      /usr/local/bin/vfio_guest_firmware.py
 RUN chmod 0755 /usr/local/bin/vfio_guest_firmware.py
 
-# Acceptance test for patch 0005, shipped beside the server because that is what
-# a consumer has in hand when a dispatch never retires. It is a guest-side
-# artefact -- there is no hipcc here and no GPU to run it on -- so it is only
-# staged: copy it into the guest and build it there. Without 0005 it hangs
-# forever with no error, which is the whole reason it exists.
+# Acceptance test for the dynamic-scratch path, shipped beside the server
+# because that is what a consumer has in hand when a dispatch never retires. It
+# is a guest-side artefact -- there is no hipcc here and no GPU to run it on --
+# so it is only staged: copy it into the guest and build it there. It was
+# written against the local patch that first made this path work and is kept
+# now that upstream carries its own: on a server that does not ask the runtime
+# for scratch it hangs forever with no error, which is the whole reason it
+# exists.
 COPY ubuntu-rocm-rocjitsu/rocjitsu-scratch-repro.hip \
      /usr/local/share/rocjitsu/rocjitsu-scratch-repro.hip
 
@@ -171,10 +149,10 @@ ENV ROCJITSU_CONFIG_PATH=${ROCJITSU_CONFIG_DIR}/${ROCJITSU_CONFIG}
 # restated here, so a bump upstream cannot leave this metadata lying about what
 # the vfio-user transport was built against.
 #
-# local_patches and patches.diffstat are the point of this block now: without
-# them there is no way to tell a patched image from an unpatched one at
-# runtime, which is exactly the confusion that made the consumer pin a
-# hand-built image in the first place.
+# local_patches stays in the schema and stays empty. Consumers grew a habit of
+# reading it to tell a patched build from an unpatched one, and an absent key
+# reads the same as an unpatched image to a careless `.get()`; an explicit []
+# says the tree was built unmodified.
 RUN set -eu; \
     cmake_pins=/build/rocm-systems/emulation/rocjitsu/cmake/rj_libvfio_user.cmake; \
     libvfio_user_tag="$(awk '/libvfio-user.git/{getline; print $2}' "${cmake_pins}")"; \
@@ -182,16 +160,11 @@ RUN set -eu; \
     test -n "${libvfio_user_tag}"; \
     test -n "${json_c_tag}"; \
     cp /build/rocjitsu-commit.txt /usr/local/share/rocjitsu-commit.txt; \
-    cp /build/rocjitsu-local-patches.txt \
-        /usr/local/share/rocjitsu/patches.diffstat; \
-    patches_json="$(awk '{printf "%s\"%s\"", (NR>1 ? ", " : ""), $0}' \
-        /build/rocjitsu-patch-list.txt)"; \
     printf '{\n\
   "rocjitsu_repo": "%s",\n\
   "rocjitsu_branch": "%s",\n\
   "rocjitsu_commit": "%s",\n\
-  "local_patches": [%s],\n\
-  "patches_diffstat": "/usr/local/share/rocjitsu/patches.diffstat",\n\
+  "local_patches": [],\n\
   "libvfio_user_tag": "%s",\n\
   "json_c_tag": "%s",\n\
   "vfio_enabled": true,\n\
@@ -203,7 +176,6 @@ RUN set -eu; \
         "${ROCJITSU_REPO}" \
         "${ROCJITSU_BRANCH}" \
         "$(cat /build/rocjitsu-commit.txt)" \
-        "${patches_json}" \
         "${libvfio_user_tag}" \
         "${json_c_tag}" \
         "${ROCJITSU_LOG_GROUPS}" \
@@ -279,17 +251,27 @@ RUN set -eux; \
     test ! -e /tmp/fw-unsupported; \
     rm -rf /tmp/ip_discovery.bin /tmp/fw
 
-# The patch series is the difference between an image that serves a device and
-# one a guest can run kernels on, so assert the metadata names it rather than
-# leaving "was this built patched?" to a diff of two binaries. Asserted against
-# patches.diffstat -- which is generated from what git actually applied -- so
-# adding a patch needs no edit here.
+# Three upstream behaviours are the difference between an image that serves a
+# device and one a guest can boot and run kernels on. They arrived in this
+# branch's 2026-09-08 rewrite, replacing the local series this image used to
+# carry -- and because the pin now tracks a force-pushed review branch, a
+# rebase could take any of them away again. Assert them here, where the failure
+# names what is missing, rather than as "Timeout waiting for VM flush ACK!" or
+# a dispatch that never retires.
+#
+# Grepping source is crude, but these are behaviours with no runtime probe
+# short of booting a guest, and each marker is the identifier the behaviour is
+# implemented under rather than incidental text.
 RUN set -eux; \
-    applied=$(python3 -c \
+    src=/build/rocm-systems/emulation/rocjitsu; \
+    vm=${src}/lib/rocjitsu/src/rocjitsu/vm/amdgpu; \
+    unpatched=$(python3 -c \
         'import json;print(len(json.load(open("/usr/local/share/rocjitsu-build.json"))["local_patches"]))'); \
-    test "${applied}" -gt 0; \
-    test -s /usr/local/share/rocjitsu/patches.diffstat; \
-    cat /usr/local/share/rocjitsu/patches.diffstat
+    test "${unpatched}" -eq 0; \
+    grep -q 'kPageTableRootFlags' "${vm}/gpu_vm.cpp"; \
+    grep -q 'RoutesAddressesOutsideTheGartApertureToVram' \
+        "${src}/tests/pci/gpu_pci_device_test.cpp"; \
+    grep -q 'request_dynamic_scratch' "${vm}/command_processor.cpp"
 
 # The build check above imports the upstream generator, which leaves a
 # __pycache__ beside it that a consumer would otherwise ship and never use.

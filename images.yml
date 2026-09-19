@@ -311,27 +311,33 @@ images:
       rocjitsu_branch:
         value: users/agutierr/gfx1250-vfio-compute-6
         env: ROCM_ROCJITSU_BRANCH
-      # Deliberately NOT the branch head, and the scrub will not move it while
-      # ubuntu-rocm-rocjitsu/patches/ is non-empty. This is the commit the
-      # local series was proven against end to end on a real guest; a bump
-      # without rebasing the series just fails the build in `git apply --3way`.
-      # Move both together, or empty patches/ and let the scrub resume.
+      # The branch head, and tracking it again. This pin was frozen for as long
+      # as ubuntu-rocm-rocjitsu/patches/ carried a five-patch series the image
+      # could not boot a guest without; the 2026-09-08 force-push brought all
+      # five upstream, patches/ is gone, and the scrub resumed. Expect it to
+      # move on every reviewer round-trip until the stack merges.
+      #
+      # A bump is no longer free, though: the Dockerfile asserts the three
+      # upstream behaviours that replaced the series, so a rebase that drops
+      # one fails the build rather than shipping a guest that hangs.
       rocjitsu_commit:
-        value: 20d4ce1c914454999ab6c4f17643269372ba3777
+        value: 2d8a73ff0a28aabe7554b99c58565ef63b635f75
         env: ROCM_ROCJITSU_COMMIT
       # Compile-time log groups (emulation/rocjitsu/cmake/rj_log.cmake): OFF,
       # ALL, a comma-separated subset of VM, CP, DBT_HOOKS, PLUGINS, DRIVER, or
-      # a raw bitmask. CP is the command processor -- doorbell, dispatch,
-      # completion -- which is the path a guest exercises through the vfio-user
-      # front end and the one worth seeing when a dispatch never lands.
+      # a raw bitmask.
       #
       # There is no runtime gate: util/log.h reads this into a constexpr, so a
       # group compiled in prints unconditionally, mutex-serialised, for every
-      # event. That is the cost of CP, and it is why the other groups -- VM
-      # especially, which logs instruction execution -- are left off. Set this
-      # to OFF to get a quiet server back without touching the Dockerfile.
+      # event. CP -- the command processor's doorbell, dispatch and completion
+      # path -- was on while the patch series was being proven out, and it is
+      # too noisy to leave on for ordinary use: it narrates every dispatch a
+      # guest makes. Set it back to CP for a build you are debugging a stuck
+      # dispatch on. Warnings and errors print either way, so the vfio-user
+      # front end still says what it is serving and still says when it fails.
+      # Quoted: bare OFF is a YAML 1.1 boolean and reaches cmake as "False".
       rocjitsu_log_groups:
-        value: CP
+        value: "OFF"
         env: ROCM_ROCJITSU_LOG_GROUPS
       # Only gfx_target_version 120500 has an IP discovery profile upstream, so
       # this is the only config the vfio-user front end can actually serve. It
