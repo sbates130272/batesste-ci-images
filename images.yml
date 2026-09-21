@@ -88,6 +88,23 @@ defaults:
     release: resolute
     arch: amd64
 
+# Retention for `ci-images-tool.py prune`. Only the immutable, fingerprinted
+# date tags are ever candidates: every rolling alias (latest, the bare variant,
+# 1.1, sha-…) and every semver release tag is kept regardless of what is set
+# here, because those are what consumers and BASE_IMAGE resolve through.
+#
+# A tag has to fall outside *both* limits to be proposed -- older than
+# keep_days *and* past the keep_count newest -- so a repository that has been
+# quiet for a month keeps its history, and a busy day does not reap last week.
+#
+# An image or a variant may override the block wholesale with its own `prune:`.
+prune:
+  keep_days: 30
+  keep_count: 10
+  # Globs, matched against the whole tag. Reach for this when something
+  # outside this repo pins a dated tag rather than a rolling one.
+  protect: []
+
 images:
 
   ubuntu-base:
@@ -625,6 +642,13 @@ images:
           vm_packages: ionic.txt
           kernel_ref: v7.2.3
           rdma_core_version: "61.0"
+        # rocm-ernic's two-VM job still copies the scratch payload image with
+        # skopeo rather than pulling the artifact, and pins a dated tag to do
+        # it. Hold this flavour's history longer than the repo default until
+        # that job moves; reclaiming a few hundred GB is not worth breaking it.
+        prune:
+          keep_days: 90
+          keep_count: 20
 
       # For ROCm/rocm-xio's test-vm-nvme job: a guest that is booted against a
       # rocjitsu emulated gfx1250 over vfio-user plus an emulated NVMe
