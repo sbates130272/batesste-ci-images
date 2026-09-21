@@ -210,3 +210,5 @@ EAL
 init
 adrfam
 DPDK's
+GiB
+unlink

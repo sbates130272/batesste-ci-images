@@ -445,6 +445,66 @@ read/write token logs in successfully and is then refused by the metadata
 `PATCH`, with a 403 rather than an auth error. The release workflow runs this
 once per release in its `sync-descriptions` job.
 
+### 1d. Pruning Old Tags
+
+The daily rebuild adds a dated tag to every repository and moves the rolling
+aliases onto it; nothing has ever taken one away, and for the qcow2 flavours
+each of those tags is a multi-GB guest disk. `prune` applies a retention
+policy to what is published and reports what has aged out:
+
+```bash
+./ci-images-tool.py prune                      # every target, read-only
+./ci-images-tool.py prune ubuntu-cuda-rocm     # one of them
+./ci-images-tool.py prune --all-tags           # show the kept tags and why
+./ci-images-tool.py prune --layers             # exact reclaim figure
+./ci-images-tool.py prune --json               # one record per tag, for CI
+```
+
+A run without `--delete` changes nothing and exits 0, so it is safe to read
+before it is a decision.
+
+Only **dated build tags** are ever candidates — `20260919-<variant>` and
+`20260919.g359579e-<variant>`, what `IMAGE_TAG=auto` produces once a day and
+the only thing in a repository that accumulates. A tag survives if any of
+these hold:
+
+| Kept | Why |
+| --- | --- |
+| `latest`, the bare variant, `1.1`, `1.1.0`, `sha-0d300a2` | Rolling aliases: what consumers and `BASE_IMAGE` resolve through, and each is a single slot the next push overwrites |
+| `1.1.0.g0d300a2-<variant>` | A release tag. Age is not a reason to withdraw what a release advertised |
+| `may-26-2026`, anything hand-made | A tag somebody typed is a tag somebody wanted |
+| A dated tag on the same digest as an alias | It is the current build wearing two names; removing it would take `latest` with it on a registry that deletes by manifest |
+| Pushed within `keep_days` (30) | |
+| Among the `keep_count` (10) newest dated tags | |
+| Matching a `protect` glob | |
+| The only tag left | A policy that empties a repository is a policy mistake |
+
+Both limits have to be exceeded before a tag is proposed, so a repository that
+has simply been quiet for a month keeps its history, and a busy day does not
+reap last week. Override per run with `--keep-days`, `--keep-count` and
+`--protect` (repeatable, and additive to what `images.yml` declares).
+
+Sizes are the compressed registry size Hub reports. Layers are shared between
+tags, so the default total double-counts them and is labelled an upper bound;
+`--layers` reads the manifests and counts only the layers no *kept* tag still
+references, which is what removal would actually free. On a typical repository
+that is the difference between a reported 70 GiB and a real 11 GiB.
+
+`--delete` acts on the proposal, after printing it and asking for the number of
+tags to be typed back (`--yes` skips the prompt for a non-interactive run). It
+is Docker Hub only: Hub deletes a *tag*, while the Registry v2 API deletes the
+*manifest* under it and would unlink every tag sharing that digest. Against
+another registry the proposal still works — minus push times, which v2 does not
+record, leaving only the tag-count half of the policy to apply.
+
+Deleting needs `REGISTRY_PASSWORD` to be a personal access token with the
+**read/write/delete** scope, the same one `describe` needs; a read/write token
+authenticates and is then refused with a 403. `prune` is deliberately *not*
+wired into the release workflow yet for that reason — the `DOCKERHUB_TOKEN`
+secret has to be rotated to a delete-scoped PAT first.
+
+The policy itself lives in `images.yml`; see [images.yml](#imagesyml).
+
 ### 2. Configure Environment Variables
 
 Some images may require environment configuration. Copy the example
@@ -512,6 +572,35 @@ values back through the tool rather than grepping the YAML:
 drift between the tool, the workflows and the Dockerfiles the way they used to.
 It regenerates the README shields in the same commit, and the `badges --check`
 lint job fails any PR where the two have come apart.
+
+#### Tag retention
+
+The policy `ci-images-tool.py prune` applies is declared in `images.yml` rather
+than passed on a command line, so it is reviewed in git like every other pin:
+
+```yaml
+prune:
+  keep_days: 30
+  keep_count: 10
+  protect: []
+```
+
+An image or a variant may override the block with its own `prune:` — wholesale,
+the way every other spec field a variant sets overrides its image. A flavour
+something outside this repo pins a dated tag of should hold more history than
+the default:
+
+```yaml
+      ionic:
+        prune:
+          keep_days: 90
+          keep_count: 20
+```
+
+`validate` rejects an unknown key or a negative count, so a typo fails in CI
+rather than silently reverting that target to the defaults — which would widen
+the policy, not narrow it. What the rules mean is in
+[Pruning Old Tags](#1d-pruning-old-tags).
 
 #### Pinned-upstream shields
 
@@ -655,6 +744,11 @@ Only the first is fingerprinted. The rest are meant to move, and pinning a
 commit into a tag whose purpose is to follow the newest build would make it
 immovable. One of them -- the bare variant -- is also what a layered image
 pulls as its `BASE_IMAGE`, so it has to resolve on any day from any commit.
+
+That split is also what makes a repository safe to prune: the rolling aliases
+occupy a fixed number of slots, while the dated builds accumulate one a day
+forever. `ci-images-tool.py prune` only ever proposes the latter -- see
+[Pruning Old Tags](#1d-pruning-old-tags).
 
 The git tag keeps its `v` prefix; the image tag drops it, per OCI convention.
 A local `ci-images-tool.py build` uses the same scheme with `IMAGE_TAG` as the

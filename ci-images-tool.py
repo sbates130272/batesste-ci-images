@@ -14,6 +14,7 @@ reads it; adding an image needs a Dockerfile and a YAML entry, not a code change
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import functools
 import json
 import os
@@ -83,6 +84,16 @@ HUB_SHORT_DESCRIPTION_MAX_BYTES = 100
 HUB_ELLIPSIS = "…"
 
 BUILDER_NAME = "builder"
+
+# `prune` retention, when images.yml says nothing. A tag has to fall outside
+# *both* before it is a candidate: the day count alone would empty a repository
+# that has simply been quiet for a month, and the tag count alone would reap a
+# week-old build the moment a busy day pushed ten more.
+PRUNE_KEEP_DAYS = 30
+PRUNE_KEEP_COUNT = 10
+#: Everything a `prune:` block may set. Anything else is a typo, and a typo
+#: that is silently ignored widens the policy rather than narrowing it.
+PRUNE_KEYS = ("keep_days", "keep_count", "protect")
 
 # Media types for the bare qcow2 artifact. Custom rather than an OCI image
 # layer type, so `oras discover` and registry UIs can tell a disk from a
@@ -226,6 +237,7 @@ class Spec:
     images: dict
     workdir: Path
     badges: dict = field(default_factory=dict)
+    prune: dict = field(default_factory=dict)
     overlay: Path | None = None
 
     @property
@@ -312,6 +324,7 @@ def load_spec(workdir: Path) -> Spec:
         defaults=data.get("defaults") or {},
         images=data.get("images") or {},
         badges=data.get("badges") or {},
+        prune=data.get("prune") or {},
         workdir=workdir,
         overlay=applied,
     )
@@ -1781,6 +1794,12 @@ def cmd_validate(args: argparse.Namespace) -> None:
         image_variant(cfg, t)
         image_labels(cfg, t)
         build_args_for(cfg, t)
+        # A mistyped retention key would otherwise surface as a prune run that
+        # quietly used the defaults -- i.e. a wider policy than was written.
+        try:
+            prune_policy(cfg, t)
+        except ValueError as exc:
+            errors.append(str(exc))
 
     if errors:
         for e in errors:
@@ -2848,6 +2867,427 @@ def _hub_size(full_size: object) -> str:
     return "unknown"
 
 
+# ── prune ──────────────────────────────────────────────
+#
+# The daily rebuild and every release add a fingerprinted tag and move the
+# rolling aliases onto it; nothing has ever taken one away, and for the qcow2
+# flavours each dated tag is a multi-GB disk. What follows decides which tags
+# have aged out. The decision is a pure function over the tag list so it can be
+# read, and argued with, without a registry in the loop.
+
+
+#: A dated build tag: the ``IMAGE_TAG=auto`` base, with the source fingerprint
+#: if it was built after that was added and without it if it was not. Both are
+#: snapshots of one day's build and both accumulate, so both are prunable --
+#: matching only the fingerprinted form would leave the older, larger half of
+#: every repository untouched, which is most of what there is to reclaim.
+#:
+#: Deliberately anchored: a rolling alias (``latest``, ``rocm10.0-cuda13.4``,
+#: ``1.1``) never starts with a date, and neither does a hand-made tag like
+#: ``may-26-2026``, which is someone's bookmark and not this scheme's to reap.
+_DATED_TAG_RE = re.compile(r"^\d{8}(\.g[0-9a-f]{7}(-dirty)?)?($|-)")
+
+
+@dataclass(frozen=True)
+class PrunePolicy:
+    """Retention for one repository."""
+
+    keep_days: int
+    keep_count: int
+    protect: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """One tag, and why it does or does not survive the policy."""
+
+    tag: TagInfo
+    remove: bool
+    reason: str
+
+
+def prune_policy(
+    cfg: Config,
+    target: Target,
+    keep_days: int | None = None,
+    keep_count: int | None = None,
+    protect: tuple[str, ...] = (),
+) -> PrunePolicy:
+    """The policy for *target*: spec defaults, then the target, then the flags.
+
+    The per-target block goes through ``target_attr``, so a variant overrides
+    its image the way every other spec field does -- wholesale, since a partial
+    merge of a retention policy is the kind of thing that reads as safe and is
+    not. ``--protect`` adds to the declared patterns rather than replacing
+    them: a pattern in images.yml is there because something depends on it, and
+    a command line is not the place to drop that.
+
+    Raises ValueError so `validate` can collect what `prune` would exit on.
+    """
+
+    merged = dict(cfg.spec.prune)
+    declared = target_attr(cfg, target, "prune", {})
+    if declared:
+        if not isinstance(declared, dict):
+            raise ValueError(f"{target.key}: prune must be a mapping")
+        merged.update(declared)
+
+    unknown = sorted(set(merged) - set(PRUNE_KEYS))
+    if unknown:
+        raise ValueError(
+            f"{target.key}: unknown prune key(s) {', '.join(unknown)}; "
+            f"expected {', '.join(PRUNE_KEYS)}"
+        )
+
+    counts: dict[str, int] = {}
+    for key, fallback in (
+        ("keep_days", PRUNE_KEEP_DAYS),
+        ("keep_count", PRUNE_KEEP_COUNT),
+    ):
+        raw = merged.get(key, fallback)
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+            raise ValueError(
+                f"{target.key}: prune {key} must be a non-negative integer"
+            )
+        counts[key] = raw
+
+    declared_protect = merged.get("protect") or []
+    if isinstance(declared_protect, str):
+        declared_protect = [declared_protect]
+    if not isinstance(declared_protect, list) or not all(
+        isinstance(p, str) for p in declared_protect
+    ):
+        raise ValueError(f"{target.key}: prune protect must be a list of patterns")
+
+    return PrunePolicy(
+        keep_days=counts["keep_days"] if keep_days is None else keep_days,
+        keep_count=counts["keep_count"] if keep_count is None else keep_count,
+        protect=tuple(declared_protect) + protect,
+    )
+
+
+def _tag_release(name: str) -> str:
+    """The release a fingerprinted tag was built for: ``1.1.0`` or ``20260526``.
+
+    Empty for a tag that carries no fingerprint, which is every rolling alias.
+    """
+
+    match = _FINGERPRINTED_TAG_RE.search(name)
+    return name[: match.start()] if match else ""
+
+
+def _tag_age_days(pushed: str, now: datetime) -> float | None:
+    """How long ago *pushed* was, or None when the registry did not say.
+
+    The Registry v2 API records no push time, so off Docker Hub every tag lands
+    here as None and the age half of the policy cannot be applied.
+    """
+
+    if not pushed:
+        return None
+    try:
+        when = datetime.fromisoformat(pushed.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return (now - when).total_seconds() / 86400
+
+
+def prune_candidates(
+    tags: list[TagInfo],
+    policy: PrunePolicy,
+    now: datetime | None = None,
+) -> list[Verdict]:
+    """*tags* (newest first, as ``_repo_tag_info`` returns them) judged.
+
+    A tag is only ever a candidate if it is a dated build tag -- what
+    ``IMAGE_TAG=auto`` produces and the daily rebuild leaves behind, one per
+    day forever. Everything else is kept:
+
+    * Rolling aliases -- ``latest``, the bare variant, ``1.1``, ``sha-0d300a2``
+      -- are what a consumer and a ``BASE_IMAGE`` resolve through, and each
+      occupies a single slot the next push overwrites. Nothing to accumulate,
+      everything to break.
+    * A semver release, fingerprinted or not: ``1.1.0.g…`` is what a release
+      advertised, and age is not a reason to withdraw it.
+    * Anything hand-made. A tag somebody typed is a tag somebody wanted.
+    """
+
+    now = now or datetime.now(timezone.utc)
+
+    dated = [t for t in tags if _DATED_TAG_RE.match(t.name)]
+    recent = {t.name for t in dated[: policy.keep_count]}
+
+    # A dated tag on the same digest as a rolling alias is the current build
+    # wearing two names. Hub deletes tags, but a v2 registry deletes the
+    # manifest under them, so treating these as prunable would mean proposing
+    # something that takes `latest` with it on half the registries this runs
+    # against.
+    aliased: dict[str, str] = {}
+    for tag in tags:
+        if tag.digest and not _DATED_TAG_RE.match(tag.name):
+            aliased.setdefault(tag.digest, tag.name)
+
+    verdicts: list[Verdict] = []
+    for tag in tags:
+        if not _DATED_TAG_RE.match(tag.name):
+            verdicts.append(Verdict(tag, False, "not a dated build"))
+            continue
+        if _SEMVER_RE.match(_tag_release(tag.name)):
+            verdicts.append(Verdict(tag, False, "release"))
+            continue
+        hit = next(
+            (p for p in policy.protect if fnmatch.fnmatch(tag.name, p)),
+            "",
+        )
+        if hit:
+            verdicts.append(Verdict(tag, False, f"protected by '{hit}'"))
+            continue
+        if tag.digest in aliased:
+            verdicts.append(Verdict(tag, False, f"alias of {aliased[tag.digest]}"))
+            continue
+        if tag.name in recent:
+            verdicts.append(Verdict(tag, False, f"newest {policy.keep_count}"))
+            continue
+        age = _tag_age_days(tag.pushed, now)
+        if age is not None and age <= policy.keep_days:
+            verdicts.append(Verdict(tag, False, f"under {policy.keep_days}d"))
+            continue
+        where = f"{age:.0f}d old" if age is not None else "undated"
+        verdicts.append(Verdict(tag, True, f"{where}, past newest {policy.keep_count}"))
+
+    # Never empty a repository. A policy that reaps everything is a policy
+    # mistake, and the newest build is the one worth surviving it.
+    if verdicts and all(v.remove for v in verdicts):
+        verdicts[0] = Verdict(verdicts[0].tag, False, "last tag")
+
+    return verdicts
+
+
+def prune_reclaim(verdicts: list[Verdict]) -> tuple[int, bool]:
+    """``(bytes, exact)`` freed by removing the doomed tags.
+
+    Layers are shared: one only frees space when the last tag referencing it
+    goes, so the figure is the layers the doomed tags reference and the kept
+    ones do not, plus each doomed tag's own manifest and config bytes. That
+    needs manifests, which is what ``--layers`` pays for; without them the best
+    available answer is the sum of the tag sizes, which double-counts every
+    shared layer and is therefore reported as an upper bound.
+    """
+
+    doomed = [v.tag for v in verdicts if v.remove]
+    kept = [v.tag for v in verdicts if not v.remove]
+    if not any(t.layers for t in doomed):
+        return sum(t.image_size for t in doomed), False
+
+    held = {digest for t in kept for digest, _ in t.layers}
+    freed = {(d, s) for t in doomed for d, s in t.layers if d not in held}
+    return sum(s for _, s in freed) + sum(t.metadata_size for t in doomed), True
+
+
+def _hub_delete_tag(
+    namespace: str,
+    repository: str,
+    tag: str,
+    headers: dict[str, str],
+) -> str:
+    """Delete one tag from a Docker Hub repository; "" on success.
+
+    Hub's delete is per *tag*: the manifest and its layers stay until Hub's own
+    garbage collection finds nothing pointing at them, so this cannot take a
+    digest out from under a tag it was not asked about.
+    """
+
+    url = f"{HUB_API}/repositories/{namespace}/{repository}/tags/{quote(tag)}/"
+    try:
+        resp = requests.delete(url, headers=headers, timeout=30)
+    except requests.RequestException as exc:
+        return str(exc)
+    if resp.ok or resp.status_code == 404:
+        return ""
+    if resp.status_code == 403:
+        return (
+            "HTTP 403 -- the personal access token needs the read/write/delete "
+            "scope to remove tags"
+        )
+    return f"HTTP {resp.status_code} {_hub_error(resp)}"
+
+
+def cmd_prune(args: argparse.Namespace) -> None:
+    """Propose -- and with --delete, remove -- tags that have aged out."""
+
+    cfg = load_config(
+        env_file=args.env_file,
+        password_file=getattr(args, "password_file", None),
+    )
+    targets = resolve_targets(cfg, args.image)
+
+    if args.delete and args.json:
+        # --json is the machine-readable proposal, and the confirmation is a
+        # prompt; honouring both would mean deleting with the table that
+        # justifies it never shown. Pipe the proposal, then act on it.
+        console.print("[red]Error:[/] --json and --delete are mutually exclusive")
+        sys.exit(1)
+
+    if args.delete and not _is_docker_hub(cfg.registry):
+        console.print(
+            f"[red]Error:[/] --delete supports Docker Hub only; {cfg.registry} "
+            "deletes manifests rather than tags, which would unlink every tag "
+            "sharing a digest. Run without --delete to see the proposal."
+        )
+        sys.exit(1)
+
+    token = _hub_token(cfg) if args.delete else ""
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+    rows: list[dict] = []
+    undated = False
+    proposed = False
+    failed = False
+
+    with requests.Session() as session:
+        for target in targets:
+            repo = full_image_ref(cfg, target)
+            try:
+                policy = prune_policy(
+                    cfg,
+                    target,
+                    keep_days=args.keep_days,
+                    keep_count=args.keep_count,
+                    protect=tuple(args.protect),
+                )
+            except ValueError as exc:
+                console.print(f"[red]Error:[/] {exc}")
+                sys.exit(1)
+
+            tags = _repo_tag_info(cfg, repo, session, deep=args.layers)
+            verdicts = prune_candidates(tags, policy)
+            reclaim, exact = prune_reclaim(verdicts)
+            undated = undated or any(v.tag.pushed == "" for v in verdicts)
+
+            for v in verdicts:
+                rows.append(
+                    {
+                        "target": target.key,
+                        "repository": repo,
+                        "tag": v.tag.name,
+                        "digest": v.tag.digest,
+                        "pushed": v.tag.pushed,
+                        "size": v.tag.image_size,
+                        "remove": v.remove,
+                        "reason": v.reason,
+                    }
+                )
+
+            if args.json:
+                continue
+
+            doomed = [v for v in verdicts if v.remove]
+            console.rule(f"[bold]{target.key}[/]")
+            if not verdicts:
+                continue
+
+            # Doomed first: the whole point of the table is what falls off the
+            # end, and on a repository with months of dailies that is the part
+            # a reader would otherwise have to scroll to. With nothing doomed
+            # there is no table to draw unless --all-tags asked for the
+            # reasoning; the count line below says the rest.
+            shown = doomed + [v for v in verdicts if not v.remove]
+            if not args.all_tags:
+                shown = doomed
+            if shown:
+                table = Table(
+                    title=(
+                        f"{repo} -- keep {policy.keep_days}d or the newest "
+                        f"{policy.keep_count}"
+                    )
+                )
+                table.add_column("Tag", overflow="fold")
+                table.add_column("Pushed", overflow="fold")
+                table.add_column("Size", justify="right")
+                table.add_column("Verdict")
+                table.add_column("Why", overflow="fold")
+                for v in shown:
+                    table.add_row(
+                        v.tag.name,
+                        _hub_when(v.tag.pushed) if v.tag.pushed else "[dim]-[/]",
+                        _hub_size(v.tag.image_size),
+                        "[red]remove[/]" if v.remove else "[green]keep[/]",
+                        v.reason,
+                    )
+                console.print(table)
+
+            bound = "" if exact else ", upper bound"
+            freed = f"~{_hub_size(reclaim)}{bound}" if reclaim else "nothing"
+            console.print(
+                f"{len(doomed)} of {len(verdicts)} tags would be removed, "
+                f"{freed} reclaimed"
+            )
+            proposed = proposed or bool(doomed)
+
+            if not (args.delete and doomed):
+                continue
+
+            where = _hub_repo(cfg, target)
+            if where is None:
+                failed = True
+                continue
+            namespace, repository = where
+            if not _prune_confirm(len(doomed), repo, args.yes):
+                console.print("[yellow]Skipped[/] -- not confirmed")
+                continue
+            for v in doomed:
+                error = _hub_delete_tag(namespace, repository, v.tag.name, headers)
+                if error:
+                    console.print(f"  [red]{v.tag.name}[/]: {error}")
+                    failed = True
+                else:
+                    console.print(f"  [green]deleted[/] {v.tag.name}")
+
+    if args.json:
+        print(json.dumps(rows, separators=(",", ":")))
+        return
+
+    if undated:
+        console.print(
+            "[yellow]Note:[/] some tags carry no push time -- the Registry v2 "
+            "API does not record one -- so only the tag count applied to them."
+        )
+    if proposed and not args.layers:
+        console.print(
+            "[dim]Sizes double-count shared layers; add --layers for what "
+            "removal would actually free (one manifest read per image).[/]"
+        )
+    if proposed and not args.delete:
+        console.print("[dim]Nothing was removed; add --delete to act on this.[/]")
+    if failed:
+        sys.exit(1)
+
+
+def _prune_confirm(count: int, repo: str, yes: bool) -> bool:
+    """Make the caller type the number of tags they are about to remove.
+
+    A y/n on a destructive registry operation is a reflex; typing the count
+    means having read it. ``--yes`` is the non-interactive path, and a run
+    without a terminal has to use it rather than have the prompt read EOF as
+    consent.
+    """
+
+    if yes:
+        return True
+    if not sys.stdin.isatty():
+        console.print(
+            f"[red]Error:[/] --delete needs a terminal to confirm {repo}; "
+            "pass --yes for a non-interactive run"
+        )
+        sys.exit(1)
+    answer = console.input(
+        f"Type [bold]{count}[/] to delete {count} tag(s) from {repo}: "
+    ).strip()
+    return answer == str(count)
+
+
 def readme_for(cfg: Config, target: Target) -> Path:
     """The image directory's README, which becomes the Hub overview.
 
@@ -3299,6 +3739,75 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common_args(p_status)
 
+    # ── prune ──
+    p_prune = sub.add_parser(
+        "prune",
+        help="Propose (and with --delete, remove) tags that have aged out",
+    )
+    p_prune.add_argument(
+        "image",
+        nargs="?",
+        default=None,
+        metavar="TARGET",
+        help=f"{TARGET_HELP} (examines all if omitted)",
+    )
+    p_prune.add_argument(
+        "--keep-days",
+        type=int,
+        metavar="N",
+        help=f"Keep any tag pushed in the last N days (default {PRUNE_KEEP_DAYS})",
+    )
+    p_prune.add_argument(
+        "--keep-count",
+        type=int,
+        metavar="N",
+        help=(
+            "Keep the N newest fingerprinted tags regardless of age "
+            f"(default {PRUNE_KEEP_COUNT})"
+        ),
+    )
+    p_prune.add_argument(
+        "--protect",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help="Never remove tags matching GLOB (repeatable; adds to images.yml)",
+    )
+    p_prune.add_argument(
+        "--all-tags",
+        action="store_true",
+        help="Show the kept tags too, with the rule that kept each one",
+    )
+    p_prune.add_argument(
+        "--layers",
+        action="store_true",
+        help=(
+            "Read manifests so the reclaim figure counts only layers no kept "
+            "tag shares (one manifest read per distinct image)"
+        ),
+    )
+    p_prune.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit one record per tag instead of the tables",
+    )
+    p_prune.add_argument(
+        "--delete",
+        action="store_true",
+        help="Actually remove the proposed tags (Docker Hub only)",
+    )
+    p_prune.add_argument(
+        "--yes",
+        action="store_true",
+        help="With --delete, skip the typed confirmation",
+    )
+    p_prune.add_argument(
+        "--password-file",
+        metavar="FILE",
+        help="File containing registry password",
+    )
+    _add_common_args(p_prune)
+
     # ── describe ──
     p_describe = sub.add_parser(
         "describe",
@@ -3343,6 +3852,7 @@ DISPATCH = {
     "config": cmd_config,
     "inspect": cmd_inspect,
     "status": cmd_status,
+    "prune": cmd_prune,
     "describe": cmd_describe,
 }
 
