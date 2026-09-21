@@ -275,7 +275,7 @@ images:
     base: ubuntu-libvfio-user
     artifact: true
     vars:
-      rocm_ernic_commit: 6ca9a465a8362dda078fdc4d80b4268f377c1628
+      rocm_ernic_commit: 0b48aa1d5821a66c4fb5b78f049b1d9a759a6e17
     build_args:
       ROCM_ERNIC_COMMIT: "{rocm_ernic_commit}"
     # This image links against libvfio-user, so that pin belongs in the tag:

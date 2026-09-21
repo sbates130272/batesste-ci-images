@@ -55,5 +55,5 @@ so a build that differs only in a pin gets its own tag.
 ## Tags
 
 The tag variant is the two abbreviated commits, for example
-`ernic.6ca9a46-vfu.8039244`. See the repository [README](../README.md) for the
+`ernic.0b48aa1-vfu.8039244`. See the repository [README](../README.md) for the
 full tag scheme.
