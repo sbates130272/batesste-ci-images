@@ -33,7 +33,7 @@ adding an image or a variant adds its row.
 [![libvfio-user 8039244](https://img.shields.io/badge/libvfio--user-8039244-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/803924493a7c787b2ba358751f55f07d5dba64b2)
 [![qemu-minimal 5d68689](https://img.shields.io/badge/qemu--minimal-5d68689-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/5d6868914873757ff1c51dec3ca95a3fa0b2e9d9)
 [![rocm-ernic 0b48aa1](https://img.shields.io/badge/rocm--ernic-0b48aa1-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/0b48aa1d5821a66c4fb5b78f049b1d9a759a6e17)
-[![rocjitsu 2d8a73f](https://img.shields.io/badge/rocjitsu-2d8a73f-ED1C24)](https://github.com/ROCm/rocm-systems/commit/2d8a73ff0a28aabe7554b99c58565ef63b635f75)
+[![rocjitsu 8e01a5a](https://img.shields.io/badge/rocjitsu-8e01a5a-ED1C24)](https://github.com/ROCm/rocm-systems/commit/8e01a5a3fbee92f2b570dde97f314000d5226327)
 [![spdk 18d1d8d](https://img.shields.io/badge/spdk-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
 [![fio 6bc57a9](https://img.shields.io/badge/fio-6bc57a9-4B8BBE)](https://github.com/axboe/fio/commit/6bc57a931f04fa3f50348d8c8f087187f050c6e1)
 [![ucx 12d6aa6](https://img.shields.io/badge/ucx-12d6aa6-4B8BBE)](https://github.com/openucx/ucx/commit/12d6aa65956996625c8daf39cbb3475ef4a1a35b)
@@ -105,13 +105,12 @@ and pushing of these images.
 - **ubuntu-rocm-rocjitsu**: Ubuntu 24.04 image with rocjitsu built from a
   pinned source commit with `-DROCJITSU_ENABLE_VFIO=ON`. Provides a
   software-emulated AMD GPU vfio-user server for KFD/amdgpu bring-up without
-  real hardware. Currently tracks the `users/agutierr/gfx1250-vfio-compute-6`
-  branch rather than `develop`, since the vfio-compute work only exists there.
-  That branch is the tip of the stacked review series in PRs #11391–#11397, and
-  the pin returns to `develop` once the series lands. The pinned commit does not
-  boot a guest unmodified, so the image carries a five-patch local series and
-  the pin is frozen at the commit that series was proven against. See
-  `ubuntu-rocm-rocjitsu/` for details.
+  real hardware. Tracks `develop`: the gfx1250 vfio-compute work this image
+  followed on a review branch (PRs #11391–#11397) has landed, and the local
+  patch series it used to carry with it. The tree is now built unmodified, but
+  nothing upstream tests the vfio-user compute path — no CI anywhere enables
+  `ROCJITSU_ENABLE_VFIO` — so the build asserts the behaviours a guest needs.
+  See `ubuntu-rocm-rocjitsu/` for details.
 - **ubuntu-spdk-libvfio-user**: SPDK's NVMe-oF target built from source and
   served over vfio-user, so a guest gets an emulated NVMe controller carrying
   any mix of LBA namespaces (memory or file backed) and Key Value namespaces
@@ -158,19 +157,21 @@ cannot produce for itself, so the image ships the tools upstream provides:
 | --- | --- |
 | `rj-ip-discovery gfx1250 <out>` | generates `ip_discovery.bin`, staged at `/lib/firmware/amdgpu/ip_discovery.bin` and read with `amdgpu.discovery=2` |
 | `run-vfio-guest.py` | boots a prepared kernel and initramfs under QEMU against a rocjitsu vfio-user socket |
-| `vfio_guest_firmware.py` | writes the complete gfx1250 firmware set, `ip_discovery.bin` and a `manifest.json` naming every file |
+| `vfio_guest_firmware.py` | writes what the guest's driver release does not ship — `gc_12_1_0_imu.bin` and `ip_discovery.bin` — plus a `manifest.json` naming every file. `--set full` emits the whole stub set for a guest older than `amdgpu` 31.60 |
 | `rocjitsu-scratch-repro.hip` | guest-side acceptance test for the scratch patch; staged under `/usr/local/share/rocjitsu`, built in the guest |
 
 Without the discovery table the driver polls BAR registers for a completion
 bit rocjitsu never sets and spins at 99% CPU in `gfx_v12_1_hw_init`.
 
-Firmware is still synthesized. The gfx1250-vfio-compute stack dropped the stub
-generator in favour of real firmware from the driver release matching the
-guest's `amdgpu.ko`, but no such release exists — `amdgpu-dkms-firmware` 31.50
-ships 683 files and not one `gc_12_1_0` or `sdma_7_1_0` among them — so the
-image fetches the generator from the last commit that carried it, pinned
-separately from the server's own commit, and wraps it to emit a complete,
-self-describing set. See `ubuntu-rocm-rocjitsu/README.md`.
+Firmware is mostly real now. Upstream dropped its stub generator in favour of
+"use the firmware from the driver release matching the guest's `amdgpu.ko`",
+and from `amdgpu` 31.60 that release exists: `amdgpu-dkms-firmware` ships real
+`gc_12_1_0` and `sdma_7_1_0` blobs, and `amdgpu-dkms` depends on it, so a guest
+with the driver has them. Two files it still does not ship are still opened —
+`gc_12_1_0_imu.bin`, which is `AMDGPU_UCODE_REQUIRED` under the
+`amdgpu.fw_load_type=0` the vfio guest boots with, and `ip_discovery.bin` — and
+that gap is what `vfio_guest_firmware.py` emits by default. See
+`ubuntu-rocm-rocjitsu/README.md`.
 
 Upstream builds `rj-ip-discovery` but has no `install()` rule for it, so the
 image lifts it out of the build tree; it is smoke-tested at build time, as the

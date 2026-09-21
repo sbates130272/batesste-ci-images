@@ -313,32 +313,23 @@ images:
       rocjitsu_repo:
         value: https://github.com/ROCm/rocm-systems.git
         env: ROCM_ROCJITSU_REPO
-      # Following the gfx1250 vfio-compute work rather than develop for now:
-      # the vfio-user compute path only exists there. version-scrub.sh tracks
-      # whichever branch this names, so the pin below follows its HEAD.
-      #
-      # This is the tip of a stacked review series -- PRs #11391 through #11397,
-      # each based on the one before it, with #11391 based on develop. It
-      # replaces the earlier -wip branch, whose commits were rewritten rather
-      # than carried over, so the two share no history past their fork point.
-      # Expect force-pushes while the stack is in review: the scrub will bump
-      # this on every reviewer round-trip, and will warn rather than bump once
-      # the branches are deleted after merge. Revert both to `develop` at that
-      # point -- that is the whole reason this pin is temporary.
+      # develop, at last. The gfx1250 vfio-compute work this image was pinned
+      # to a review branch for -- users/agutierr/gfx1250-vfio-compute-6, a
+      # stack of PRs #11391 through #11397 -- was squashed onto develop as
+      # bdc4aea25 and d5927b503 and the branch deleted, so the old pin is not
+      # an ancestor of anything that still exists. version-scrub.sh tracks
+      # whichever branch this names.
       rocjitsu_branch:
-        value: users/agutierr/gfx1250-vfio-compute-6
+        value: develop
         env: ROCM_ROCJITSU_BRANCH
-      # The branch head, and tracking it again. This pin was frozen for as long
-      # as ubuntu-rocm-rocjitsu/patches/ carried a five-patch series the image
-      # could not boot a guest without; the 2026-09-08 force-push brought all
-      # five upstream, patches/ is gone, and the scrub resumed. Expect it to
-      # move on every reviewer round-trip until the stack merges.
-      #
-      # A bump is no longer free, though: the Dockerfile asserts the three
-      # upstream behaviours that replaced the series, so a rebase that drops
-      # one fails the build rather than shipping a guest that hangs.
+      # The branch head. A bump is not free: the Dockerfile asserts the three
+      # upstream behaviours that replaced the local patch series this image
+      # used to carry, so a refactor that drops one fails the build rather than
+      # shipping a guest that hangs. Those asserts are the only test of them
+      # that exists -- no CI anywhere enables ROCJITSU_ENABLE_VFIO, so develop
+      # can lose the vfio-user compute path with every upstream check green.
       rocjitsu_commit:
-        value: 2d8a73ff0a28aabe7554b99c58565ef63b635f75
+        value: 8e01a5a3fbee92f2b570dde97f314000d5226327
         env: ROCM_ROCJITSU_COMMIT
       # Compile-time log groups (emulation/rocjitsu/cmake/rj_log.cmake): OFF,
       # ALL, a comma-separated subset of VM, CP, DBT_HOOKS, PLUGINS, DRIVER, or
@@ -363,37 +354,16 @@ images:
       rocjitsu_config:
         value: gfx1250_mi455x.json
         env: ROCM_ROCJITSU_CONFIG
-      # The last upstream commit that carried
-      # emulation/rocjitsu/tools/vfio_guest_firmware.py, deleted after it in
-      # favour of "use the firmware from the driver release matching the
-      # guest's amdgpu.ko". There is no such release for gfx1250 -- the newest
-      # amdgpu-dkms-firmware carries no gc_12_1_0 or sdma_7_1_0 blob -- so the
-      # stubs remain the only way to boot the emulated device, and the image
-      # keeps shipping the generator from here. A SHA, not a branch, and not
-      # scrubbed: it names a deleted file, so it can only ever move backwards.
-      # Retire it when upstream publishes real gfx1250 firmware.
-      #
-      # The file lands on a library path and is wrapped rather than run
-      # directly -- see ubuntu-rocm-rocjitsu/vfio-guest-firmware.py -- because
-      # upstream emits five fixtures under hardwired gfx12.1 names and nothing
-      # that says what they are, leaving each consumer to reinvent the same
-      # gfx1250 facts. The wrapper calls upstream's builders, so the fixture
-      # bytes still move with this pin.
-      rocjitsu_firmware_gen_commit:
-        value: 730bc62d60191337a07da50892538475370cb071
-        env: ROCM_ROCJITSU_FIRMWARE_GEN_COMMIT
     build_args:
       ROCJITSU_REPO: "{rocjitsu_repo}"
       ROCJITSU_BRANCH: "{rocjitsu_branch}"
       ROCJITSU_COMMIT: "{rocjitsu_commit}"
       ROCJITSU_CONFIG: "{rocjitsu_config}"
-      ROCJITSU_FIRMWARE_GEN_COMMIT: "{rocjitsu_firmware_gen_commit}"
       ROCJITSU_LOG_GROUPS: "{rocjitsu_log_groups}"
     variant: "rocjitsu.{rocjitsu_commit|short}"
     labels:
       "{ns}.rocjitsu.branch": "{rocjitsu_branch}"
       "{ns}.rocjitsu.commit": "{rocjitsu_commit}"
-      "{ns}.rocjitsu.firmware-gen-commit": "{rocjitsu_firmware_gen_commit}"
       "{ns}.rocjitsu.log-groups": "{rocjitsu_log_groups}"
 
   # The storage device server, completing the set: rocm-ernic serves a NIC,
@@ -560,7 +530,7 @@ images:
       # "latest" is the rolling symlink the rocm_setup role defaults to, and it
       # publishes jammy and noble only. A flavour on a release that tree has no
       # suite for must name a version directory that does -- see the rocjitsu
-      # variant, which pins 31.50 for resolute.
+      # variant, which pins 31.60 for resolute.
       amdgpu_driver_version: "latest"
       # Empty by default: only a flavour whose provision script cares which
       # rdma-core the release packages reads it, and the pin belongs with the
@@ -656,30 +626,39 @@ images:
       # installed ROCm and amdgpu-dkms over SSH at runtime, costing the better
       # part of an hour per run; this flavour bakes it in once.
       #
-      # release: resolute, and amdgpu_driver_version: 31.50, which are one
-      # decision. 31.50 is the first amdgpu driver tree to publish a resolute
-      # suite, and the amdgpu-dkms in it is 1:7.1.3.31500000 -- a driver that
-      # builds against the 7.0 kernel 26.04 boots and that carries GC 12.1.0
-      # plus the UMSCH HW IP enumeration (4e07da515d1c) the emulated gfx1250
-      # needs. The noble build this replaces could install only a ~24.04
+      # release: resolute, and amdgpu_driver_version: 31.60, which are one
+      # decision. 31.50 was the first amdgpu driver tree to publish a resolute
+      # suite; 31.60 is the first to ship gfx1250 firmware (see below), and its
+      # amdgpu-dkms is 1:7.1.9.31600000 -- still a driver that builds against
+      # the 7.0 kernel 26.04 boots, still carrying GC 12.1.0 plus the UMSCH HW
+      # IP enumeration (4e07da515d1c) the emulated gfx1250 needs, and still
+      # carrying the kfd_device.c line provision/rocjitsu.sh patches for
+      # atomics. The noble build this replaces could install only a ~24.04
       # amdgpu-dkms whose kcl layer will not compile against 7.0 at all, so its
       # module had to be built against the cloud image's 6.8 and could never
       # load, leaving the in-tree 7.0 driver to reject the device with
       # "Failed to add vcn/jpeg ip block". Do not move this pin back to
       # "latest": that symlink is still jammy/noble only.
       #
-      # Three things this flavour deliberately does not carry, all of which
-      # stay in rocm-xio's runtime playbook because they belong to the
-      # consumer's rocjitsu pin rather than to the disk:
+      # Most gfx1250 firmware now comes with the driver. amdgpu-dkms depends on
+      # amdgpu-dkms-firmware, and from 31.60 that package ships real
+      # gc_12_1_0_mec{,_1}.bin, gc_12_1_0_rlc{,_1}.bin, gc_12_1_0_uni_mes.bin
+      # and sdma_7_1_0.bin into /lib/firmware/updates/amdgpu, which is exactly
+      # the "same public driver release as the guest's amdgpu.ko" pairing
+      # upstream's qemu-vfio.md asks for. 31.50 shipped 683 files and not one
+      # of them, which is why this flavour used to carry no firmware at all.
+      #
+      # Three things it still does not carry, all of which stay in rocm-xio's
+      # runtime playbook because they belong to the consumer's rocjitsu pin
+      # rather than to the disk:
       #
       #   * ip_discovery.bin -- generated per-config by "rj-ip-discovery
       #     gfx1250" from the rocjitsu image the consumer runs.
-      #   * gfx1250 firmware. No public release ships gc_12_1_0 or sdma_7_1_0
-      #     blobs: amdgpu-dkms-firmware 31.50 has 683 files and none of them,
-      #     so the synthesised stubs from ubuntu-rocm-rocjitsu's
-      #     vfio_guest_firmware.py remain the only source, and they must match
-      #     the consumer's rocjitsu pin. checks/rocjitsu.sh reports the
-      #     inventory without failing on it.
+      #   * gc_12_1_0_imu.bin -- the one blob no driver release ships, and
+      #     AMDGPU_UCODE_REQUIRED under the amdgpu.fw_load_type=0 the vfio
+      #     guest boots with. It comes from ubuntu-rocm-rocjitsu's
+      #     vfio_guest_firmware.py, whose default --set gap emits it and
+      #     nothing that would overwrite the packaged blobs.
       #   * The amdgpu-probe helper and the CI user's passwordless sudo.
       #
       # The KFD atomics patch is applied to the DKMS source and the module is
@@ -693,7 +672,7 @@ images:
           flavour: rocjitsu
           vm_packages: rocjitsu.txt
           release: resolute
-          amdgpu_driver_version: "31.50"
+          amdgpu_driver_version: "31.60"
 
 # The README's pinned-upstream shields, generated by `ci-images-tool.py badges`
 # so that a pin and the badge advertising it cannot drift apart. CI runs

@@ -254,6 +254,32 @@ sudo update-grub
 # initramfs, and the probe boot is where that has to be caught.
 sudo grep -q 'modprobe.blacklist=amdgpu' /boot/grub/grub.cfg
 
+# gfx1250 firmware arrives with the driver, not by being copied in: amdgpu-dkms
+# Depends on amdgpu-dkms-firmware, and from the 31.60 tree that package ships
+# real gc_12_1_0 and sdma_7_1_0 blobs into /lib/firmware/updates/amdgpu.  That
+# is the pairing upstream's qemu-vfio.md asks for -- firmware from the same
+# public driver release as the guest's amdgpu.ko -- and it is the reason this
+# flavour is pinned to 31.60 rather than 31.50, whose firmware package had 683
+# files and not one of these.
+#
+# Asserted rather than assumed.  A driver tree that stops shipping them takes
+# the guest back to needing a full stub set, and the place to find that out is
+# here, not in the emulated device's early init.
+FW_DIR=/lib/firmware/updates/amdgpu
+for fw in gc_12_1_0_mec.bin gc_12_1_0_mec_1.bin gc_12_1_0_rlc.bin \
+          gc_12_1_0_rlc_1.bin gc_12_1_0_uni_mes.bin sdma_7_1_0.bin; do
+    if [ ! -s "${FW_DIR}/${fw}" ] && [ ! -s "${FW_DIR}/${fw}.xz" ]; then
+        echo "Error: amdgpu-dkms-firmware ${AMDGPU_DRIVER_VERSION} did not" \
+             "install ${fw}; this flavour assumes it does" >&2
+        exit 1
+    fi
+done
+FW_PKG=$(dpkg-query -W -f='${Version}' amdgpu-dkms-firmware)
+echo "gfx1250 firmware from amdgpu-dkms-firmware ${FW_PKG}:"
+for fw in "${FW_DIR}"/gc_12_1_0* "${FW_DIR}"/sdma_7_1_0*; do
+    [ -e "${fw}" ] && echo "  $(basename "${fw}")"
+done
+
 # What this image is, recorded where a consumer inside the guest can read it.
 # vm-info.json stays flavour-agnostic; this is the flavour's own record, and
 # the driver version is the thing a consumer most needs to compare against.
@@ -278,7 +304,11 @@ sudo tee /etc/rocjitsu-guest.json > /dev/null <<EOF
   "runtime_driver": "${RUNTIME_DRIVER}",
   "amdgpu_autoload_blacklisted": true,
   "amdgpu_blacklisted_on_cmdline": true,
-  "gfx1250_firmware": false,
+  "amdgpu_dkms_firmware_version": "${FW_PKG}",
+  "gfx1250_firmware": "packaged",
+  "gfx1250_firmware_dir": "${FW_DIR}",
+  "gfx1250_firmware_missing": ["gc_12_1_0_imu.bin"],
+  "gfx1250_firmware_missing_source": "vfio_guest_firmware.py --set gap, from the rocjitsu image the consumer runs",
   "ip_discovery_bin": false
 }
 EOF
