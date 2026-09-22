@@ -120,10 +120,23 @@ jobs:
       # recorded as a baseline for every run after it.
       - name: Enable KVM for the runner user
         run: |
+          if [ ! -e /dev/kvm ]; then
+            echo "::error::no /dev/kvm on this runner; this lane requires KVM"
+            exit 1
+          fi
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+          # `trigger` only queues the uevent. Without settling, the check
+          # below races a mode change that lands a millisecond later -- which
+          # is how this step failed in run 35691527048, silently, because
+          # `test -w` is the one command here that fails without printing.
+          sudo udevadm settle --timeout=30 || true
+          ls -l /dev/kvm
+          # The udev route is what rocm-xio's bring-up uses and it normally
+          # wins, but it is asynchronous and this job needs the result now.
+          [ -w /dev/kvm ] || sudo chmod 666 /dev/kvm
           test -w /dev/kvm
           echo "KVM is available and writable"
           kvm-ok || true
