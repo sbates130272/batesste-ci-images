@@ -3,7 +3,8 @@
 # matching Dockerfile ARG fallbacks and the README's generated shields. Exits 0
 # with no changes if everything is already current; exits 0 with modified files
 # if updates were applied.
-# Intended to be called by .github/workflows/version-scrub.yml and locally.
+# Intended to be called by .github/workflows/batesste-ci-images-version-scrub.yml
+# and locally.
 #
 # images.yml is the single source of truth for pins, so the current value is
 # read back through the tool rather than grepped out of Python constants. The
