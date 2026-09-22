@@ -1,9 +1,9 @@
 # batesste-ci-images
 
-[![Lint](https://github.com/sbates130272/batesste-ci-images/actions/workflows/lint.yml/badge.svg)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/lint.yml)
-[![Dockerfile Test](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml/badge.svg)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml)
-[![Release](https://github.com/sbates130272/batesste-ci-images/actions/workflows/release.yml/badge.svg)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/release.yml)
-[![Integration & Performance](https://github.com/sbates130272/batesste-ci-images/actions/workflows/integration-perf.yml/badge.svg)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/integration-perf.yml)
+[![batesste-ci-images-lint](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-lint.yml/badge.svg)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-lint.yml)
+[![batesste-ci-images-dockerfile-test](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml/badge.svg)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml)
+[![batesste-ci-images-release](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-release.yml/badge.svg)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-release.yml)
+[![batesste-ci-images-integration-perf](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-integration-perf.yml/badge.svg)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-integration-perf.yml)
 [![Latest Release](https://img.shields.io/github/v/release/sbates130272/batesste-ci-images)](https://github.com/sbates130272/batesste-ci-images/releases)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-sbates130272-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/u/sbates130272)
@@ -32,7 +32,7 @@ adding an image or a variant adds its row.
 **Pinned commits**
 
 [![libvfio-user 8039244](https://img.shields.io/badge/libvfio--user-8039244-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/803924493a7c787b2ba358751f55f07d5dba64b2)
-[![qemu-minimal 63cc0bc](https://img.shields.io/badge/qemu--minimal-63cc0bc-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/63cc0bcc4c44b881bec9226c2880577cbea05a0f)
+[![qemu-minimal 724324f](https://img.shields.io/badge/qemu--minimal-724324f-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/724324f0c9cf0cc1b51c5594a47c1b60cc049dbb)
 [![rocm-ernic 0b48aa1](https://img.shields.io/badge/rocm--ernic-0b48aa1-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/0b48aa1d5821a66c4fb5b78f049b1d9a759a6e17)
 [![rocjitsu 8e01a5a](https://img.shields.io/badge/rocjitsu-8e01a5a-ED1C24)](https://github.com/ROCm/rocm-systems/commit/8e01a5a3fbee92f2b570dde97f314000d5226327)
 [![spdk 18d1d8d](https://img.shields.io/badge/spdk-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
@@ -48,20 +48,20 @@ adding an image or a variant adds its row.
 
 | Artifact | main |
 | --- | --- |
-| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-base + ubuntu-libvfio-user (shared base job) | [![ubuntu-base + ubuntu-libvfio-user main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20Base%20Images)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
-| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-kernel-build | [![ubuntu-kernel-build main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-kernel-build)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
-| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-cuda-rocm | [![ubuntu-cuda-rocm main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-cuda-rocm)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
-| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-cuda-rocm-fio | [![ubuntu-cuda-rocm-fio main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-cuda-rocm-fio)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
-| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-cuda-rocm-fio-async-hipfile (job: ubuntu-cuda-rocm-fio@async-hipfile) | [![ubuntu-cuda-rocm-fio-async-hipfile main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-cuda-rocm-fio%40async-hipfile)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
-| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-rocm-nixl | [![ubuntu-rocm-nixl main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-rocm-nixl)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
-| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-rocm-ernic | [![ubuntu-rocm-ernic main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-rocm-ernic)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
-| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-rocm-rocjitsu | [![ubuntu-rocm-rocjitsu main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-rocm-rocjitsu)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
-| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-spdk-libvfio-user | [![ubuntu-spdk-libvfio-user main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-spdk-libvfio-user)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
-| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-qemu-libvfio-user | [![ubuntu-qemu-libvfio-user main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qemu-libvfio-user)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
-| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-qemu-libvfio-user-sbates-fork (job: ubuntu-qemu-libvfio-user@sbates-fork) | [![ubuntu-qemu-libvfio-user-sbates-fork main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qemu-libvfio-user%40sbates-fork)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
-| [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen | [![ubuntu-qcow2-gen main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
-| [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen-ionic (job: ubuntu-qcow2-gen@ionic) | [![ubuntu-qcow2-gen-ionic main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen%40ionic)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
-| [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen-rocjitsu (job: ubuntu-qcow2-gen@rocjitsu) | [![ubuntu-qcow2-gen-rocjitsu main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen%40rocjitsu)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-base + ubuntu-libvfio-user (shared base job) | [![ubuntu-base + ubuntu-libvfio-user main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20Base%20Images)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-kernel-build | [![ubuntu-kernel-build main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-kernel-build)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-cuda-rocm | [![ubuntu-cuda-rocm main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-cuda-rocm)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-cuda-rocm-fio | [![ubuntu-cuda-rocm-fio main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-cuda-rocm-fio)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-cuda-rocm-fio-async-hipfile (job: ubuntu-cuda-rocm-fio@async-hipfile) | [![ubuntu-cuda-rocm-fio-async-hipfile main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-cuda-rocm-fio%40async-hipfile)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-rocm-nixl | [![ubuntu-rocm-nixl main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-rocm-nixl)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-rocm-ernic | [![ubuntu-rocm-ernic main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-rocm-ernic)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-rocm-rocjitsu | [![ubuntu-rocm-rocjitsu main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-rocm-rocjitsu)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-spdk-libvfio-user | [![ubuntu-spdk-libvfio-user main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-spdk-libvfio-user)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-qemu-libvfio-user | [![ubuntu-qemu-libvfio-user main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qemu-libvfio-user)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-qemu-libvfio-user-sbates-fork (job: ubuntu-qemu-libvfio-user@sbates-fork) | [![ubuntu-qemu-libvfio-user-sbates-fork main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qemu-libvfio-user%40sbates-fork)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen | [![ubuntu-qcow2-gen main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen-ionic (job: ubuntu-qcow2-gen@ionic) | [![ubuntu-qcow2-gen-ionic main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen%40ionic)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen-rocjitsu (job: ubuntu-qcow2-gen@rocjitsu) | [![ubuntu-qcow2-gen-rocjitsu main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen%40rocjitsu)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 
 <!-- END BUILD STATUS -->
 
@@ -76,8 +76,8 @@ adding an image or a variant adds its row.
 [![boot](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fperf%2Fbadge-boot.json&label=boot)](https://sbates130272.github.io/batesste-ci-images/#boot)
 
 These read `shields.io` endpoint JSON published to `gh-pages` by the
-Integration & Performance workflow, so they carry the *latest measured value*
-rather than a pass/fail. A metric that was skipped in the latest run reads
+`batesste-ci-images-integration-perf` workflow, so they carry the *latest
+measured value* rather than a pass/fail. A metric skipped in the latest run reads
 `n/a`. Until that workflow has published once there is no `gh-pages` branch to
 read at all, and `shields.io` renders its own "inaccessible" placeholder.
 
@@ -202,10 +202,11 @@ wires the two together over the shared `vfio-sockets` volume.
 
 ## Integration and performance
 
-Every image above is tested on its own by `dockerfile-test.yml`. Five of them
-are only interesting together, and that combination is what the
-**Integration & Performance** workflow covers, in two phases run back to back
-by `ubuntu-qemu-libvfio-user`:
+Every image above is tested on its own by
+`batesste-ci-images-dockerfile-test.yml`. Five of them are only interesting
+together, and that combination is what the
+`batesste-ci-images-integration-perf` workflow covers, in two phases back to
+back by `ubuntu-qemu-libvfio-user`:
 
 | phase | guest | device over vfio-user | measures |
 | --- | --- | --- | --- |
@@ -302,9 +303,9 @@ binding — fail the run outright.
 
 ## Which images CI rebuilds
 
-`dockerfile-test.yml` builds only the targets a branch's changed paths affect,
-rather than all fifteen because one Dockerfile moved. It collects the changed
-paths and hands them to the tool:
+`batesste-ci-images-dockerfile-test.yml` builds only the targets a branch's
+changed paths affect, rather than all fifteen because one Dockerfile moved. It
+collects the changed paths and hands them to the tool:
 
 ```bash
 git diff --name-only origin/main...HEAD > changed.txt
@@ -325,12 +326,33 @@ The rules live in `images.yml`, not in Python:
   CI rather than layering: the `build-derived` job resolves its base as
   `<registry>:<base_scope>-<run sha>`, a tag only *this run's* matrix job
   pushes, so a derived target selected without its ancestors would fail on a
-  reference that does not exist.
+  reference that does not exist — and, since that job now *waits* on the tag
+  rather than on the matrix (below), would wait for it until the timeout.
 - `**` spans directory separators; a single `*` stops at one.
 
 Because an empty matrix is a hard error in GitHub Actions rather than a skip,
 the `build`, `build-derived` and `test-compose` jobs carry explicit guards —
 so a README-only change runs no build jobs instead of failing.
+
+### Why `build-derived` does not `needs: build`
+
+A derived target consumes exactly one base, named in its own `base_scope`, but
+a job-level `needs` has no way to say "only that leg of the matrix". Waiting on
+the whole tier meant every guest waited on `ubuntu-cuda-rocm`, which no qcow2
+flavour touches: on run 35758477053 `ubuntu-qemu-libvfio-user` finished at
+17:09 and `ubuntu-qcow2-gen` did not start until 17:23, on a fully cached
+build.
+
+So `build-derived` depends only on `discover-images` and `build-bases`, does
+its own setup — disk, buildx, the cloud-image download — while the matrix is
+still running, and then blocks in a `Wait for base image` step that polls the
+registry for *its* `base_scope` ref. It polls the ref rather than the job
+because the push is what the build actually consumes, and that lands before
+the producing job has finished its own per-image checks. If that base's job
+ends in `failure`, `cancelled` or `timed_out` the step bails out at once rather
+than waiting out the timeout; a failure in any *other* leg no longer touches a
+guest build that never needed it. `batesste-ci-images-release.yml` does the
+same, polling the base's published Docker Hub tag instead.
 
 ## Project Structure
 
@@ -1312,8 +1334,9 @@ To add a new image:
    Images" section
 7. The `ci-images-tool.py` CLI and both CI workflows pick it up from
    `images.yml` — no workflow change is needed to *build* it. Any per-image
-   smoke test still has to be added to `dockerfile-test.yml` by hand, gated
-   on `matrix.target.image`, alongside the existing ones
+   smoke test still has to be added to
+   `batesste-ci-images-dockerfile-test.yml` by hand, gated on
+   `matrix.target.image`, alongside the existing ones
 
 The image directory name will be used as part of the Docker image tag:
 `{REGISTRY_IMAGE}-{image-directory}:{IMAGE_TAG}`
