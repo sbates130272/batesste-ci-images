@@ -12,8 +12,14 @@ second boot, and exports the result `FROM scratch` -- so a consumer pulls a
 bare payload, not the multi-GB QEMU toolchain that produced it.
 
 Adding a guest flavour is `packages/<name>.txt`, `checks/<name>.sh`, an
-optional `provision/<name>.sh` and a `variants:` entry (plus, optionally, an
-upstream Ansible playbook name). No Dockerfile change.
+optional `provision/<name>.sh`, an optional `assets/<name>/` and a `variants:`
+entry (plus, optionally, an upstream Ansible playbook name). No Dockerfile
+change.
+
+`assets/<name>/` is for files a provision script needs *inside* the guest --
+patches, generators -- rather than on the builder. When it exists, `build-vm.sh`
+copies it to `/tmp/payload` for the provisioning boot, by the same primitive the
+mainline kernel `.deb`s already travel by.
 
 `provision/<name>.sh` runs inside the guest in its own boot, between cloud-init
 and the verification boot, with the changes kept. It is where anything
@@ -101,6 +107,7 @@ and then ship it in the payload anyway.
 | *(default)* | *(none)* | The `basic` flavour: cloud-init packages from `packages/base.txt`, no playbook |
 | `ionic` | `-ionic` | For ROCm/rocm-ernic's ionic RDMA jobs. `drivers/infiniband/hw/ionic` merged in Linux 6.18; the toolchain and rdma-core build deps are pre-installed to save those jobs wall-clock, but the ionic-ernic DKMS modules are deliberately **not** built here -- building them from pinned upstream sources is what those jobs exist to test. rdma-core is **not** built: resolute packages 61.0, past the v61 that first shipped `providers/ionic`, so `libionic` comes from the archive with nothing overwritten and nothing held. The guest stamps the version for `ernic_guest_setup` to read -- see [consumers/rocm-ernic-ionic.md](consumers/rocm-ernic-ionic.md). |
 | `rocjitsu` | `-rocjitsu` | For ROCm/rocm-xio's rocjitsu emulated-GPU jobs. ROCm userspace from the `therock` stream and an `amdgpu-dkms` built against the guest kernel with the KFD atomics patch applied first, so those jobs stop doing it over SSH. Pinned to `resolute` with `amdgpu_driver_version: 31.60`, the first driver tree that ships gfx1250 firmware; its `amdgpu-dkms` (7.1.9) still builds against the 7.0 kernel the guest boots. Most gfx1250 firmware is baked in as a consequence -- `amdgpu-dkms` depends on `amdgpu-dkms-firmware` -- but `gc_12_1_0_imu.bin` and `ip_discovery.bin` are not, and stay with the consumer's rocjitsu pin. See [consumers/rocm-xio-rocjitsu.md](consumers/rocm-xio-rocjitsu.md). |
+| `ernic-rocjitsu` | `-ernic-rocjitsu` | For ROCm/hipObject's two-device jobs, which need one guest carrying both an emulated ionic RDMA NIC and an emulated gfx1250. Mainline **v7.2.4**, a hard floor rather than a preference: `ionic_rdma` calls `ib_umem_get_va`, which does not exist in 7.0 or 7.1.13. `ionic`/`ionic_rdma` are in-tree there, so the ionic half is the `ionic` flavour's rdma-core stamp and nothing else; the ROCm half is the `rocjitsu` flavour plus three amdgpu patches from `assets/ernic-rocjitsu/` without which DKMS 7.1.9 does not build against 7.2. The firmware gap set is baked in too -- its fixtures are static -- leaving only `ip_discovery.bin` with the consumer's rocjitsu pin. **One of the three patches changes a security check and has not been reviewed**; see [consumers/hipobject-ernic-rocjitsu.md](consumers/hipobject-ernic-rocjitsu.md). |
 
 ## Tags
 

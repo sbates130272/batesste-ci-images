@@ -28,6 +28,7 @@ adding an image or a variant adds its row.
 [![libfabric v1.21.0](https://img.shields.io/badge/libfabric-v1.21.0-0F4C81)](https://github.com/ofiwg/libfabric/releases/tag/v1.21.0)
 [![guest resolute](https://img.shields.io/badge/guest-resolute-772953)](https://cloud-images.ubuntu.com/)
 [![guest kernel (ionic) v7.2.3](https://img.shields.io/badge/guest%20kernel%20%28ionic%29-v7.2.3-772953)](https://kernel.ubuntu.com/mainline/v7.2.3/)
+[![guest kernel (ernic-rocjitsu) v7.2.4](https://img.shields.io/badge/guest%20kernel%20%28ernic--rocjitsu%29-v7.2.4-772953)](https://kernel.ubuntu.com/mainline/v7.2.4/)
 
 **Pinned commits**
 
@@ -62,6 +63,7 @@ adding an image or a variant adds its row.
 | [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen | [![ubuntu-qcow2-gen main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen-ionic (job: ubuntu-qcow2-gen@ionic) | [![ubuntu-qcow2-gen-ionic main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen%40ionic)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen-rocjitsu (job: ubuntu-qcow2-gen@rocjitsu) | [![ubuntu-qcow2-gen-rocjitsu main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen%40rocjitsu)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen-ernic-rocjitsu (job: ubuntu-qcow2-gen@ernic-rocjitsu) | [![ubuntu-qcow2-gen-ernic-rocjitsu main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen%40ernic-rocjitsu)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 
 <!-- END BUILD STATUS -->
 
@@ -144,7 +146,7 @@ and pushing of these images.
   Built on `ubuntu-qemu-libvfio-user` and published `FROM scratch` with nothing
   but `/output` in it, one Docker Hub repository per flavour
   (`…-ubuntu-qcow2-gen`, `…-ubuntu-qcow2-gen-ionic`,
-  `…-ubuntu-qcow2-gen-rocjitsu`). See
+  `…-ubuntu-qcow2-gen-rocjitsu`, `…-ubuntu-qcow2-gen-ernic-rocjitsu`). See
   [Guest VM images](#guest-vm-images-ubuntu-qcow2-gen) and `ubuntu-qcow2-gen/`.
 
 ### rocjitsu vfio-user mode
@@ -213,11 +215,17 @@ back by `ubuntu-qemu-libvfio-user`:
 | rocjitsu | `ubuntu-qcow2-gen@rocjitsu` | `ubuntu-rocm-rocjitsu` emulated gfx1250, plus an emulated NVMe controller | GEMM, the storage path into GPU memory, boot |
 | ernic | `ubuntu-qcow2-gen@ionic` | `ubuntu-rocm-ernic` RDMA NIC serving its own S3 store | 1 MiB object GETs over RDMA |
 
-Two guests rather than one because no flavour carries both a ROCm stack and an
-RDMA-capable kernel. Booting a single guest against both sockets is what this
-lane used to do, and it is why the ERNIC figure was a PCIe enumeration count:
-the rocjitsu guest has no RDMA driver, so the device appeared on the bus and
-registered no ibverbs device.
+Two guests rather than one, and two phases rather than one boot. Booting a
+single guest against both sockets is what this lane used to do, and it is why
+the ERNIC figure was a PCIe enumeration count: the rocjitsu guest has no RDMA
+driver, so the device appeared on the bus and registered no ibverbs device.
+
+The `ernic-rocjitsu` flavour does carry both halves -- it exists for
+hipObject's two-device jobs -- so a single-guest lane is possible now in a way
+it was not. It is deliberately not wired in here yet: that flavour is new, one
+of its amdgpu patches is unreviewed, and collapsing the two phases would trade
+two measurements that work for one that has never run. See
+`ubuntu-qcow2-gen/consumers/hipobject-ernic-rocjitsu.md`.
 
 This closes a real gap rather than adding coverage for its own sake.
 `ubuntu-qcow2-gen`'s build-time probe boot has no vfio-user device attached, so
@@ -396,7 +404,10 @@ batesste-ci-images/
 │   ├── build-vm.sh
 │   ├── probe-guest.sh
 │   ├── packages/              # cloud-init package manifests per flavour
-│   └── checks/                # In-guest assertions run at build time
+│   ├── provision/             # In-guest provisioning scripts per flavour
+│   ├── assets/                # Files a provision script needs in the guest
+│   ├── checks/                # In-guest assertions run at build time
+│   └── consumers/             # Per-consumer image contracts
 ├── output/                    # Guest payloads from local builds (gitignored)
 ├── common/                    # Shared build-context assets
 │   └── amd-root-ca.crt

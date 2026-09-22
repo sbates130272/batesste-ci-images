@@ -280,6 +280,14 @@ for fw in "${FW_DIR}"/gc_12_1_0* "${FW_DIR}"/sdma_7_1_0*; do
     [ -e "${fw}" ] && echo "  $(basename "${fw}")"
 done
 
+# /dev/kfd and /dev/dri/render* are root:render 0660.  A login user in neither
+# render nor video gets a HIP runtime that enumerates no agent at all and a
+# hipMalloc returning hipErrorNoDevice, three lines below a perfectly healthy
+# KFD node in the same log -- an expensive thing to debug, and a one-line thing
+# to prevent.  Consumers working around it by running their payload under sudo
+# are unaffected; this only means they no longer have to.
+sudo usermod -aG render,video "${USERNAME}"
+
 # fio with the libhipfile ioengine, so a consumer can measure GPU-side I/O
 # against an emulated NVMe controller from inside the guest.
 #
@@ -390,6 +398,7 @@ sudo tee /etc/rocjitsu-guest.json > /dev/null <<EOF
   "runtime_driver": "${RUNTIME_DRIVER}",
   "amdgpu_autoload_blacklisted": true,
   "amdgpu_blacklisted_on_cmdline": true,
+  "render_video_groups": true,
   "amdgpu_dkms_firmware_version": "${FW_PKG}",
   "gfx1250_firmware": "packaged",
   "gfx1250_firmware_dir": "${FW_DIR}",

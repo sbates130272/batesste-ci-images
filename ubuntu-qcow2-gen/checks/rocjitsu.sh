@@ -93,6 +93,14 @@ grep -qx 'blacklist amdgpu' /etc/modprobe.d/amdgpu-blacklist.conf
 grep -q 'modprobe.blacklist=amdgpu' /proc/cmdline
 ! lsmod | grep -q '^amdgpu '
 
+# /dev/kfd and /dev/dri/render* are root:render 0660, and a login user in
+# neither group gets a HIP runtime that enumerates no agent and a hipMalloc
+# returning hipErrorNoDevice with a healthy KFD node three lines up the log.
+# Neither device node exists in this boot, so the group membership is what can
+# be asserted -- and it is the half that is the image's to get right.
+id -nG | tr ' ' '\n' | grep -qx render
+id -nG | tr ' ' '\n' | grep -qx video
+
 # The flavour's own record, for a consumer reading it from inside the guest.
 test -s /etc/rocjitsu-guest.json
 

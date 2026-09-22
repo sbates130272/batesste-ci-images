@@ -73,6 +73,20 @@ COPY ubuntu-qcow2-gen/packages/ /build/packages/
 COPY ubuntu-qcow2-gen/provision/ /build/provision/
 COPY ubuntu-qcow2-gen/checks/ /build/checks/
 
+# Files a provision script needs *inside* the guest -- patches, generators --
+# rather than on the builder.  build-vm.sh copies assets/<flavour> to
+# /tmp/payload in the provisioning boot when it exists, using the same
+# primitive the mainline kernel .debs already travel by.
+COPY ubuntu-qcow2-gen/assets/ /build/assets/
+
+# The firmware generator, wired in here rather than vendored a second time:
+# ubuntu-rocm-rocjitsu owns it, the ernic-rocjitsu guest runs it (with
+# --generation, since no rocjitsu config exists in a guest), and one copy in
+# the repo means the fixtures a guest carries cannot drift from the ones that
+# image's own self-test exercises.
+COPY ubuntu-rocm-rocjitsu/vfio-guest-firmware.py \
+     /build/assets/ernic-rocjitsu/vfio-guest-firmware.py
+
 # One keypair per flavour, generated here rather than inherited: the base image
 # is toolchain-only and ships neither a guest nor a key.  The rm still runs
 # because the final stage copies /output wholesale -- anything that ever appears

@@ -131,6 +131,26 @@ of the gfx1250 firmware it was written to check for. Scope it to
 missing blob unless it is one of the three expected to be absent
 (`gc_12_1_0_imu.bin`, `gc_12_1_0_mes.bin`, `gc_12_1_0_mes1.bin`).
 
+## Device node groups
+
+**This has changed, and it removes a workaround.** `/dev/kfd` and
+`/dev/dri/render*` are `root:render` 0660, and the login user used to be in
+neither `render` nor `video` — so a payload run as that user got a HIP runtime
+enumerating no agent and a `hipMalloc` returning `hipErrorNoDevice`, three lines
+below a perfectly healthy KFD node in the same log. The workaround was to run
+the payload under `sudo`.
+
+The image now does `usermod -aG render,video` during provisioning, and
+[`checks/rocjitsu.sh`](../checks/rocjitsu.sh) asserts both memberships. Running
+under `sudo` is still harmless and still works, so nothing has to change on the
+rocm-xio side — but it is no longer load-bearing, and dropping it makes the
+failure mode visible if a future image regresses the groups.
+
+Neither device node exists in the probe boot, so the checks assert the group
+membership rather than an open on the node. `/etc/rocjitsu-guest.json` records
+`"render_video_groups": true`; read that rather than assuming, since it is
+absent in earlier builds of this image.
+
 ## Autoload stays blacklisted
 
 Deliberately, and belt-and-braces: `/etc/modprobe.d/amdgpu-blacklist.conf` plus

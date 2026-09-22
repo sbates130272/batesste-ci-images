@@ -16,7 +16,9 @@
 #   provision/<FLAVOUR>.sh  in-guest steps this repo owns -- a third-party apt
 #                           repository, a patched DKMS source, a module built
 #                           against the booted kernel -- run in a boot of their
-#                           own, after the kernel layer and before the checks
+#                           own, after the kernel layer and before the checks,
+#                           with assets/<FLAVOUR>/ (when it exists) copied to
+#                           /tmp/payload for them to read
 #
 # KVM is mandatory.  It only works in a RUN --security=insecure step (the
 # device node has to be created and opened); anywhere else this script aborts
@@ -238,8 +240,15 @@ fi
 # The script is fed to "bash -s" with no environment of its own, so the few
 # build-side values it needs are prepended as assignments rather than threaded
 # through probe-guest's arguments. Everything else it decides from the guest.
+#
+# A flavour whose provisioning needs files in the guest -- patches to apply, a
+# generator to run -- puts them in assets/<FLAVOUR>/, and they arrive at
+# /tmp/payload.  Same primitive the kernel layer above uses; the script does
+# not have to know whether it was given one, only that it is there when its
+# flavour ships one.
 PROVISION="/build/provision/${FLAVOUR}.sh"
 PROVISION_NAME=none
+ASSETS_NAME=none
 if [ -f "${PROVISION}" ]; then
     PROVISION_NAME="${FLAVOUR}.sh"
     PROV=/tmp/provision.sh
@@ -253,9 +262,18 @@ RDMA_CORE_VERSION='${FINAL_RDMA_CORE_VERSION}'
 FIO_COMMIT='${FINAL_FIO_COMMIT}'
 EOF
     cat "${PROVISION}" >> "${PROV}"
+    ASSETS="/build/assets/${FLAVOUR}"
     echo "Provisioning the guest with provision/${PROVISION_NAME}"
-    PROBE_PERSIST=1 probe-guest "/output/${FINAL_VM_NAME}.qcow2" \
-        "${FINAL_USERNAME}" "${PROV}"
+    if [ -d "${ASSETS}" ]; then
+        ASSETS_NAME="${FLAVOUR}"
+        echo "  with assets/${FLAVOUR} at /tmp/payload:"
+        find "${ASSETS}" -type f | sed "s|^${ASSETS}/|    |"
+        PROBE_PERSIST=1 probe-guest "/output/${FINAL_VM_NAME}.qcow2" \
+            "${FINAL_USERNAME}" "${PROV}" "${ASSETS}"
+    else
+        PROBE_PERSIST=1 probe-guest "/output/${FINAL_VM_NAME}.qcow2" \
+            "${FINAL_USERNAME}" "${PROV}"
+    fi
 fi
 
 # Boot the finished guest once, to read its kernel out of it and to run the
@@ -363,9 +381,10 @@ BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # schema_version 2 added flavour/kernel_release/vm_playbook/packages_digest and
 # the kernel pin on top of the v1 keys; 3 adds the virtual size, the qemu
 # version, the SSH key fingerprint, the checks script and the build-time boot
-# shape; 4 adds the provision script.  Every earlier key is kept, so a v1, v2
-# or v3 consumer is unaffected -- read schema_version before reaching for
-# anything newer.
+# shape; 4 adds the provision script; 5 adds the assets directory that
+# provision script was given.  Every earlier key is kept, so a v1, v2, v3 or v4
+# consumer is unaffected -- read schema_version before reaching for anything
+# newer.
 #
 # What a provision script installed is deliberately not hoisted here: this file
 # is flavour-agnostic, and a flavour with its own versions to report writes its
@@ -378,7 +397,7 @@ BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # so "oras manifest fetch" answers the common questions without the referrer.
 cat > /output/vm-info.json <<EOF
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "vm_name": "${FINAL_VM_NAME}",
   "flavour": "${FLAVOUR}",
   "username": "${FINAL_USERNAME}",
@@ -406,6 +425,7 @@ cat > /output/vm-info.json <<EOF
     "kernel_ref": "${FINAL_KERNEL_REF}",
     "kernel_debs": "${KERNEL_DEBS}",
     "provision": "${PROVISION_NAME}",
+    "assets": "${ASSETS_NAME}",
     "checks": "${CHECKS_NAME}"
   },
   "build_info": {
