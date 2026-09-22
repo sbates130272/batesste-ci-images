@@ -3,6 +3,7 @@
 [![Lint](https://github.com/sbates130272/batesste-ci-images/actions/workflows/lint.yml/badge.svg)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/lint.yml)
 [![Dockerfile Test](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml/badge.svg)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml)
 [![Release](https://github.com/sbates130272/batesste-ci-images/actions/workflows/release.yml/badge.svg)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/release.yml)
+[![Integration & Performance](https://github.com/sbates130272/batesste-ci-images/actions/workflows/integration-perf.yml/badge.svg)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/integration-perf.yml)
 [![Latest Release](https://img.shields.io/github/v/release/sbates130272/batesste-ci-images)](https://github.com/sbates130272/batesste-ci-images/releases)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-sbates130272-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/u/sbates130272)
@@ -63,6 +64,22 @@ adding an image or a variant adds its row.
 | [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen-rocjitsu (job: ubuntu-qcow2-gen@rocjitsu) | [![ubuntu-qcow2-gen-rocjitsu main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen%40rocjitsu)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 
 <!-- END BUILD STATUS -->
+
+**Integration and performance** (the combination test — see
+[Integration and performance](#integration-and-performance))
+
+[![integration](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fperf%2Fbadge-integration.json&label=integration)](https://sbates130272.github.io/batesste-ci-images/)
+[![gemm](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fperf%2Fbadge-gemm.json&label=gemm)](https://sbates130272.github.io/batesste-ci-images/#gemm)
+[![nvme](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fperf%2Fbadge-nvme.json&label=nvme)](https://sbates130272.github.io/batesste-ci-images/#nvme)
+[![hipfile](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fperf%2Fbadge-hipfile.json&label=hipfile)](https://sbates130272.github.io/batesste-ci-images/#hipfile)
+[![ernic](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fperf%2Fbadge-ernic.json&label=ernic%20s3)](https://sbates130272.github.io/batesste-ci-images/#ernic)
+[![boot](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fperf%2Fbadge-boot.json&label=boot)](https://sbates130272.github.io/batesste-ci-images/#boot)
+
+These read `shields.io` endpoint JSON published to `gh-pages` by the
+Integration & Performance workflow, so they carry the *latest measured value*
+rather than a pass/fail. A metric that was skipped in the latest run reads
+`n/a`. Until that workflow has published once there is no `gh-pages` branch to
+read at all, and `shields.io` renders its own "inaccessible" placeholder.
 
 This repository contains a collection of Docker images for CI/CD and
 development workflows. Each image is self-contained in its own directory
@@ -182,6 +199,138 @@ cannot reach it. With QEMU that means a `memory-backend-memfd` with `share=on`
 plus `-machine memory-backend=mem`; `ubuntu-qemu-libvfio-user`'s entrypoint sets
 this up automatically when `VFIO_USER_SOCKET` is set. `compose/docker-compose.yml`
 wires the two together over the shared `vfio-sockets` volume.
+
+## Integration and performance
+
+Every image above is tested on its own by `dockerfile-test.yml`. Five of them
+are only interesting together, and that combination is what the
+**Integration & Performance** workflow covers, in two phases run back to back
+by `ubuntu-qemu-libvfio-user`:
+
+| phase | guest | device over vfio-user | measures |
+| --- | --- | --- | --- |
+| rocjitsu | `ubuntu-qcow2-gen@rocjitsu` | `ubuntu-rocm-rocjitsu` emulated gfx1250, plus an emulated NVMe controller | GEMM, the storage path into GPU memory, boot |
+| ernic | `ubuntu-qcow2-gen@ionic` | `ubuntu-rocm-ernic` RDMA NIC serving its own S3 store | 1 MiB object GETs over RDMA |
+
+Two guests rather than one because no flavour carries both a ROCm stack and an
+RDMA-capable kernel. Booting a single guest against both sockets is what this
+lane used to do, and it is why the ERNIC figure was a PCIe enumeration count:
+the rocjitsu guest has no RDMA driver, so the device appeared on the bus and
+registered no ibverbs device.
+
+This closes a real gap rather than adding coverage for its own sake.
+`ubuntu-qcow2-gen`'s build-time probe boot has no vfio-user device attached, so
+its checks can assert that the right driver is installed for the booted kernel
+and *nothing* about whether the emulated GPU actually comes up — see the "Open"
+section of `ubuntu-qcow2-gen/consumers/rocm-xio-rocjitsu.md`. The lane stages
+the firmware gap, `modprobe`s `amdgpu` with the emulation parameters, and
+requires all of: `amdgpu` bound under `/sys/bus/pci/drivers/amdgpu/`, a KFD
+node, and no `vcn/jpeg` failure in `dmesg`.
+
+Having qualified the stack, it measures it:
+
+| metric | what it is |
+| --- | --- |
+| `gemm_gflops` | A validated 128³ FP32 GEMM on the emulated gfx1250 (`ubuntu-qcow2-gen/perf/sgemm-bench.hip`). Hand-written and scratch-free by necessity: the emulated device cannot run a kernel with a non-zero private segment, which rules out the Tensile kernels rocBLAS dispatches. |
+| `nvme_read_GBs` | 128k sequential reads from the emulated NVMe controller through `libaio`, into host memory. |
+| `nvme_hipfile_read_GBs` | 1 MiB blocks off the same filesystem read through hipFile straight into GPU memory (`ubuntu-qcow2-gen/perf/gemm-hipfile-bench.hip`). |
+| `ernic_s3_get_GBs` | 1 MiB S3 object GETs over RDMA from the ERNIC emulator's own object store, in loopback. |
+| `boot_seconds` | Wall clock to the rocjitsu guest accepting SSH with its device attached. |
+
+The two NVMe numbers are a pair: absolute figures from an emulated controller
+mean little, but their ratio is a thing that can regress visibly, and the site
+charts it. Both legs read files on one `ext4` filesystem on the emulated
+namespace — hipFile refuses a raw block device, and pointing the two legs at
+different things would make the ratio meaningless. The `libaio` leg is `fio`,
+built in the guest from the same commit `ubuntu-cuda-rocm-fio` pins so guest
+and container numbers sit on one axis.
+
+**On the hipFile metric.** It comes from our own benchmark rather than `fio`'s
+`libhipfile` ioengine, because a bandwidth number is not a correctness check:
+the benchmark multiplies two matrices out of the blocks it read and validates
+the product against a CPU reference, so a read landing at the wrong offset
+fails the run instead of scoring well on it. The emulated GPU has no DMA
+engine, so this is hipFile's bounce-buffer fallback — which is the path a
+consumer on this stack actually gets.
+
+**On the ERNIC metric.** It is a real bandwidth number, from the loopback
+deployment [ROCm/rocm-ernic][rocm-ernic]'s own S3 lane runs: one guest, one
+server, no peer and no TAP. The emulator terminates an HTTP control plane in
+band on the emulated NIC and answers each GET by RDMA-writing the object bytes
+into registered guest memory, so no queue pair is ever connected — which is
+what lets a single-guest stack measure RDMA at all, where `perftest` would need
+two guests. GETs rather than PUTs, so the number means one direction; 1 MiB
+objects, matching the hipFile block size so the two storage series can be read
+against each other. The guest half is `s3_rdma_client.c`, shipped by
+`ubuntu-rocm-ernic` so client and server come from one commit; a client fetched
+separately can disagree with the server about the token layout, and that
+failure is a transfer that goes nowhere.
+
+[rocm-ernic]: https://github.com/ROCm/rocm-ernic
+
+Results are appended to `perf/history.jsonl` on the `gh-pages` branch and
+rendered into a single self-contained HTML page — inline SVG, no JavaScript,
+no build step — along with the `shields.io` endpoint JSON the badges at the top
+of this README read:
+
+**[View the performance trend site](https://sbates130272.github.io/batesste-ci-images/)**
+
+The lane runs after a successful `main` build, nightly, and on demand. It
+measures *published* images rather than the ones a PR just built, because a
+trend point is only comparable to the last one if the thing measured is the
+thing consumers get.
+
+Running it by hand needs a host with `/dev/kvm` (the harness refuses without
+it — under TCG the ROCm dispatch path takes hours, and the number would be
+recorded as a baseline anyway):
+
+```bash
+export QEMU_IMAGE=$(./ci-images-tool.py tags ubuntu-qemu-libvfio-user | sed -n 2p)
+export ERNIC_IMAGE=$(./ci-images-tool.py tags ubuntu-rocm-ernic | sed -n 2p)
+export ROCJITSU_IMAGE=$(./ci-images-tool.py tags ubuntu-rocm-rocjitsu | sed -n 2p)
+export QCOW2_IMAGE=$(./ci-images-tool.py tags ubuntu-qcow2-gen@rocjitsu | sed -n 2p)
+export QCOW2_IONIC_IMAGE=$(./ci-images-tool.py tags ubuntu-qcow2-gen@ionic | sed -n 2p)
+
+scripts/perf-harness.sh --out output/perf          # --keep-up to poke at the guest
+scripts/publish-perf.py --summary output/perf/summary.json --site /tmp/site
+```
+
+Each metric is recorded as measured-or-skipped-with-reason, so a missing
+number leaves a gap in the history that says why rather than a fabricated
+point. Only the qualification steps — the devices enumerating, `amdgpu`
+binding — fail the run outright.
+
+## Which images CI rebuilds
+
+`dockerfile-test.yml` builds only the targets a branch's changed paths affect,
+rather than all fifteen because one Dockerfile moved. It collects the changed
+paths and hands them to the tool:
+
+```bash
+git diff --name-only origin/main...HEAD > changed.txt
+./ci-images-tool.py targets --changed-from changed.txt
+```
+
+The rules live in `images.yml`, not in Python:
+
+- An image's default paths are its own directory plus any `context_dirs`.
+  Declare `paths:` on an image or a variant only to **replace** that default —
+  it is not merged, because a list that is merged is a list nobody can narrow.
+- Anything matching `path_filter.always` selects every target. That list is
+  the files which decide what *any* image builds: `images.yml` itself,
+  `ci-images-tool.py`, `requirements.txt` and the workflow.
+- Selection then closes over `base:` in **both** directions. Downwards is
+  obvious — a rebuilt base invalidates everything layered on it, so
+  `ubuntu-cuda-rocm-fio` need not name `ubuntu-cuda-rocm/`. Upwards is about
+  CI rather than layering: the `build-derived` job resolves its base as
+  `<registry>:<base_scope>-<run sha>`, a tag only *this run's* matrix job
+  pushes, so a derived target selected without its ancestors would fail on a
+  reference that does not exist.
+- `**` spans directory separators; a single `*` stops at one.
+
+Because an empty matrix is a hard error in GitHub Actions rather than a skip,
+the `build`, `build-derived` and `test-compose` jobs carry explicit guards —
+so a README-only change runs no build jobs instead of failing.
 
 ## Project Structure
 

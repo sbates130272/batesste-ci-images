@@ -21,12 +21,21 @@ they speak.
 
 - `rocm-ernic`, built with CMake/Ninja and installed under `/usr/local`
 - its RDMA userspace headers: `libibverbs-dev`, `librdmacm-dev`
+- `/usr/local/share/rocm-ernic/s3_rdma_client.c`, the guest half of the S3
+  backend, as source
 
 `-DERNIC_WERROR=OFF`: upstream is not warning-clean against this toolchain, and
 a new compiler warning should not break an unrelated image build.
 
 The resolved commit is recorded at `/usr/local/share/rocm-ernic-commit.txt`,
 alongside `/usr/local/share/libvfio-user-commit.txt` from the base image.
+
+The client source ships because upstream wrote it to be copied into a guest and
+built there on its own (`cc -O2 -Wall -Wextra -o s3_rdma_client
+s3_rdma_client.c -libverbs`), and taking it out of this image is what keeps
+client and server on one commit — they disagree about the `x-amz-rdma-token`
+layout otherwise, and that failure is a transfer that goes nowhere.
+`scripts/perf-harness.sh` copies it out of here to measure S3 over RDMA.
 
 ## Usage
 

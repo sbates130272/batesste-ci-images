@@ -54,7 +54,11 @@ jobs:
       derived_keys: ${{ steps.find-images.outputs.derived_keys }}
       derived_bases: ${{ steps.find-images.outputs.derived_bases }}
     steps:
+      # Full history: the changed-path diff below needs the merge base, and a
+      # shallow clone does not have one.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -65,18 +69,58 @@ jobs:
       - name: Install tool dependencies
         run: pip install -r requirements.txt
 
+      # Which files this branch actually touched, so the matrix below can be
+      # narrowed to the images they affect. The repo-level `paths:` filters at
+      # the top of this file only decide whether the workflow runs at all --
+      # once it does, every target used to be rebuilt.
+      #
+      # Written to a file rather than an output: `git diff --name-only` on a
+      # wide branch is longer than a command line wants, and paths can contain
+      # characters a shell would otherwise get opinions about.
+      - name: Collect changed paths
+        id: changed
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            # Three dots: what the branch changed relative to where it forked,
+            # not relative to main's current tip. Two dots would rebuild
+            # whatever else landed on main in the meantime.
+            git diff --name-only \
+              "origin/${{ github.base_ref }}...HEAD" > /tmp/changed.txt
+          else
+            before="${{ github.event.before }}"
+            # A new branch, or the first push after a force-push, reports an
+            # all-zero "before" that names no commit. Nothing sensible to diff
+            # against, so build everything rather than guess.
+            if [ -z "$before" ] \
+               || [ "$before" = 0000000000000000000000000000000000000000 ] \
+               || ! git cat-file -e "$before^{commit}" 2>/dev/null; then
+              echo "::notice::no usable base commit; building every target"
+              echo "images.yml" > /tmp/changed.txt
+            else
+              git diff --name-only "$before" "${{ github.sha }}" > /tmp/changed.txt
+            fi
+          fi
+          echo "--- changed paths ---"
+          cat /tmp/changed.txt
+
       # images.yml says which job builds what, so this no longer globs for
       # Dockerfiles and carries its own exclusion list. One image can declare
       # several variants, each a separate target built from the same Dockerfile.
+      #
+      # --changed-from does the narrowing, including the base closure: a change
+      # to ubuntu-cuda-rocm still rebuilds ubuntu-cuda-rocm-fio, which declares
+      # no interest in that directory but is layered on it.
       - name: Enumerate matrix targets
         id: find-images
         run: |
           ./ci-images-tool.py validate
-          TARGETS=$(./ci-images-tool.py targets --job matrix --json)
+          FILTER=(--changed-from /tmp/changed.txt)
+          TARGETS=$(./ci-images-tool.py targets --job matrix --json "${FILTER[@]}")
           echo "targets=$TARGETS" >> $GITHUB_OUTPUT
           echo "keys=$(echo "$TARGETS" | jq -c 'map(.key)')" >> $GITHUB_OUTPUT
           echo "$TARGETS" | jq .
-          DERIVED=$(./ci-images-tool.py targets --job derived --json)
+          DERIVED=$(./ci-images-tool.py targets --job derived --json "${FILTER[@]}")
           echo "derived=$DERIVED" >> $GITHUB_OUTPUT
           # keys above covers the matrix tier only. A job gated on a derived
           # target -- test-compose needs a guest, and every guest is derived --
@@ -164,6 +208,10 @@ jobs:
     name: Build ${{ matrix.target.key }}
     runs-on: ubuntu-latest
     needs: [discover-images, build-bases]
+    # An empty matrix is a hard error ("Matrix vector 'target' does not
+    # contain any values"), not an empty job, so a branch that touches only
+    # a derived image has to skip this tier rather than run it with nothing.
+    if: needs.discover-images.outputs.targets != '[]'
     permissions:
       contents: read
       packages: write
@@ -555,6 +603,14 @@ jobs:
     name: Build ${{ matrix.target.key }}
     runs-on: ubuntu-latest
     needs: [discover-images, build-bases, build]
+    # Same empty-matrix guard as the tier above. The needs.build check is
+    # spelled out because a skipped `build` would otherwise skip this job
+    # too, and "skipped" is a legitimate outcome here -- not every branch
+    # that rebuilds a guest rebuilds a matrix image as well.
+    if: >-
+      !cancelled() &&
+      needs.build.result != 'failure' &&
+      needs.discover-images.outputs.derived != '[]'
     permissions:
       contents: read
       packages: write
@@ -939,7 +995,15 @@ jobs:
     # The guest comes from the derived tier and the three containers from the
     # matrix tier, so this reads both key lists. Checking ubuntu-qcow2-gen
     # against `keys` is why this job did not run at all: `keys` is matrix-only.
+    # The four `contains` checks already make this conditional on the right
+    # images having been built; with path filtering they now also do the work
+    # of skipping the job on a branch that rebuilt none of them. The
+    # cancelled/failure guard is what stops a skipped upstream tier from
+    # skipping this job for the wrong reason.
     if: >-
+      !cancelled() &&
+      needs.build.result != 'failure' &&
+      needs.build-derived.result != 'failure' &&
       contains(
         fromJson(needs.discover-images.outputs.keys),
         'ubuntu-qemu-libvfio-user'

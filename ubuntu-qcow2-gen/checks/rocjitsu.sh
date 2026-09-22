@@ -96,6 +96,28 @@ grep -q 'modprobe.blacklist=amdgpu' /proc/cmdline
 # The flavour's own record, for a consumer reading it from inside the guest.
 test -s /etc/rocjitsu-guest.json
 
+# fio, built from source with the libhipfile ioengine.  Asserted by the engine
+# and not by the binary: a distro fio would satisfy "command -v fio" and has no
+# libhipfile at all, so the version that matters is the one --enghelp reports.
+# The engine cannot be exercised here -- it needs a GPU, and this boot has none
+# -- but an fio that cannot name it is an fio that will fail at the point of
+# measurement instead, in a guest a consumer has already spent an hour booting.
+command -v fio
+fio --enghelp | grep -qE '^[[:space:]]*libhipfile$'
+fio --enghelp | grep -qE '^[[:space:]]*libaio$'
+test -s /usr/local/share/fio-commit.txt
+echo "fio: $(fio --version) from $(cat /usr/local/share/fio-commit.txt)"
+# /usr/local, so it is the source build on PATH rather than a distro copy that
+# something pulled in as a dependency later.
+test "$(command -v fio)" = /usr/local/bin/fio
+
+# ibverbs userspace.  No device and no RDMA driver here by design, so this
+# asserts only that the tooling resolves -- "no devices" is the expected and
+# correct answer, and is a different failure from "command not found".
+command -v ibv_devinfo
+ldconfig -p | grep -q libibverbs
+ibv_devinfo -l || true
+
 # gfx1250 firmware, from amdgpu-dkms-firmware -- amdgpu-dkms depends on it, and
 # from 31.60 it ships real gc_12_1_0 and sdma_7_1_0 blobs. Which of those this
 # amdgpu.ko actually opens is asked of the module rather than listed here:

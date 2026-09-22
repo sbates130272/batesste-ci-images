@@ -47,7 +47,22 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
 
 # Save installed binary path and commit info
 # (libvfio-user-commit.txt is already in place, written by the base image)
+#
+# s3_rdma_client.c comes along with it. It is the guest half of the s3
+# backend -- the client hipObject would be in production -- and upstream
+# wrote it to be copied into a VM and built there alone:
+#
+#     cc -O2 -Wall -Wextra -o s3_rdma_client s3_rdma_client.c -libverbs
+#
+# Shipping it here rather than fetching it at test time is what keeps the
+# client and the server on the same commit: both come out of this image, and
+# rocm-ernic-commit.txt names the commit they came from. A client fetched
+# separately can disagree with the server about the x-amz-rdma-token layout,
+# and the failure that produces is a transfer that goes nowhere.
+# scripts/perf-harness.sh builds it in the guest to measure S3 over RDMA.
 RUN cp /build/rocm-ernic-commit.txt /usr/local/share/rocm-ernic-commit.txt && \
+    install -D -m 0644 /build/rocm-ernic/tests/s3_rdma_client.c \
+        /usr/local/share/rocm-ernic/s3_rdma_client.c && \
     rm -rf /build/rocm-ernic
 
 ENV PATH=/usr/local/bin:${PATH}

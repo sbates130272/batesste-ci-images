@@ -1,0 +1,401 @@
+---
+# The combination test: guests booted over vfio-user against a rocjitsu
+# emulated gfx1250 and against a rocm-ernic RDMA NIC, with an emulated NVMe
+# controller, then measured.
+#
+# Two phases, two guests, one after the other. No single ubuntu-qcow2-gen
+# flavour carries both a ROCm stack and an RDMA-capable kernel, and booting
+# one guest against both sockets is what used to reduce the ernic result to a
+# device-enumeration count. See the header of compose/perf-stack.yml.
+#
+# Separate from dockerfile-test.yml on purpose. That workflow answers "does
+# each image build, and does it pass its own checks"; this one answers "do
+# five of them work together", which is a question no single image's checks
+# can ask -- ubuntu-qcow2-gen's probe boot has no vfio-user device at all, so
+# its rocjitsu flavour ships today asserting only that the right driver is
+# installed. See the "Open" section of
+# ubuntu-qcow2-gen/consumers/rocm-xio-rocjitsu.md.
+#
+# It runs against *published* images rather than the ones a PR just built, and
+# that is deliberate for a perf trend: a number is only comparable to the last
+# number if the thing measured is the thing users get. The cost is that a PR
+# does not get an integration result, which is the right trade while this takes
+# the better part of an hour.
+#
+# The corollary is that the pins in images.yml can be ahead of Docker Hub: a
+# commit that bumps a pin lands on main long before the release that publishes
+# the image it names. The nightly therefore checks the manifests first and
+# records nothing rather than failing red for a reason nobody needs to act on.
+#
+# The measurements land on gh-pages as a trend site plus shields.io endpoint
+# JSON that the README badges read.
+
+name: Integration & Performance
+
+on:
+  # After Release, not after Dockerfile Test. Dockerfile Test builds every
+  # image and pushes nothing to Docker Hub -- its matrix and derived tiers are
+  # `push: false`, and the only refs it writes are the per-SHA GHCR base
+  # images the next job in that same run consumes. Docker Hub publication
+  # happens in release.yml on a `v*` tag. Triggering off the build would mean
+  # resolving a pinned Docker Hub tag on the very commit that moved the pin,
+  # which is exactly when it does not exist yet.
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  # Nightly, so the trend has points even in a quiet week and so a regression
+  # that comes from a moving upstream apt repository rather than from a commit
+  # here still shows up.
+  schedule:
+    - cron: '43 4 * * *'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish results to gh-pages"
+        type: boolean
+        default: true
+      keep_up:
+        description: "Leave the stack running (debugging; no publish)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  # Never two of these at once: they publish to the same gh-pages history, and
+  # a run cancelled mid-push is how that file gets a truncated line.
+  #
+  # The cost, which is accepted rather than unnoticed: GitHub holds at most one
+  # *pending* run per group, so a third event arriving while one run is in
+  # flight and one is queued discards the queued one. That loses a trend point
+  # with no skip row to explain it. Tolerable because the triggers are now a
+  # tag-driven release and a nightly cron rather than every build on main, so
+  # three events inside one 150-minute window is not a normal week.
+  group: integration-perf
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  integration-perf:
+    # Skip the run when the build that triggered it failed -- there is nothing
+    # newly published to measure, and measuring the previous images again would
+    # put a duplicate point on the trend.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    # Two guest boots, two driver bring-ups and two measurement sets. The
+    # emulated GEMM alone is minutes; leave headroom rather than have a slow
+    # nightly cancelled halfway and publish nothing.
+    timeout-minutes: 150
+
+    steps:
+      # `ref:` matters on the workflow_run path. A workflow_run event checks out
+      # the default branch tip by default, not the commit that ran the workflow
+      # that triggered it -- so a release tag's run would measure main's pins
+      # rather than the released ones, and would silently drift further apart
+      # the longer main ran ahead of the tag.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install the tool's dependencies
+        run: pip install -r requirements.txt
+
+      # GitHub-hosted Linux runners expose /dev/kvm, but udev gives it to the
+      # kvm group and the runner user is not in it. The rule is how rocm-xio's
+      # own GitHub-hosted bring-up does it, and it is a runner-local change to
+      # an ephemeral VM rather than anything that outlives the job.
+      #
+      # This is a hard requirement, not an optimisation: under TCG the ROCm
+      # dispatch path takes hours, and a number measured that way would be
+      # recorded as a baseline for every run after it.
+      - name: Enable KVM for the runner user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -w /dev/kvm
+          echo "KVM is available and writable"
+          kvm-ok || true
+
+      # Authenticated before anything touches Docker Hub. Anonymous pulls are
+      # rate limited per IP, and a hosted runner shares its IP -- so an
+      # anonymous `docker manifest inspect` can fail for reasons that have
+      # nothing to do with whether the tag exists. The gate below would read
+      # that as "not published yet" and skip the whole run, which is a silent
+      # false negative on the one check the run depends on.
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Pinned tags, resolved from images.yml rather than :latest. The second
+      # line `tags` prints is the variant alias -- deterministic from the pins
+      # in images.yml, unlike the dated first line -- so a rerun of this job
+      # measures exactly what the run before it measured unless a pin moved.
+      - name: Resolve the image tags
+        id: images
+        run: |
+          set -euo pipefail
+          # Assigned, then checked. `echo "X=$(resolve ...)"` would swallow a
+          # failing resolve -- the enclosing echo still succeeds, so set -e sees
+          # nothing wrong and the variable is exported empty. An empty image ref
+          # then reaches `docker manifest inspect`, fails there, and is reported
+          # as "this tag is not published yet", which is the wrong diagnosis for
+          # a tool that crashed or a target that was renamed in images.yml.
+          resolve() {
+            local tag
+            tag=$(python3 ci-images-tool.py tags "$1" | sed -n 2p)
+            if [ -z "${tag}" ]; then
+              echo "could not resolve a tag for '$1' from images.yml" >&2
+              return 1
+            fi
+            printf '%s\n' "${tag}"
+          }
+          QEMU_IMAGE=$(resolve ubuntu-qemu-libvfio-user)
+          ERNIC_IMAGE=$(resolve ubuntu-rocm-ernic)
+          ROCJITSU_IMAGE=$(resolve ubuntu-rocm-rocjitsu)
+          QCOW2_IMAGE=$(resolve 'ubuntu-qcow2-gen@rocjitsu')
+          QCOW2_IONIC_IMAGE=$(resolve 'ubuntu-qcow2-gen@ionic')
+          {
+            echo "QEMU_IMAGE=${QEMU_IMAGE}"
+            echo "ERNIC_IMAGE=${ERNIC_IMAGE}"
+            echo "ROCJITSU_IMAGE=${ROCJITSU_IMAGE}"
+            echo "QCOW2_IMAGE=${QCOW2_IMAGE}"
+            echo "QCOW2_IONIC_IMAGE=${QCOW2_IONIC_IMAGE}"
+          } | tee -a "$GITHUB_ENV"
+
+      # Every pin has to be on Docker Hub before any of this is worth doing.
+      # A bumped pin on main is ahead of the registry until the next release,
+      # and that is an expected state rather than a breakage -- so say which
+      # tag is missing and stop, instead of failing on `docker pull` five
+      # steps later with a bare "manifest unknown".
+      - name: Check the images are published
+        id: published
+        run: |
+          set -uo pipefail
+          missing=()
+          for image in "$QEMU_IMAGE" "$ERNIC_IMAGE" "$ROCJITSU_IMAGE" \
+                       "$QCOW2_IMAGE" "$QCOW2_IONIC_IMAGE"; do
+            if err=$(docker manifest inspect "$image" 2>&1 > /dev/null); then
+              echo "present: $image"
+            # Only "no such manifest" means not-published-yet. Anything else --
+            # unauthorized, a rate limit, DNS, a 5xx from the registry -- is an
+            # infrastructure failure, and recording it as a clean skip would
+            # turn an outage into a quietly missing trend point. Fail loudly.
+            elif printf '%s' "$err" | grep -qiE 'manifest unknown|no such manifest|not found'; then
+              echo "MISSING: $image"
+              missing+=("$image")
+            else
+              echo "::error::could not query $image: $err"
+              exit 1
+            fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            {
+              echo "## Integration & performance: not run"
+              echo
+              echo "These pinned tags are not on Docker Hub yet, which is the"
+              echo "expected state between a pin bump on main and the release"
+              echo "that publishes it:"
+              echo
+              printf '%s\n' "${missing[@]}" | sed 's/^/- `/; s/$/`/'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::${#missing[@]} pinned tag(s) not published yet; skipping"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pull the images
+        if: steps.published.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          for image in "$QEMU_IMAGE" "$ERNIC_IMAGE" "$ROCJITSU_IMAGE" \
+                       "$QCOW2_IMAGE" "$QCOW2_IONIC_IMAGE"; do
+            echo "::group::$image"
+            docker pull "$image"
+            echo "::endgroup::"
+          done
+
+      # The runner's 14 GB of free space on / is not enough for a 512 GB-sparse
+      # qcow2 plus five images, but /mnt is a large ephemeral disk. Put the
+      # guest disks there rather than pruning the images we just pulled. Each
+      # phase gets its own subdirectory under this root and the harness drops
+      # phase one's before extracting phase two's, so only one guest disk is
+      # on the disk at a time.
+      - name: Make room for the guest disk
+        if: steps.published.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          df -h / /mnt
+          sudo mkdir -p /mnt/qemu-images
+          sudo chmod 777 /mnt/qemu-images
+          echo "VM_IMAGES_DIR=/mnt/qemu-images" >> "$GITHUB_ENV"
+
+      - name: Run the harness
+        if: steps.published.outputs.ready == 'true'
+        env:
+          PERF_RUNNER_CLASS: ubuntu-24.04
+          VM_VCPUS: 4
+          VM_VMEM: 8192
+          VM_SHM_SIZE: 12g
+        run: |
+          scripts/perf-harness.sh --out output/perf \
+            ${{ inputs.keep_up && '--keep-up' || '' }}
+
+      - name: Summarise
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f output/perf/summary.json ]; then
+            echo "No summary.json -- the harness did not get that far." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "## Integration & performance"
+            echo
+            echo "| metric | value | unit | note |"
+            echo "| --- | --- | --- | --- |"
+            python3 - <<'PY'
+          import json
+          d = json.load(open("output/perf/summary.json"))
+          for key, m in d["metrics"].items():
+              value = m["value"] if m["status"] == "ok" else "—"
+              if isinstance(value, float):
+                  value = f"{value:.4g}"
+              print(f"| `{key}` | {value} | {m['unit']} | {m.get('note','')} |")
+          PY
+            echo
+            echo "Images measured:"
+            echo
+            echo '```'
+            python3 -c 'import json;[print(f"{k}: {v}") for k,v in json.load(open("output/perf/summary.json"))["meta"]["images"].items() if v]'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Always uploaded, and especially when the run failed: the compose log
+      # and the guest's dmesg are the only record of why amdgpu refused the
+      # device, and the stack is torn down by the time anyone looks.
+      - name: Upload the logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          # run_attempt too: a re-run of a failed job does not delete the
+          # previous attempt's artifacts, and uploading a name that already
+          # exists in the run is a 409. Since this step is `if: always()`, that
+          # would turn a re-run into a second failure on the upload rather than
+          # on whatever was being re-run.
+          name: perf-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            output/perf/
+          retention-days: 30
+          if-no-files-found: warn
+
+      # Only from main, and only when something was actually measured. A
+      # scheduled run on a broken main should leave the trend alone rather than
+      # writing a row of nulls into it.
+      #
+      # The github.ref test is what makes the "only from main" half true. It is
+      # redundant for workflow_run and schedule, which always report the default
+      # branch, and it is the whole point for workflow_dispatch, which can be
+      # started from any branch -- and whose `publish` input defaults to true.
+      # Without it a dispatch from a feature branch appends that branch's
+      # numbers to the shared history, where nothing afterwards records which
+      # branch they came from.
+      - name: Publish to gh-pages
+        if: >-
+          success() &&
+          github.ref == 'refs/heads/main' &&
+          !inputs.keep_up &&
+          (github.event_name != 'workflow_dispatch' || inputs.publish) &&
+          hashFiles('output/perf/summary.json') != ''
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          set -euo pipefail
+
+          # A shallow, orphan-aware checkout: gh-pages may not exist yet, and
+          # the history of a generated site is not worth fetching.
+          if git ls-remote --exit-code --heads origin gh-pages > /dev/null 2>&1; then
+            git clone --depth 1 --branch gh-pages \
+              "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
+              /tmp/gh-pages
+          else
+            git clone --depth 1 \
+              "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
+              /tmp/gh-pages
+            git -C /tmp/gh-pages checkout --orphan gh-pages
+            git -C /tmp/gh-pages rm -rf . > /dev/null 2>&1 || true
+            # Jekyll would otherwise swallow any path beginning with an
+            # underscore, and treat the whole site as a source tree to build.
+            touch /tmp/gh-pages/.nojekyll
+          fi
+
+          # Up to five attempts: a nightly run and a workflow_run publish can
+          # land together, and the loser has to rebase its append onto the
+          # winner's history rather than force-pushing over it. Each attempt
+          # re-renders, because the page is a function of the whole history.
+          for attempt in 1 2 3 4 5; do
+            python3 scripts/publish-perf.py \
+              --summary output/perf/summary.json \
+              --site /tmp/gh-pages
+
+            git -C /tmp/gh-pages add -A
+            if git -C /tmp/gh-pages diff --cached --quiet; then
+              echo "nothing to publish"
+              exit 0
+            fi
+            git -C /tmp/gh-pages commit -m \
+              "perf: results from run ${{ github.run_id }} (${GITHUB_SHA::7})"
+
+            if git -C /tmp/gh-pages push origin gh-pages; then
+              echo "published on attempt ${attempt}"
+              exit 0
+            fi
+
+            echo "push rejected; taking the remote state and retrying"
+            # Drop our commit, take theirs, and re-append. Resetting rather
+            # than rebasing because the summary is re-appended from scratch by
+            # the next loop iteration -- rebasing would apply our append twice.
+            #
+            # Three cases, and the first-ever publish is the one that used to
+            # break this. On that path the commit above is a *root* commit, so
+            # HEAD~1 names nothing; the clone is single-branch, so there is no
+            # refs/remotes/origin/gh-pages to reset to either. FETCH_HEAD is
+            # what works in all three -- but only once the branch exists
+            # remotely, so re-probe rather than assume it now does.
+            if git -C /tmp/gh-pages fetch origin gh-pages 2>/dev/null; then
+              git -C /tmp/gh-pages reset --hard FETCH_HEAD
+            elif git -C /tmp/gh-pages rev-parse --verify --quiet HEAD~1 > /dev/null; then
+              git -C /tmp/gh-pages reset --hard HEAD~1
+            else
+              # Still no remote branch and nothing to fall back to: the push
+              # failed for a reason retrying cannot fix (branch protection,
+              # a revoked token). Start the orphan over so the next attempt
+              # is clean, and let the loop exhaust into the error below.
+              git -C /tmp/gh-pages reset --hard
+              git -C /tmp/gh-pages update-ref -d HEAD
+              git -C /tmp/gh-pages checkout --orphan gh-pages
+              touch /tmp/gh-pages/.nojekyll
+            fi
+            sleep $((attempt * 5))
+          done
+
+          echo "::error::could not publish to gh-pages after 5 attempts"
+          exit 1

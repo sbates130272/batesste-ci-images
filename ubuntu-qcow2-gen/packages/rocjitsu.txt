@@ -45,3 +45,23 @@ rsync
 
 pipx
 python3-venv
+
+# fio's build dependencies.  fio itself is *not* here and must not be: the
+# libhipfile ioengine is not in any fio release, so the distro package has no
+# such engine and installing it would only shadow the source build with a
+# binary that silently cannot do the measurement.  provision/rocjitsu.sh
+# builds the pinned commit into /usr/local when fio_commit is set.
+libaio-dev
+libnuma-dev
+zlib1g-dev
+
+# ibverbs userspace, for a consumer bringing up the emulated ERNIC device.
+# No RDMA *driver* comes with these -- ionic-ernic is a DKMS build from pinned
+# upstream sources, which is what ROCm/rocm-ernic's own jobs exist to do, and
+# the ionic flavour is the disk they do it on.  What these buy is that a
+# consumer who has built one can probe it without an apt round trip first, and
+# that ibv_devinfo exists to say "no devices" rather than "command not found"
+# -- which are very different findings when a device fails to appear.
+rdma-core
+ibverbs-utils
+libibverbs-dev

@@ -280,6 +280,92 @@ for fw in "${FW_DIR}"/gc_12_1_0* "${FW_DIR}"/sdma_7_1_0*; do
     [ -e "${fw}" ] && echo "  $(basename "${fw}")"
 done
 
+# fio with the libhipfile ioengine, so a consumer can measure GPU-side I/O
+# against an emulated NVMe controller from inside the guest.
+#
+# A source build rather than the distro package, because the engine is not in
+# any fio release: it landed on master (67256d4e, 2026-05-08) and Ubuntu's fio
+# therefore has no libhipfile at all.  FIO_COMMIT is pinned to the same commit
+# ubuntu-cuda-rocm-fio builds, so a guest number and a container number are
+# from the same fio and can be put on the same axis.
+#
+# --enable-libhipfile makes the probe hard-fail instead of quietly dropping
+# the engine, which is the failure mode worth spending a build on catching:
+# a silently engine-less fio still runs, still prints a bandwidth, and the
+# number means something entirely different.
+#
+# Unlike the container build there is no CUDA here and none is wanted, so
+# nothing links libcuda and no cuda-compat shim is needed.  --disable-native
+# for the same reason that image gives: the qcow2 is published once and booted
+# on whatever host a consumer has, so a binary built for this builder's ISA
+# would SIGILL on a narrower one.
+if [ -n "${FIO_COMMIT:-}" ]; then
+    echo "=== fio ${FIO_COMMIT} with the libhipfile ioengine ==="
+    # hipFile ships only in the therock stream, which is the stream this
+    # flavour installs above -- so a failure here is a package set that moved,
+    # not a configuration choice, and it should say so.
+    if ! apt-cache show amdrocm-hipfile-dev > /dev/null 2>&1; then
+        echo "Error: amdrocm-hipfile-dev is not available from the therock" \
+             "repository configured above; fio cannot be built with" \
+             "libhipfile support" >&2
+        exit 1
+    fi
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        --no-install-recommends amdrocm-hipfile-dev
+    sudo ldconfig
+
+    # The therock layout again: hipcc and the hipFile headers are under a
+    # versioned component directory, so ROCM_PATH is found rather than assumed.
+    ROCM_PATH=""
+    for d in /opt/rocm /opt/rocm/*; do
+        [ -e "${d}/include/hipfile/hipfile.h" ] && ROCM_PATH="${d}"
+    done
+    if [ -z "${ROCM_PATH}" ]; then
+        for d in /opt/rocm /opt/rocm/*; do
+            [ -d "${d}/lib" ] && ROCM_PATH="${d}"
+        done
+    fi
+    export ROCM_PATH
+    echo "ROCM_PATH for the fio build: ${ROCM_PATH}"
+
+    rm -rf /tmp/fio
+    git init /tmp/fio
+    git -C /tmp/fio remote add origin https://github.com/axboe/fio.git
+    git -C /tmp/fio fetch --depth 1 origin "${FIO_COMMIT}"
+    git -C /tmp/fio checkout FETCH_HEAD
+    (
+        cd /tmp/fio || exit 1
+        ./configure --disable-native --enable-libhipfile
+        make -j"$(nproc)"
+        sudo make install prefix=/usr/local
+    )
+    git -C /tmp/fio rev-parse HEAD |
+        sudo tee /usr/local/share/fio-commit.txt > /dev/null
+
+    # Assert the engine is actually there before the tree is thrown away.  A
+    # build that dropped it is recoverable here and is a mystery later.
+    hash -r
+    fio --enghelp | sudo tee /usr/local/share/fio-engines.txt > /dev/null
+    grep -qE '^[[:space:]]*libhipfile$' /usr/local/share/fio-engines.txt
+    grep -qE '^[[:space:]]*libaio$' /usr/local/share/fio-engines.txt
+    fio --enghelp=libhipfile |
+        sudo tee /usr/local/share/fio-libhipfile-help.txt > /dev/null
+    # Asynchronous submission (hipfile_mode) exists only on the ROCm fork
+    # branch, not on axboe master.  Record which build this is once, here, so
+    # nothing has to re-derive it from engine help at run time.
+    if grep -q 'hipfile_mode' /usr/local/share/fio-libhipfile-help.txt; then
+        echo yes | sudo tee /usr/local/share/fio-hipfile-async.txt > /dev/null
+    else
+        echo no | sudo tee /usr/local/share/fio-hipfile-async.txt > /dev/null
+    fi
+    FIO_VERSION=$(fio --version)
+    rm -rf /tmp/fio
+    echo "installed ${FIO_VERSION} with libhipfile"
+else
+    echo "note: FIO_COMMIT unset -- no fio in this guest"
+    FIO_VERSION=""
+fi
+
 # What this image is, recorded where a consumer inside the guest can read it.
 # vm-info.json stays flavour-agnostic; this is the flavour's own record, and
 # the driver version is the thing a consumer most needs to compare against.
@@ -309,7 +395,12 @@ sudo tee /etc/rocjitsu-guest.json > /dev/null <<EOF
   "gfx1250_firmware_dir": "${FW_DIR}",
   "gfx1250_firmware_missing": ["gc_12_1_0_imu.bin"],
   "gfx1250_firmware_missing_source": "vfio_guest_firmware.py --set gap, from the rocjitsu image the consumer runs",
-  "ip_discovery_bin": false
+  "ip_discovery_bin": false,
+  "fio_commit": "${FIO_COMMIT:-}",
+  "fio_version": "${FIO_VERSION}",
+  "fio_libhipfile": $([ -n "${FIO_VERSION}" ] && echo true || echo false),
+  "fio_hipfile_async": "$(cat /usr/local/share/fio-hipfile-async.txt 2>/dev/null || echo unknown)",
+  "rdma_driver": "none -- rdma-core userspace only; ionic-ernic is a DKMS build the consumer does"
 }
 EOF
 cat /etc/rocjitsu-guest.json
