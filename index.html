@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>batesste-ci-images &mdash; integration performance</title>
+<style>
+:root { color-scheme: light dark; }
+body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+       Helvetica, Arial, sans-serif; margin: 0 auto; max-width: 62rem;
+       padding: 2rem 1.25rem 4rem; }
+h1 { margin-bottom: .25rem; }
+h2 { margin-top: 2.5rem; border-bottom: 1px solid #8884; padding-bottom: .3rem; }
+.sub { color: #7a7a7a; margin-top: 0; }
+.blurb { color: #6a6a6a; max-width: 46rem; }
+.latest { font-size: 2rem; font-weight: 600; }
+.unit { font-size: 1rem; font-weight: 400; color: #7a7a7a; }
+.skip { color: #b06000; font-size: .9rem; }
+table { border-collapse: collapse; font-size: .86rem; width: 100%; }
+th, td { text-align: left; padding: .35rem .6rem; border-bottom: 1px solid #8883; }
+th { color: #7a7a7a; font-weight: 600; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+code { background: #8881; padding: .1em .35em; border-radius: 3px; }
+footer { margin-top: 3rem; color: #7a7a7a; font-size: .85rem; }
+svg { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<h1>Integration performance</h1>
+<p class="sub">Two guests in sequence: one on a rocjitsu emulated gfx1250 with
+an emulated NVMe controller, one on a rocm-ernic RDMA NIC serving its own S3
+store &mdash; both devices over vfio-user, and the combination no single image
+can test on its own. 1 run(s) recorded; generated
+2026-09-22 21:40 UTC.</p>
+
+<p class="blurb"><strong>Read these as trends, not as hardware numbers.</strong>
+Every device here is emulated and the GPU is an instruction-level model, so the
+absolute figures say nothing about silicon. What they are good for is noticing
+the day one of them moves.</p>
+
+<h2 id="gemm">GEMM on the emulated gfx1250</h2><p class="blurb">128&times;128&times;128 FP32, validated against a CPU reference each run. This is an instruction-level emulator, so the figure is a property of the emulator and the dispatch path rather than of the arithmetic.</p><p class="skip">Not measured in the latest run: not recorded</p><p class="skip">No data points yet.</p><table><thead><tr><th>when (UTC)</th><th>commit</th><th class="num">GFLOP/s</th><th>note</th><th>run</th></tr></thead><tbody><tr><td>2026-09-22T21:40:04</td><td><code>a53fae9</code></td><td class="num">&mdash;</td><td>not recorded</td><td><code>35787422772</code></td></tr></tbody></table><h2 id="nvme">NVMe sequential read (libaio)</h2><p class="blurb">128k sequential reads at queue depth 32 from QEMU's emulated NVMe controller into host memory. The baseline the hipFile number below is read against.</p><p class="skip">Not measured in the latest run: not recorded</p><p class="skip">No data points yet.</p><table><thead><tr><th>when (UTC)</th><th>commit</th><th class="num">GB/s</th><th>note</th><th>run</th></tr></thead><tbody><tr><td>2026-09-22T21:40:04</td><td><code>a53fae9</code></td><td class="num">&mdash;</td><td>not recorded</td><td><code>35787422772</code></td></tr></tbody></table><h2 id="hipfile">NVMe sequential read (hipFile, into GPU memory)</h2><p class="blurb">1&nbsp;MiB blocks off the same filesystem, read through hipFile straight into GPU memory by a benchmark that then multiplies two matrices out of what it read &mdash; so a read landing at the wrong offset fails rather than scores well. The emulated GPU has no DMA engine, so this is hipFile's bounce-buffer fallback, which is the path a consumer on this stack actually gets.</p><p class="skip">Not measured in the latest run: not recorded</p><p class="skip">No data points yet.</p><table><thead><tr><th>when (UTC)</th><th>commit</th><th class="num">GB/s</th><th>note</th><th>run</th></tr></thead><tbody><tr><td>2026-09-22T21:40:04</td><td><code>a53fae9</code></td><td class="num">&mdash;</td><td>not recorded</td><td><code>35787422772</code></td></tr></tbody></table><h2 id="ernic">S3 object GET over RDMA</h2><p class="blurb">1&nbsp;MiB object GETs from the ERNIC emulator's own S3 backend, in the loopback deployment: one guest, one server, no peer. The store terminates an HTTP control plane in band on the emulated NIC and RDMA-writes the object bytes into registered guest memory, so nothing here is a queue pair between two hosts. Average over the sweep; the peak is in the run's note.</p><p class="skip">Not measured in the latest run: not recorded</p><p class="skip">No data points yet.</p><table><thead><tr><th>when (UTC)</th><th>commit</th><th class="num">GB/s</th><th>note</th><th>run</th></tr></thead><tbody><tr><td>2026-09-22T21:40:04</td><td><code>a53fae9</code></td><td class="num">&mdash;</td><td>not recorded</td><td><code>35787422772</code></td></tr></tbody></table><h2 id="boot">Guest boot to SSH</h2><p class="blurb">Wall clock from <code>compose up</code> to the guest accepting SSH, with both vfio-user devices attached and KVM enabled. The cheapest early warning that something in the boot path has regressed.</p><p class="latest">21.00 <span class="unit">s</span></p><p class="skip">One data point so far (21.00); a trend needs two.</p><table><thead><tr><th>when (UTC)</th><th>commit</th><th class="num">s</th><th>note</th><th>run</th></tr></thead><tbody><tr><td>2026-09-22T21:40:04</td><td><code>a53fae9</code></td><td class="num">21.00</td><td>SSH-ready, KVM, 4 vCPU</td><td><code>35787422772</code></td></tr></tbody></table><h2 id="ratio">hipFile / libaio</h2><p class="blurb">The hipFile number divided by the libaio number from the same boot. Both move whenever the runner does; this does not, so it is the series to watch for a real change in the GPU I/O path.</p><p class="skip">Not measured in the latest run: not recorded.</p><p class="skip">No data points yet.</p>
+
+<h2 id="images">Images in the latest run</h2>
+<table><thead><tr><th>component</th><th>tag</th></tr></thead>
+<tbody><tr><td>ernic</td><td><code>docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-ernic:ernic.0b48aa1-vfu.8039244</code></td></tr><tr><td>qcow2</td><td><code>docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu:vm.resolute-rocjitsu-qm.724324f</code></td></tr><tr><td>qcow2_ionic</td><td><code>docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic:vm.resolute-ionic-qm.724324f</code></td></tr><tr><td>qemu</td><td><code>docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:qemu11.1.1-vfu.8039244</code></td></tr><tr><td>rocjitsu</td><td><code>docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:rocjitsu.8e01a5a</code></td></tr></tbody></table>
+
+<footer>
+<p>Generated by <code>scripts/publish-perf.py</code> from
+<code>perf/history.jsonl</code>. Raw history:
+<a href="perf/history.jsonl">history.jsonl</a>.</p>
+<p><a href="https://github.com/sbates130272/batesste-ci-images">sbates130272/batesste-ci-images</a></p>
+</footer>
+</body>
+</html>
