@@ -437,18 +437,22 @@ GUEST
     log "loading amdgpu against the emulated device"
     guest_sh > "${OUT}/amdgpu-load.txt" 2>&1 <<'GUEST' || { cat "${OUT}/amdgpu-load.txt"; exit 1; }
 set -euo pipefail
-# The emulation parameters, as upstream's qemu-vfio.md specifies them:
-# discovery=2 reads ip_discovery.bin instead of polling BAR registers,
-# fw_load_type=0 loads microcode directly rather than through the PSP, and
-# ip_block_mask=0x3f selects the six blocks this compute-only profile has.
-sudo -n modprobe amdgpu \
-    discovery=2 \
-    emu_mode=1 \
-    fw_load_type=0 \
-    vm_update_mode=3 \
-    gpu_recovery=0 \
-    vramlimit=256 \
-    ip_block_mask=0x3f
+# Defer to the probe script the guest image ships rather than restating the
+# parameters here. Two of the values this used to pass are the ones upstream
+# found take the guest down hard enough that the only output is "Killed":
+# ip_block_mask=0x3f masks off MES on a DKMS build that enumerates an extra
+# ras_v1_0, so gfx_v12_1 oopses resuming the command processor, and
+# vramlimit=256 starves the budget ROCr provisions queue scratch from. Both
+# were copied from qemu-vfio.md, which upstream has since corrected.
+#
+# It also refuses to exit 0 when amdgpu is already resident with different
+# parameters -- modprobe silently discards them in that case.
+test -x /usr/local/bin/amdgpu-probe || {
+    echo "guest image has no /usr/local/bin/amdgpu-probe;" >&2
+    echo "it predates the qemu-minimal commit that installs it" >&2
+    exit 1
+}
+sudo -n /usr/local/bin/amdgpu-probe
 GUEST
     cat "${OUT}/amdgpu-load.txt"
 

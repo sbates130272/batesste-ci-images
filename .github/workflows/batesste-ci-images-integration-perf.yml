@@ -339,6 +339,14 @@ jobs:
       # scheduled run on a broken main should leave the trend alone rather than
       # writing a row of nulls into it.
       #
+      # "Something was measured" is the hashFiles test, not the job's status:
+      # the harness writes its summary before it exits, so a run that collects
+      # boot_seconds and then dies loading amdgpu still has a real data point
+      # to contribute. Gating on success() threw those away, which is how a
+      # partial regression stayed invisible -- the metric that still worked
+      # never reached the trend. !cancelled() keeps the one case worth
+      # suppressing: a cancelled run can be mid-write.
+      #
       # The github.ref test is what makes the "only from main" half true. It is
       # redundant for workflow_run and schedule, which always report the default
       # branch, and it is the whole point for workflow_dispatch, which can be
@@ -348,7 +356,7 @@ jobs:
       # branch they came from.
       - name: Publish to gh-pages
         if: >-
-          success() &&
+          !cancelled() &&
           github.ref == 'refs/heads/main' &&
           !inputs.keep_up &&
           (github.event_name != 'workflow_dispatch' || inputs.publish) &&
