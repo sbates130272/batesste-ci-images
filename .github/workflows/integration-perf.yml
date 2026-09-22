@@ -159,6 +159,13 @@ jobs:
       # measures exactly what the run before it measured unless a pin moved.
       - name: Resolve the image tags
         id: images
+        # The tool only prefixes the Docker Hub namespace when this is set
+        # (`if "/" not in name and cfg.registry_username`), and docker/login-action
+        # writes the credential store, not the environment. Without it every ref
+        # comes out as docker.io/batesste-ci-images-*, which docker resolves as
+        # library/, and the publish check below fails all five.
+        env:
+          REGISTRY_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           set -euo pipefail
           # Assigned, then checked. `echo "X=$(resolve ...)"` would swallow a
@@ -172,6 +179,15 @@ jobs:
             tag=$(python3 ci-images-tool.py tags "$1" | sed -n 2p)
             if [ -z "${tag}" ]; then
               echo "could not resolve a tag for '$1' from images.yml" >&2
+              return 1
+            fi
+            # A namespace-less ref is still a syntactically valid image name, so
+            # nothing downstream rejects it -- it just can never resolve, and the
+            # publish check reports it as an unpublished tag. Catch it here, where
+            # the cause is still visible.
+            if [ "$(printf '%s' "${tag}" | tr -cd / | wc -c)" -lt 2 ]; then
+              echo "resolved '$1' to '${tag}', which has no registry namespace;" >&2
+              echo "REGISTRY_USERNAME is probably unset in this job" >&2
               return 1
             fi
             printf '%s\n' "${tag}"
