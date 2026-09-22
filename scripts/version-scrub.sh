@@ -202,9 +202,16 @@ echo "==> Fetching latest ROCJITSU HEAD..."
 # Track whichever branch the default target is pinned to rather than
 # hardcoding it here.
 ROCJITSU_BRANCH=$(current_pin ubuntu-rocm-rocjitsu rocjitsu_branch)
+# `|| true` because this pin has named a deleted branch before and will again:
+# the gfx1250 work was reviewed on users/agutierr/gfx1250-vfio-compute-6, which
+# was squashed onto develop and then deleted. GitHub answers 422 for a ref it
+# does not have, curl -f turns that into exit 22, and under `set -euo pipefail`
+# that killed the whole scrub here -- SPDK, UCX, NIXL, abseil, grpc and
+# libfabric below all went unscrubbed, with nothing said about why. Swallowing
+# it leaves check_nonempty to warn and skip, which is the intended behaviour.
 ROCJITSU_LATEST=$(gh_curl \
     "https://api.github.com/repos/ROCm/rocm-systems/commits/${ROCJITSU_BRANCH}" \
-    | jq -r '.sha')
+    | jq -r '.sha' || true)
 ROCJITSU_CURRENT=$(current_pin ubuntu-rocm-rocjitsu rocjitsu_commit)
 echo "    current: $ROCJITSU_CURRENT  latest: $ROCJITSU_LATEST  (branch: $ROCJITSU_BRANCH)"
 # The pin is frozen while local patches are carried. patches/ is empty today --

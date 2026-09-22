@@ -30,12 +30,10 @@ transport has to be the one upstream tested against.
   `install()` rule, so it is lifted out of the build tree by hand.
 - **`run-vfio-guest.py`** -- upstream's harness for booting a prepared guest
   against the vfio-user socket
-- **`vfio_guest_firmware.py`** -- generates the complete guest firmware set: the
-  GFX/SDMA/MES firmware-format fixtures the driver parses during early init,
-  `ip_discovery.bin`, and a manifest naming every file. The upstream generator
-  covers the fixtures alone; this image fetches it from the last commit that had
-  it, pinned separately from the server's own commit, and wraps it. See
-  [Firmware](#firmware) below.
+- **`vfio_guest_firmware.py`** -- generates what the guest's own driver release
+  does not ship: `gc_12_1_0_imu.bin`, `ip_discovery.bin`, and a manifest naming
+  every file. `--set full` emits the whole stub set instead, for a guest on an
+  `amdgpu` release older than 31.60. See [Firmware](#firmware) below.
 - the config profiles under `/usr/local/share/rocjitsu/configs`
 - **`/usr/local/share/rocjitsu/rocjitsu-scratch-repro.hip`** -- a standalone
   reproducer for the dynamic-scratch path. Staged, not built: there is no
@@ -53,24 +51,26 @@ None. The tree is built unmodified.
 This image carried a five-patch series until 2026-09-18, without which the
 served device could not boot a guest (`Timeout waiting for VM flush ACK!`,
 then `ring sdma0.0 timeout`) let alone run a kernel needing private memory.
-All five landed upstream when `users/agutierr/gfx1250-vfio-compute-6` was
-force-pushed on 2026-09-08: the GART root validator now masks the PDE flag
-bits the driver sets, the GART translator passes out-of-aperture addresses
-through to VRAM, and the command processor has a dynamic-scratch
-request/reclaim state machine that is a strict superset of what the local
-patch did. `git log -- ubuntu-rocm-rocjitsu/patches/` has the series and the
-reasoning behind each one.
+All five are in `develop` now, by way of `bdc4aea25` and `d5927b503`: the GART
+root validator masks the PDE flag bits the driver sets, the GART translator
+passes out-of-aperture addresses through to VRAM, and the command processor has
+a dynamic-scratch request/reclaim state machine that is a strict superset of
+what the local patch did. `git log -- ubuntu-rocm-rocjitsu/patches/` has the
+series and the reasoning behind each one.
 
 Two consequences:
 
 - **The pin tracks the branch head again.** `scripts/version-scrub.sh` bumps
-  `rocjitsu_commit` on every reviewer round-trip. The freeze it applies while
+  `rocjitsu_commit` on every `develop` bump. The freeze it applies while
   `patches/` is non-empty is dormant, not deleted; re-adding a patch
   re-engages it.
-- **A bump is still not free.** The branch is force-pushed as the stack is
-  reworked, so a rebase can take those three behaviours away again. The
-  Dockerfile asserts each by name against the checked-out source, so that
-  failure lands in `docker build` rather than in a guest that hangs.
+- **A bump is still not free.** Nothing upstream tests this path: no CI
+  anywhere enables `ROCJITSU_ENABLE_VFIO`, and the only registered vfio tests
+  are the launcher against a fake server and a compile-time `#ifdef` check. A
+  refactor on `develop` can take those three behaviours away with every
+  upstream check green. The Dockerfile asserts each by name against the
+  checked-out source, so that failure lands in `docker build` rather than in a
+  guest that hangs.
 
 ### Build-time verification
 
@@ -83,9 +83,12 @@ is legible rather than as a hung guest:
    an empty `ip_discovery.bin` hangs in `hw_init` instead of failing cleanly
 3. `run-vfio-guest.py --help` must run, which catches a Python the base image
    cannot import it under
-4. `vfio_guest_firmware.py` must emit every file its own manifest names, the
-   two MES aliases must carry the `uni_mes` bytes, and a config it has no
-   firmware for must be refused rather than served gfx1250 stubs
+4. `vfio_guest_firmware.py` must emit every file its own manifest names, in
+   both sets; the default set must carry `gc_12_1_0_imu.bin` and must *not*
+   carry any name a driver release ships, since a sentinel stub written over
+   real microcode is strictly worse than nothing; each alias must carry its
+   source's bytes; and a config it has no firmware for must be refused rather
+   than served gfx1250 stubs
 5. the three upstream behaviours listed above must be present in the source
    tree -- `kPageTableRootFlags` in `gpu_vm.cpp`,
    `RoutesAddressesOutsideTheGartApertureToVram` in `gpu_pci_device_test.cpp`,
@@ -100,38 +103,63 @@ probe short of booting a guest. None of the five exercise what they do. See
 
 Upstream removed the stub generator when `emulation/rocjitsu/docs/qemu-vfio.md`
 moved to "use firmware files from the same public driver/firmware release as
-the guest's `amdgpu.ko`". No such release exists for gfx1250:
-`amdgpu-dkms-firmware 31.50`, the newest driver tree with an Ubuntu 26.04 suite,
-ships 683 files and not one `gc_12_1_0` or `sdma_7_1_0` among them, and
-`linux-firmware` has none either. Stubs are therefore still the only way to boot
-the emulated device, and this image keeps shipping the generator --
-`ROCJITSU_FIRMWARE_GEN_COMMIT`, recorded in the
-`…rocjitsu.firmware-gen-commit` label and in `rocjitsu-build.json`. Retire the
-pin when real gfx1250 firmware is published.
+the guest's `amdgpu.ko`", and from `amdgpu` 31.60 that release exists.
+`amdgpu-dkms-firmware` ships real `gc_12_1_0_mec.bin`, `gc_12_1_0_mec_1.bin`,
+`gc_12_1_0_rlc.bin`, `gc_12_1_0_rlc_1.bin`, `gc_12_1_0_uni_mes.bin` and
+`sdma_7_1_0.bin` into `/lib/firmware/updates/amdgpu`, and `amdgpu-dkms`
+*depends* on it -- so a guest that has the driver already has them, with no
+copying step and no version skew to manage. (31.50 shipped 683 files and not
+one of these, which is why this image used to synthesize everything.)
 
-One call produces the whole set:
+Two files the driver still opens are in no package:
+
+- **`gc_12_1_0_imu.bin`** -- `AMDGPU_UCODE_REQUIRED` whenever `fw_load_type` is
+  not `AMDGPU_FW_LOAD_PSP`, which is exactly the `amdgpu.fw_load_type=0` that
+  doc prescribes. Its error propagates fatally out of
+  `gfx_v12_1_init_microcode`, and no `amdgpu_emu_mode` guard bypasses it.
+- **`ip_discovery.bin`** -- generated by `rj-ip-discovery`, not packaged
+  anywhere.
+
+That gap is what one call produces:
 
 ```bash
 docker run --rm -v "$PWD/fw:/out" "$IMAGE" \
     python3 /usr/local/bin/vfio_guest_firmware.py --output /out
 ```
 
-That writes `gc_12_1_0_imu.bin`, `gc_12_1_0_mec.bin`, `gc_12_1_0_mes.bin`,
-`gc_12_1_0_mes1.bin`, `gc_12_1_0_rlc_1.bin`, `gc_12_1_0_uni_mes.bin`,
-`sdma_7_1_0.bin`, `ip_discovery.bin` and a `manifest.json` naming them:
+That writes `gc_12_1_0_imu.bin`, the two MES aliases, `ip_discovery.bin` and a
+`manifest.json` naming them:
 
 ```json
 {
   "generation": "gfx1250",
   "gfx_target_version": 120500,
   "config": "gfx1250_mi455x.json",
+  "set": "gap",
+  "packaged_by_driver_release": ["gc_12_1_0_mec.bin", "..."],
   "files": ["gc_12_1_0_imu.bin", "..."]
 }
 ```
 
 Copy the files into the guest's `/lib/firmware/amdgpu/` and assert against the
 manifest rather than a filename of your own -- then a firmware file added here
-needs no change on the consuming side.
+needs no change on the consuming side. Nothing in the default set collides with
+a packaged name, so it can be copied over a provisioned guest without
+overwriting real microcode with a sentinel stub.
+
+### The full set
+
+For a guest on an `amdgpu` release older than 31.60, `--set full` emits
+everything instead: the five upstream fixtures plus `gc_12_1_0_mec_1.bin`,
+`gc_12_1_0_rlc.bin` and the two MES aliases. `manifest.json` records which set
+was written, and `packaged_by_driver_release` lists what was deliberately left
+to the guest -- empty for the full set.
+
+The bare and `_1` spellings of `mec` and `rlc` are both emitted because which
+one the driver requests turns on `adev->rev_id`, which `soc_v1_0_set_rev_id`
+derives from an NBIO register and the IP-discovery die rev rather than from PCI
+config space -- so it is not something the served config states. The packaged
+firmware ships both; the full set does too, rather than predicting it.
 
 The 7.1.3 driver also opens `psp_15_0_8_toc_1.bin`, which nothing public
 provides and this generator does not emit; the similarly named
@@ -183,18 +211,25 @@ are distinct blobs, but these are headers over a sentinel payload, not
 microcode: `amdgpu` parses the header and the version word in
 `amdgpu_mes_init_microcode()` and never executes what follows. One fixture is
 therefore right under all three names, which is why the generator emits them
-here instead of leaving callers to copy the file.
+here instead of leaving callers to copy the file. `amdgpu` only opens the two
+aliases when `amdgpu_uni_mes=0`, which is not the default.
 
-### Wrapping upstream
+### Vendoring upstream's builders
 
-The upstream generator is installed at
-`/usr/local/lib/rocjitsu/vfio_guest_firmware_upstream.py` and
-`/usr/local/bin/vfio_guest_firmware.py` is this repo's wrapper around it
-([`vfio-guest-firmware.py`](vfio-guest-firmware.py)). The fixture bytes are
-still upstream's -- the wrapper calls its builders rather than copying them --
-so an upstream change to a header flows through untouched. What the wrapper adds
-is everything a consumer would otherwise have to know about this device model:
-the MES aliases, the generation, and the manifest.
+`/usr/local/bin/vfio_guest_firmware.py` is this repo's
+([`vfio-guest-firmware.py`](vfio-guest-firmware.py)), and the fixture builders
+in it are upstream's, vendored verbatim from `730bc62` -- the last commit that
+carried `emulation/rocjitsu/tools/vfio_guest_firmware.py` before it was
+deleted. They were fetched at build time until that became untenable: the only
+way to fetch a deleted file is from a commit on a branch, and the branch it
+lived on has already been deleted once and any replacement can be pruned at any
+time.
+
+Nothing upstream will take this back. `develop` documents the firmware step and
+hands it to the operator -- there is no executable firmware handling anywhere
+in it, and no CI that enables `ROCJITSU_ENABLE_VFIO` -- so covering the gap is
+this repo's job indefinitely, and it should be a file in this repo rather than
+a pin at a commit that can stop resolving.
 
 ## Usage
 
@@ -290,21 +325,20 @@ now that the pin tracks a force-pushed branch:
 
 ## Pin
 
-`rocjitsu_commit` in [`images.yml`](../images.yml). The branch is
-`users/agutierr/gfx1250-vfio-compute-6`, the tip of a stacked review series,
-not `develop`: the vfio-user compute path only exists there. Both should go
-back to `develop` after the merge; that is the whole reason the pin is
-temporary.
+`rocjitsu_commit` in [`images.yml`](../images.yml), on `develop`. It followed
+`users/agutierr/gfx1250-vfio-compute-6` while the vfio-user compute path
+existed only there; that stack was squashed onto `develop` as `bdc4aea25` and
+`d5927b503` and the branch deleted, so the pin it used to carry is not an
+ancestor of anything that still exists.
 
-The pin tracks that branch's head: `scripts/version-scrub.sh` bumps
-`images.yml` and the Dockerfile `ARG` together. Because the branch is
-force-pushed as the stack is reworked, a scrubbed bump is a genuinely new tree
-and not just a newer commit -- re-prove it against a guest before a consumer
-takes it, per [Verifying an image](#verifying-an-image).
+The pin tracks the branch head: `scripts/version-scrub.sh` bumps `images.yml`
+and the Dockerfile `ARG` together. Nothing upstream exercises this path, so a
+scrubbed bump is not self-evidently safe -- re-prove it against a guest before
+a consumer takes it, per [Verifying an image](#verifying-an-image).
 
 ## Tags
 
-The tag variant is the abbreviated commit, for example `rocjitsu.2d8a73f`. The
+The tag variant is the abbreviated commit, for example `rocjitsu.8e01a5a`. The
 full tag also carries `g<sha7>` of this repository, so a change to the wrapper
 or the Dockerfile moves the tag even when the upstream pin has not. See the
 repository [README](../README.md) for the full tag scheme.

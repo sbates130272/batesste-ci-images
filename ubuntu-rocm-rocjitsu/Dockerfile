@@ -16,20 +16,17 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     python3
 
 ARG ROCJITSU_REPO=https://github.com/ROCm/rocm-systems.git
-ARG ROCJITSU_BRANCH=users/agutierr/gfx1250-vfio-compute-6
-# The head of the branch. This tracks again: the local series that used to
-# freeze this pin landed upstream in the 2026-09-08 force-push, so
-# scripts/version-scrub.sh bumps it on every reviewer round-trip.
-ARG ROCJITSU_COMMIT=2d8a73ff0a28aabe7554b99c58565ef63b635f75
+ARG ROCJITSU_BRANCH=develop
+# The head of the branch. The review branch this used to track
+# (users/agutierr/gfx1250-vfio-compute-6) was squashed onto develop as
+# bdc4aea25 "harden PCI and VFIO compute transport" and d5927b503 "qualify the
+# QEMU VFIO compute workflow", and then deleted, so the old pin is not an
+# ancestor of anything that still exists.
+ARG ROCJITSU_COMMIT=8e01a5a3fbee92f2b570dde97f314000d5226327
 # Which config the vfio-user probe below and the default CMD serve. A build
 # variant pinned to a different upstream ref can point at a renamed or newly
 # added profile from images.yml without editing this file.
 ARG ROCJITSU_CONFIG=gfx1250_mi455x.json
-# The last upstream commit carrying emulation/rocjitsu/tools/
-# vfio_guest_firmware.py, fetched separately from ROCJITSU_COMMIT because the
-# stub generator was deleted upstream and no public firmware release replaces
-# it for gfx1250. See the install step below.
-ARG ROCJITSU_FIRMWARE_GEN_COMMIT=730bc62d60191337a07da50892538475370cb071
 # Compile-time log groups; see rj_log.cmake. Nothing gates these at runtime, so
 # a group named here prints for every event it covers.
 ARG ROCJITSU_LOG_GROUPS=OFF
@@ -45,9 +42,9 @@ RUN git init /build/rocm-systems && \
 
 # This tree is built unmodified. It used to carry a five-patch series against
 # ROCJITSU_COMMIT without which the served device could not boot a guest, let
-# alone run a kernel needing private memory; all five landed upstream in the
-# 2026-09-08 rewrite of this branch. If a future head regresses, re-add the
-# series and the pin freeze together -- git log for the patches/ directory.
+# alone run a kernel needing private memory; all five are in develop now. If a
+# future head regresses, re-add the series and a pin freeze together -- git log
+# for the patches/ directory.
 
 # _Static_assert is a C11 keyword with no C++ spelling, and libvfio-user v0.8's
 # pci_caps/{common,msix}.h use it; rocjitsu includes those from C++ in
@@ -82,19 +79,6 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
 # gfx_v12_1_hw_init. run-vfio-guest.py is upstream's harness for booting a
 # prepared guest against the vfio-user socket.
 #
-# vfio_guest_firmware.py generates the GFX/SDMA/MES header fixtures the driver
-# parses during early init even in emulation mode. Upstream deleted it when
-# qemu-vfio.md moved to "use firmware files from the same public driver release
-# as the guest's amdgpu.ko" -- but no such release exists for gfx1250:
-# amdgpu-dkms-firmware 31.50, the newest driver tree with a 26.04 suite, ships
-# 683 files and not one gc_12_1_0 or sdma_7_1_0 among them. Stubs are therefore
-# still the only way to boot the emulated device, which is why every consumer
-# was pinning this image at rocjitsu.730bc62 to get the generator.
-#
-# Fetched from that commit rather than vendored, so the file stays attributable
-# upstream, and separately from ROCJITSU_COMMIT so the server itself keeps
-# tracking the head of the series.
-#
 # Upstream builds rj-ip-discovery (CMakeLists.txt add_subdirectory) but ships
 # no install() rule for it -- only rocjitsu_bin and rj_pretranslate -- so it
 # has to come out of the build tree by hand. Located rather than hardcoded so
@@ -106,25 +90,26 @@ RUN set -eux; \
     install -m 0755 "${rj_ip_discovery}" /usr/local/bin/rj-ip-discovery; \
     install -m 0755 \
         /build/rocm-systems/emulation/rocjitsu/scripts/run-vfio-guest.py \
-        /usr/local/bin/run-vfio-guest.py; \
-    git -C /build/rocm-systems fetch --depth 1 origin \
-        "${ROCJITSU_FIRMWARE_GEN_COMMIT}"; \
-    mkdir -p /usr/local/lib/rocjitsu; \
-    git -C /build/rocm-systems show \
-        "${ROCJITSU_FIRMWARE_GEN_COMMIT}:emulation/rocjitsu/tools/vfio_guest_firmware.py" \
-        > /usr/local/lib/rocjitsu/vfio_guest_firmware_upstream.py; \
-    chmod 0644 /usr/local/lib/rocjitsu/vfio_guest_firmware_upstream.py
+        /usr/local/bin/run-vfio-guest.py
 
-# Upstream's generator lands on a library path and the wrapper takes the name
-# consumers already call, because upstream's output is not a firmware set a
-# guest can use as-is: it emits five fixtures under hardwired gfx12.1 names and
-# nothing that says what they are. Every consumer then reinvents the same three
-# facts about this device model -- fabricate the two MES names the driver opens,
-# hardcode a filename to prove the set arrived, and name a generation on the
-# rj-ip-discovery call -- and each is a place a change here silently breaks
-# them. The wrapper emits the complete set, runs rj-ip-discovery for the
-# generation it derived from the config, and writes a manifest naming every
-# file. The fixture bytes stay upstream's: it calls upstream's builders.
+# vfio_guest_firmware.py covers what the guest's own driver release does not.
+# amdgpu parses GFX/SDMA/MES firmware headers during early init even in
+# emulation mode, and develop's qemu-vfio.md hands that step to the operator:
+# "use the firmware files from the same public driver release as the guest's
+# amdgpu.ko". From amdgpu 31.60 that release exists -- amdgpu-dkms-firmware
+# ships real gc_12_1_0 mec/mec_1/rlc/rlc_1/uni_mes and sdma_7_1_0, and
+# amdgpu-dkms depends on it, so the guest gets them without being asked. Two
+# files it does not ship are still opened: gc_12_1_0_imu.bin, which is
+# AMDGPU_UCODE_REQUIRED under the amdgpu.fw_load_type=0 that doc prescribes,
+# and ip_discovery.bin, which comes from rj-ip-discovery. That gap is the
+# default output; --set full still emits the whole stub set for a guest on a
+# release older than 31.60.
+#
+# The fixture builders are upstream's, vendored at 730bc62 rather than fetched.
+# The file was deleted upstream, so fetching it means fetching from a commit on
+# a branch that has already been deleted once and can be pruned at any time.
+# Nothing upstream will restore it: develop has no executable firmware handling
+# anywhere and no CI that enables ROCJITSU_ENABLE_VFIO, so this is ours to own.
 COPY ubuntu-rocm-rocjitsu/vfio-guest-firmware.py \
      /usr/local/bin/vfio_guest_firmware.py
 RUN chmod 0755 /usr/local/bin/vfio_guest_firmware.py
@@ -170,7 +155,8 @@ RUN set -eu; \
   "vfio_enabled": true,\n\
   "log_groups": "%s",\n\
   "guest_tools": ["rj-ip-discovery", "run-vfio-guest.py", "vfio_guest_firmware.py"],\n\
-  "firmware_gen_commit": "%s",\n\
+  "firmware_sets": ["gap", "full"],\n\
+  "firmware_min_amdgpu_release": "31.60",\n\
   "config_dir": "%s"\n\
 }\n' \
         "${ROCJITSU_REPO}" \
@@ -179,7 +165,6 @@ RUN set -eu; \
         "${libvfio_user_tag}" \
         "${json_c_tag}" \
         "${ROCJITSU_LOG_GROUPS}" \
-        "${ROCJITSU_FIRMWARE_GEN_COMMIT}" \
         "${ROCJITSU_CONFIG_DIR}" \
         > /usr/local/share/rocjitsu-build.json; \
     cat /usr/local/share/rocjitsu-build.json; \
@@ -226,38 +211,53 @@ RUN rocjitsu --config "${ROCJITSU_CONFIG_PATH}" \
 # so --help is as far as it can be exercised -- enough to catch a Python the
 # base image cannot import it under.
 #
-# The stub generator is exercised the same way. Its output is asserted against
-# its own manifest rather than a list repeated here: a guest missing any one of
-# these files fails in amdgpu's early init with a firmware load error, and the
-# point of the manifest is that adding a file needs no edit in the places that
-# check for it. What is still asserted by name is the property the manifest
-# cannot state -- that the two MES aliases carry the uni_mes bytes -- and that
-# a config this generator has no firmware for is refused rather than served
-# gfx1250 stubs under a different GPU's name.
+# The firmware generator is exercised the same way, in both sets. Each output
+# is asserted against its own manifest rather than a list repeated here: a
+# guest missing any one of these files fails in amdgpu's early init with a
+# firmware load error, and the point of the manifest is that adding a file
+# needs no edit in the places that check for it.
+#
+# What is asserted by name is what the manifest cannot state. gc_12_1_0_imu.bin
+# has to be in the default set, because it is the one file no driver release
+# ships and the whole reason the default set exists; the packaged names have to
+# be absent from it, because writing a sentinel stub over real microcode is
+# strictly worse than not writing it. The aliases have to carry their source's
+# bytes. And a config this generator has no firmware for has to be refused
+# rather than served gfx1250 stubs under a different GPU's name.
 RUN set -eux; \
     rj-ip-discovery gfx1250 /tmp/ip_discovery.bin; \
     test -s /tmp/ip_discovery.bin; \
     run-vfio-guest.py --help > /dev/null; \
-    python3 /usr/local/bin/vfio_guest_firmware.py --output /tmp/fw; \
-    listed=$(python3 -c \
-        'import json;print("\n".join(json.load(open("/tmp/fw/manifest.json"))["files"]))'); \
-    for fw in ${listed}; do test -s "/tmp/fw/${fw}"; done; \
-    test "$(ls /tmp/fw | grep -v '^manifest\.json$' | sort)" \
-       = "$(printf '%s\n' ${listed} | sort)"; \
-    cmp /tmp/fw/gc_12_1_0_mes.bin /tmp/fw/gc_12_1_0_uni_mes.bin; \
-    cmp /tmp/fw/gc_12_1_0_mes1.bin /tmp/fw/gc_12_1_0_uni_mes.bin; \
+    for fwset in gap full; do \
+        out=/tmp/fw-${fwset}; \
+        python3 /usr/local/bin/vfio_guest_firmware.py --set "${fwset}" --output "${out}"; \
+        listed=$(python3 -c \
+            'import json,sys;print("\n".join(json.load(open(sys.argv[1]))["files"]))' \
+            "${out}/manifest.json"); \
+        for fw in ${listed}; do test -s "${out}/${fw}"; done; \
+        test "$(ls "${out}" | grep -v '^manifest\.json$' | sort)" \
+           = "$(printf '%s\n' ${listed} | sort)"; \
+        test -s "${out}/gc_12_1_0_imu.bin"; \
+        test -s "${out}/ip_discovery.bin"; \
+    done; \
+    test ! -e /tmp/fw-gap/gc_12_1_0_uni_mes.bin; \
+    test ! -e /tmp/fw-gap/sdma_7_1_0.bin; \
+    cmp /tmp/fw-full/gc_12_1_0_mes.bin /tmp/fw-full/gc_12_1_0_uni_mes.bin; \
+    cmp /tmp/fw-full/gc_12_1_0_mes1.bin /tmp/fw-full/gc_12_1_0_uni_mes.bin; \
+    cmp /tmp/fw-full/gc_12_1_0_mec_1.bin /tmp/fw-full/gc_12_1_0_mec.bin; \
+    cmp /tmp/fw-full/gc_12_1_0_rlc.bin /tmp/fw-full/gc_12_1_0_rlc_1.bin; \
     ! python3 /usr/local/bin/vfio_guest_firmware.py \
         --config gfx950_mi355x.json --output /tmp/fw-unsupported; \
     test ! -e /tmp/fw-unsupported; \
-    rm -rf /tmp/ip_discovery.bin /tmp/fw
+    rm -rf /tmp/ip_discovery.bin /tmp/fw-gap /tmp/fw-full
 
 # Three upstream behaviours are the difference between an image that serves a
-# device and one a guest can boot and run kernels on. They arrived in this
-# branch's 2026-09-08 rewrite, replacing the local series this image used to
-# carry -- and because the pin now tracks a force-pushed review branch, a
-# rebase could take any of them away again. Assert them here, where the failure
-# names what is missing, rather than as "Timeout waiting for VM flush ACK!" or
-# a dispatch that never retires.
+# device and one a guest can boot and run kernels on. They replaced the local
+# series this image used to carry, and nothing upstream tests them: no CI
+# anywhere enables ROCJITSU_ENABLE_VFIO, so a refactor on develop can take any
+# of them away with every check still green. Assert them here, where the
+# failure names what is missing, rather than as "Timeout waiting for VM flush
+# ACK!" or a dispatch that never retires.
 #
 # Grepping source is crude, but these are behaviours with no runtime probe
 # short of booting a guest, and each marker is the identifier the behaviour is
@@ -273,9 +273,7 @@ RUN set -eux; \
         "${src}/tests/pci/gpu_pci_device_test.cpp"; \
     grep -q 'request_dynamic_scratch' "${vm}/command_processor.cpp"
 
-# The build check above imports the upstream generator, which leaves a
-# __pycache__ beside it that a consumer would otherwise ship and never use.
-RUN rm -rf /build/rocm-systems /tmp/deps /usr/local/lib/rocjitsu/__pycache__
+RUN rm -rf /build/rocm-systems /tmp/deps
 
 ENV PATH=/usr/local/bin:${PATH}
 

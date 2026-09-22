@@ -96,29 +96,51 @@ grep -q 'modprobe.blacklist=amdgpu' /proc/cmdline
 # The flavour's own record, for a consumer reading it from inside the guest.
 test -s /etc/rocjitsu-guest.json
 
-# gfx1250 firmware is NOT baked in: no linux-firmware or amdgpu-dkms-firmware
-# release carries gc_12_1_0 or sdma_7_1_0 blobs (31.50's has 683 files and none
-# of them), so there is nothing to install from a package. Report the inventory
-# so the build log says plainly what is missing, and leave the check non-fatal
-# -- supplying it, from ubuntu-rocm-rocjitsu's vfio_guest_firmware.py at the
-# consumer's own rocjitsu pin, is the consumer's step.
+# gfx1250 firmware, from amdgpu-dkms-firmware -- amdgpu-dkms depends on it, and
+# from 31.60 it ships real gc_12_1_0 and sdma_7_1_0 blobs. Which of those this
+# amdgpu.ko actually opens is asked of the module rather than listed here:
+# modinfo reports its MODULE_FIRMWARE declarations, so a driver bump that adds
+# a name shows up as a missing file instead of going unnoticed.
 #
 # Scoped to gc_12_1_0 and sdma_7_1_0 only. rocm-xio's own assert also greps
 # "mes", which matches the gc_11 and gc_12_0 blobs that every release ships --
 # so that pattern can pass on a guest carrying no gfx1250 firmware at all.
+#
+# Two names are expected to be absent and are not a failure:
+#
+#   gc_12_1_0_imu.bin -- no driver release ships it, and the guest needs it:
+#     it is AMDGPU_UCODE_REQUIRED under the amdgpu.fw_load_type=0 the vfio
+#     boot uses. It comes from vfio_guest_firmware.py at the consumer's own
+#     rocjitsu pin, which is why it is not baked in here.
+#   gc_12_1_0_mes.bin, gc_12_1_0_mes1.bin -- only opened when amdgpu_uni_mes=0,
+#     which is not the default; uni_mes.bin covers the default path.
+#
+# Anything else missing is fatal. It means the firmware package stopped
+# carrying a blob the driver still opens, and a guest built that way fails in
+# amdgpu's early init with a firmware load error that names the file but not
+# the reason.
+EXPECTED_ABSENT='amdgpu/gc_12_1_0_imu.bin
+amdgpu/gc_12_1_0_mes.bin
+amdgpu/gc_12_1_0_mes1.bin'
 MISSING=$(modinfo -F firmware "${AMDGPU_KO}" |
     grep -E 'gc_12_1_0|sdma_7_1_0' |
     while read -r fw; do
         [ -n "${fw}" ] || continue
-        [ -e "/lib/firmware/${fw}" ] || [ -e "/lib/firmware/${fw}.xz" ] ||
-            echo "  ${fw}"
+        for dir in /lib/firmware/updates /lib/firmware; do
+            if [ -e "${dir}/${fw}" ] || [ -e "${dir}/${fw}.xz" ]; then
+                continue 2
+            fi
+        done
+        echo "${fw}"
     done)
-if [ -n "${MISSING}" ]; then
-    echo "note: firmware blobs amdgpu requests that this image does not carry:"
-    echo "${MISSING}"
-else
-    echo "note: every gfx1250 firmware blob this amdgpu.ko names is present"
+UNEXPECTED=$(printf '%s\n' "${MISSING}" | grep -vxF "${EXPECTED_ABSENT}" || true)
+if [ -n "${UNEXPECTED}" ]; then
+    echo "Error: amdgpu opens firmware this image does not carry:" >&2
+    echo "${UNEXPECTED}" | sed 's/^/  /' >&2
+    exit 1
 fi
+echo "note: gfx1250 firmware present from amdgpu-dkms-firmware; absent by design:"
+echo "${MISSING:-none}" | sed 's/^/  /'
 
 # Headroom for a rocm-xio build tree and a module build.
 test "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 20
