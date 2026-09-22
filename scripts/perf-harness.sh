@@ -282,11 +282,18 @@ extract_payload() {
     python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print("release",d["release"],"kernel",d["kernel_release"],"flavour",d.get("flavour",""))' "${info}"
     log "guest ${VM_NAME}, user ${SSH_USER}"
 
+    # ConnectTimeout bounds the TCP handshake; ServerAlive* bounds an
+    # established session that stops answering, which is what a guest that
+    # wedges mid-measurement looks like from here. Neither bounds the banner
+    # exchange -- see wait_for_ssh, which needs its own hard kill.
     SSH_OPTS=(-i "${SSH_KEY}" -p "${VM_SSH_PORT}"
               -o BatchMode=yes
               -o NoHostAuthenticationForLocalhost=yes
               -o StrictHostKeyChecking=no
               -o UserKnownHostsFile=/dev/null
+              -o ConnectTimeout=10
+              -o ServerAliveInterval=15
+              -o ServerAliveCountMax=4
               -o LogLevel=ERROR)
 }
 
@@ -341,7 +348,17 @@ start_guest() {
     log "waiting for guest SSH (up to ${BOOT_TIMEOUT}s)"
     local start elapsed=0
     start=$(date +%s)
-    until guest true 2>/dev/null; do
+    # `timeout`, not `guest`, and the difference is load-bearing. QEMU's slirp
+    # hostfwd accepts the connection on VM_SSH_PORT the moment the container
+    # starts, before a guest kernel exists -- so a guest that wedges after the
+    # port is forwarded but before sshd sends its banner leaves ssh blocked in
+    # the version exchange, which no ssh timeout option covers. The loop would
+    # then never recompute `elapsed`, BOOT_TIMEOUT would never fire, and the
+    # job would hang to the workflow's 150-minute wall without ever reaching
+    # the `compose logs` dump below. An amdgpu probe deadlock on the emulated
+    # gfx1250 is exactly that shape: the failure this lane exists to catch is
+    # the one that would otherwise silence it.
+    until timeout 20 ssh "${SSH_OPTS[@]}" "${SSH_USER}@localhost" true 2>/dev/null; do
         elapsed=$(( $(date +%s) - start ))
         [ "${elapsed}" -lt "${BOOT_TIMEOUT}" ] || {
             compose logs --no-color qemu
