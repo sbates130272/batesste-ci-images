@@ -64,3 +64,15 @@ command -v ib_send_bw ib_write_bw ib_read_bw ib_send_lat
 
 # Headroom for a kernel tree, rdma-core and the DKMS builds.
 test "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 20
+
+# The shipped netplan has to match the NIC by name, not by the MAC cloud-init
+# happened to see at creation. Three different MACs boot this one image:
+# gen-vm's first boot derives 52:54:00:00:08:ae from --ssh-port 2222, this
+# probe boot gets QEMU's default 52:54:00:12:34:56 because probe-guest.sh
+# passes no mac=, and the perf lane's run-vm is back to 08:ae. So any
+# macaddress: pin is wrong for at least one of them, and it surfaces as an
+# addressless NIC and an SSH timeout in a consumer's job rather than as
+# anything anyone can act on. qemu-tool writes the name match late in first
+# boot via cloud-init write_files defer; this asserts it landed.
+sudo -n grep -q 'name: *"\?en\*' /etc/netplan/50-cloud-init.yaml
+test -z "$(sudo -n grep -l macaddress /etc/netplan/*.yaml || true)"
