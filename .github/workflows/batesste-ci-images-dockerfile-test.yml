@@ -1,4 +1,4 @@
-name: Dockerfile Test
+name: batesste-ci-images-dockerfile-test
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -18,7 +18,7 @@ on:
       - 'requirements.txt'
       - 'compose/**'
       - 'common/**'
-      - '.github/workflows/dockerfile-test.yml'
+      - '.github/workflows/batesste-ci-images-dockerfile-test.yml'
   pull_request:
     branches: [ main, master ]
     paths:
@@ -32,7 +32,7 @@ on:
       - 'requirements.txt'
       - 'compose/**'
       - 'common/**'
-      - '.github/workflows/dockerfile-test.yml'
+      - '.github/workflows/batesste-ci-images-dockerfile-test.yml'
 
 # Layer cache and the intermediate base images both live in GHCR. The GitHub
 # Actions cache is capped at 10 GB per repository with LRU eviction, and
@@ -602,18 +602,24 @@ jobs:
   build-derived:
     name: Build ${{ matrix.target.key }}
     runs-on: ubuntu-latest
-    needs: [discover-images, build-bases, build]
-    # Same empty-matrix guard as the tier above. The needs.build check is
-    # spelled out because a skipped `build` would otherwise skip this job
-    # too, and "skipped" is a legitimate outcome here -- not every branch
-    # that rebuilds a guest rebuilds a matrix image as well.
-    if: >-
-      !cancelled() &&
-      needs.build.result != 'failure' &&
-      needs.discover-images.outputs.derived != '[]'
+    # Deliberately *not* `needs: build`. A derived target consumes exactly one
+    # base, named in its own matrix.target.base_scope, but a job-level `needs`
+    # cannot say "only that leg" -- so waiting on the whole matrix meant every
+    # guest waited on ubuntu-cuda-rocm, which no qcow2 flavour touches. On run
+    # 35758477053 that was 14 minutes of nothing, on a fully cached build. The
+    # "Wait for base image" step below gates each leg on its own base instead.
+    needs: [discover-images, build-bases]
+    # Same empty-matrix guard as the tier above. Base failure is no longer part
+    # of this expression: the wait step detects it for the one base that
+    # matters, so an unrelated matrix leg failing no longer cancels a guest
+    # build that never needed it.
+    if: needs.discover-images.outputs.derived != '[]'
     permissions:
       contents: read
       packages: write
+      # The wait step reads this run's job list to tell "base still building"
+      # from "base already failed".
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -727,6 +733,48 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
+
+      # Everything above is this leg's own setup and runs while the base is
+      # still building; only the build itself needs the base, so the wait goes
+      # here rather than at the top of the job.
+      #
+      # Poll the ref, not the job: the push is what this build consumes, and it
+      # lands before the producing job has finished its own per-image checks.
+      # The loop terminates because target selection closes *upwards* over
+      # `base:` -- a run that selects a derived target always selects its base
+      # into the matrix too. See the path-filter section of the README.
+      - name: Wait for base image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ steps.base.outputs.ref }}
+          BASE_SCOPE: ${{ matrix.target.base_scope }}
+        run: |
+          set -uo pipefail
+          # A base is always a non-variant target, so its scope is its key and
+          # the producing job is named "Build <scope>".
+          JOB="Build ${BASE_SCOPE}"
+          for _ in $(seq 1 120); do
+            if docker buildx imagetools inspect "$REF" > /dev/null 2>&1; then
+              echo "base ready: ${REF}"
+              exit 0
+            fi
+            # Bail out rather than sit out the full hour if the base is never
+            # coming. A job still running reports a null conclusion.
+            concl=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" \
+              --paginate \
+              -q ".jobs[] | select(.name == \"${JOB}\") | .conclusion" \
+              2>/dev/null || true)
+            case "$concl" in
+              failure|cancelled|timed_out)
+                echo "::error::base job '${JOB}' ended: ${concl}"
+                exit 1
+                ;;
+            esac
+            sleep 30
+          done
+          echo "::error::timed out waiting for ${REF}"
+          exit 1
 
       # BASE_IMAGE_<SCOPE> is the dependant-keyed override, so the env var
       # name has to be built from the target rather than written out. That

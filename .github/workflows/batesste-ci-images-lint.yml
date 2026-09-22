@@ -1,4 +1,4 @@
-name: Lint
+name: batesste-ci-images-lint
 
 on:
   push:

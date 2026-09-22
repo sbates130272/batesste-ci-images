@@ -8,7 +8,7 @@
 # one guest against both sockets is what used to reduce the ernic result to a
 # device-enumeration count. See the header of compose/perf-stack.yml.
 #
-# Separate from dockerfile-test.yml on purpose. That workflow answers "does
+# Separate from the dockerfile-test workflow on purpose. That one answers "does
 # each image build, and does it pass its own checks"; this one answers "do
 # five of them work together", which is a question no single image's checks
 # can ask -- ubuntu-qcow2-gen's probe boot has no vfio-user device at all, so
@@ -30,18 +30,20 @@
 # The measurements land on gh-pages as a trend site plus shields.io endpoint
 # JSON that the README badges read.
 
-name: Integration & Performance
+name: batesste-ci-images-integration-perf
 
 on:
-  # After Release, not after Dockerfile Test. Dockerfile Test builds every
-  # image and pushes nothing to Docker Hub -- its matrix and derived tiers are
-  # `push: false`, and the only refs it writes are the per-SHA GHCR base
-  # images the next job in that same run consumes. Docker Hub publication
-  # happens in release.yml on a `v*` tag. Triggering off the build would mean
+  # After the release workflow, not after the dockerfile-test one. That builds
+  # every image and pushes nothing to Docker Hub -- its matrix and derived
+  # tiers are `push: false`, and the only refs it writes are the per-SHA GHCR
+  # base images the next job in that same run consumes. Docker Hub publication
+  # happens on a `v*` tag. Triggering off the build would mean
   # resolving a pinned Docker Hub tag on the very commit that moved the pin,
   # which is exactly when it does not exist yet.
   workflow_run:
-    workflows: ["Release"]
+    # Matched by workflow *name*, not filename, so this has to move whenever
+    # the release workflow's `name:` does.
+    workflows: ["batesste-ci-images-release"]
     types: [completed]
   # Nightly, so the trend has points even in a quiet week and so a regression
   # that comes from a moving upstream apt repository rather than from a commit

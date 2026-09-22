@@ -1,4 +1,4 @@
-name: Version Scrub
+name: batesste-ci-images-version-scrub
 
 on:
   schedule:
