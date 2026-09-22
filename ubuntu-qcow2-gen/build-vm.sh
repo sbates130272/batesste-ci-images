@@ -50,6 +50,8 @@ FINAL_KERNEL_REF="${KERNEL_REF:-}"
 FINAL_AMDGPU_DRIVER_VERSION="${AMDGPU_DRIVER_VERSION:-latest}"
 # Likewise read only by a provision script that stamps the guest's rdma-core.
 FINAL_RDMA_CORE_VERSION="${RDMA_CORE_VERSION:-}"
+# Empty means the flavour installs no fio; see the var's note in images.yml.
+FINAL_FIO_COMMIT="${FIO_COMMIT:-}"
 KERNEL_VERSION=$(uname -r)
 
 echo "=== Guest Image Build Configuration ==="
@@ -69,6 +71,7 @@ echo "VM_PLAYBOOK: ${FINAL_PLAYBOOK:-none}"
 echo "KERNEL_REF: ${FINAL_KERNEL_REF:-none (release kernel)}"
 echo "AMDGPU_DRIVER_VERSION: ${FINAL_AMDGPU_DRIVER_VERSION}"
 echo "RDMA_CORE_VERSION: ${FINAL_RDMA_CORE_VERSION:-none}"
+echo "FIO_COMMIT: ${FINAL_FIO_COMMIT:-none (no fio in the guest)}"
 
 command -v qemu-tool > /dev/null || {
     echo "Error: qemu-tool not installed!"
@@ -247,6 +250,7 @@ RELEASE='${FINAL_RELEASE}'
 USERNAME='${FINAL_USERNAME}'
 AMDGPU_DRIVER_VERSION='${FINAL_AMDGPU_DRIVER_VERSION}'
 RDMA_CORE_VERSION='${FINAL_RDMA_CORE_VERSION}'
+FIO_COMMIT='${FINAL_FIO_COMMIT}'
 EOF
     cat "${PROVISION}" >> "${PROV}"
     echo "Provisioning the guest with provision/${PROVISION_NAME}"

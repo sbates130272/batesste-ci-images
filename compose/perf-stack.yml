@@ -1,0 +1,149 @@
+---
+# Integration and performance stack: one vfio-user server, one guest booted
+# against it, and whatever else that pairing needs.
+#
+# TWO PHASES, ONE FILE
+#   The harness runs this twice, because the two devices want two different
+#   guests and no single qcow2 flavour carries both:
+#
+#     rocjitsu   ubuntu-qcow2-gen@rocjitsu -- ROCm, hipcc, amdgpu-dkms and an
+#                fio with the libhipfile ioengine, plus an emulated NVMe
+#                namespace. Measures GEMM and the storage path into GPU memory.
+#
+#     ernic      ubuntu-qcow2-gen@ionic -- a 6.18 kernel with the in-tree
+#                ionic and ionic_rdma modules, rdma-core's ionic provider and
+#                perftest. Measures S3 over RDMA against the emulator's own
+#                object store.
+#
+#   Booting one guest against both sockets is what this file used to do, and
+#   it is why the ernic number was an enumeration count rather than a
+#   bandwidth: the rocjitsu guest has no RDMA driver, so the device appeared
+#   on the bus and registered no ibv device. Two boots is the honest shape.
+#
+#   Services are started by name rather than by profile, so `qemu` carries no
+#   depends_on: the harness brings the server up, waits for its healthcheck,
+#   and only then starts the guest. Everything that differs between the two
+#   phases -- the guest disk, the guest name, the NVMe count, the backend the
+#   ernic server serves -- comes from the .env the harness rewrites in between.
+#
+# This is also the qualification boot that ubuntu-qcow2-gen's rocjitsu flavour
+# cannot do at build time. Its probe boot has no vfio-user device, so it can
+# only assert that the right driver is installed for the booted kernel -- not
+# that the emulated GPU comes up. See the "Open" section of
+# ubuntu-qcow2-gen/consumers/rocm-xio-rocjitsu.md, which this stack closes.
+#
+# Distinct from docker-compose.yml next door, which is the socket-level smoke
+# test: that one asserts three containers start and put sockets on a shared
+# volume, and never boots a guest against them. This one boots the guest,
+# binds a driver to the emulated device and measures it.
+#
+# Driven by scripts/perf-harness.sh; the environment below comes from the .env
+# that script writes. Nothing here has a default that would let it come up
+# half-configured -- a stack missing its guest disk should fail at "up", not
+# thirty minutes into a measurement.
+
+x-vfu-server: &vfu-server
+  volumes:
+    - vfu-sockets:/run/vfu
+  # A vfio-user server exits when its QEMU client disconnects. Restarting
+  # means a re-run of the harness gets a clean server rather than a stale
+  # socket, and qemu's depends_on waits for the new one.
+  restart: on-failure
+
+services:
+  ernic:
+    <<: *vfu-server
+    image: "${ERNIC_IMAGE:?ERNIC_IMAGE must be set to a pinned tag}"
+    # The backend is the whole difference between "a NIC exists" and "an
+    # object fabric exists". s3:... makes the emulator terminate an HTTP
+    # control plane on the emulated NIC itself and serve object bytes straight
+    # into registered guest memory by RDMA -- one guest, one server, no peer
+    # and no TAP. That is the loopback deployment rocm-ernic's own s3 lane
+    # runs, and it is what lets a single-guest stack measure RDMA bandwidth at
+    # all. See scripts/perf-harness.sh for the address it answers on.
+    command:
+      - rocm-ernic
+      - --socket
+      - /run/vfu/ernic-1.sock
+      - --backend
+      - "${ERNIC_BACKEND:?ERNIC_BACKEND must be set; see perf-harness.sh}"
+      - --verbose
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test -S /run/vfu/ernic-1.sock"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  rocjitsu:
+    <<: *vfu-server
+    image: "${ROCJITSU_IMAGE:?ROCJITSU_IMAGE must be set to a pinned tag}"
+    # gfx1250 is the only target with an IP discovery profile upstream, so it
+    # is the only config rocjitsu can serve over vfio-user; anything else
+    # logs "no IP discovery profile" and exits 1.
+    command:
+      - rocjitsu
+      - --config
+      - "/usr/local/share/rocjitsu/configs/${ROCJITSU_CONFIG:-gfx1250_mi455x.json}"
+      - --vfio-socket
+      - /run/vfu/rocjitsu-1.sock
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test -S /run/vfu/rocjitsu-1.sock"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  qemu:
+    image: "${QEMU_IMAGE:?QEMU_IMAGE must be set to a pinned tag}"
+    # No depends_on: which server this guest is booted against is a phase
+    # decision the harness makes, and naming both here would start both.
+    volumes:
+      - vfu-sockets:/run/vfu:ro
+      - "${VM_IMAGES_DIR:?VM_IMAGES_DIR must be set}:${VM_IMAGES_DIR}"
+    devices:
+      - /dev/kvm
+    # The vfio-user servers reach guest RAM through a shared memfd, so the
+    # container's /dev/shm has to be at least as large as the guest.
+    shm_size: "${VM_SHM_SIZE:-12g}"
+    ports:
+      - "${VM_SSH_PORT:-2222}:2222"
+    # The image's own entrypoint.sh builds a fixed qemu-system command line
+    # and attaches at most one vfio-user socket, so it is replaced rather than
+    # passed arguments. qemu-tool is what gives us two devices and --nvme.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        socks=""
+        i=0
+        while [ "$$i" -lt 30 ]; do
+          socks=$$(ls /run/vfu/*.sock 2>/dev/null | sort | tr '\n' ',' | sed 's/,$$//')
+          [ -n "$$socks" ] && break
+          i=$$((i + 1))
+          sleep 2
+        done
+        if [ -z "$$socks" ]; then
+          echo "ERROR: no vfio-user sockets under /run/vfu" >&2
+          exit 1
+        fi
+        echo "attaching vfio-user devices: $$socks"
+        exec qemu-tool run-vm \
+          --images "${VM_IMAGES_DIR}" \
+          --vm-name "${VM_NAME:?VM_NAME must match the payload's vm-info.json}" \
+          --vcpus "${VM_VCPUS:-4}" \
+          --vmem "${VM_VMEM:-8192}" \
+          --ssh-port 2222 \
+          --kvm \
+          --vfio-userdev "$$socks" \
+          --nvme "${VM_NVME_COUNT:-1}"
+
+volumes:
+  # tmpfs rather than a plain local volume: these are Unix sockets, whose path
+  # length is what decides whether bind() succeeds, and nothing in them is
+  # worth surviving a teardown.
+  vfu-sockets:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs

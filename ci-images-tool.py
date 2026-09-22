@@ -238,6 +238,7 @@ class Spec:
     workdir: Path
     badges: dict = field(default_factory=dict)
     prune: dict = field(default_factory=dict)
+    path_filter: dict = field(default_factory=dict)
     overlay: Path | None = None
 
     @property
@@ -325,6 +326,7 @@ def load_spec(workdir: Path) -> Spec:
         images=data.get("images") or {},
         badges=data.get("badges") or {},
         prune=data.get("prune") or {},
+        path_filter=data.get("path_filter") or {},
         workdir=workdir,
         overlay=applied,
     )
@@ -635,6 +637,126 @@ def export_payload(dest: Path, staging: Path) -> None:
     os.replace(src, dest)
     if staging.exists():
         shutil.rmtree(staging)
+
+
+def path_matches(pattern: str, path: str) -> bool:
+    """Glob a repo-relative path, with ``**`` spanning directory separators.
+
+    fnmatch alone will not do: its ``*`` already crosses ``/``, so
+    ``ubuntu-base/*`` would match ``ubuntu-base/a/b`` and a pattern could
+    never be anchored to one directory level. PurePath.match will not either
+    -- it anchors from the right, so ``common/**`` matches nothing useful.
+    """
+
+    # NUL stands in for ** while the single-star substitution runs, so the
+    # latter cannot chew through the former one star at a time.
+    regex = (
+        re.escape(pattern)
+        .replace(r"\*\*", "\0")
+        .replace(r"\*", "[^/]*")
+        .replace("\0", ".*")
+        .replace(r"\?", "[^/]")
+    )
+    return re.fullmatch(regex, path) is not None
+
+
+def target_paths(cfg: Config, target: Target) -> list[str]:
+    """Globs whose change means this target must be rebuilt.
+
+    Defaults to the image's own directory, which is the honest answer for
+    every image here: the Dockerfile, its entrypoint, its packages and its
+    checks all live under it. ``context_dirs`` is folded in because a target
+    that bind-mounts a directory into its build context is built from it just
+    as much as from its Dockerfile.
+
+    A ``paths:`` on the image or the variant replaces the default outright
+    rather than extending it -- a list that is merged is a list nobody can
+    narrow, and narrowing is the whole point of declaring one.
+    """
+
+    declared = target_attr(cfg, target, "paths", None)
+    if declared:
+        return [str(p) for p in declared]
+
+    globs = [f"{target.image}/**"]
+    for extra in target_attr(cfg, target, "context_dirs", []) or []:
+        globs.append(f"{str(extra).rstrip('/')}/**")
+    return globs
+
+
+def read_changed_paths(source: str) -> list[str]:
+    """Repo-relative paths, one per line, from a file or ``-`` for stdin.
+
+    A file rather than repeated flags because the caller is ``git diff
+    --name-only``, whose output on a wide branch is longer than a command
+    line wants to be and whose paths can contain almost anything.
+    """
+
+    if source == "-":
+        text = sys.stdin.read()
+    else:
+        try:
+            text = Path(source).read_text()
+        except OSError as exc:
+            console.print(f"[red]Error:[/] cannot read changed-path list: {exc}")
+            sys.exit(1)
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def changed_targets(
+    cfg: Config, targets: list[Target], changed: list[str]
+) -> list[Target]:
+    """The subset of *targets* that *changed* affects, base closure included.
+
+    Two things make this more than a glob match. A path in the spec's
+    ``path_filter.always`` list -- images.yml, this file, the workflow -- can
+    change what *any* image builds, so it selects everything rather than
+    guessing. And a rebuilt base invalidates everything layered on it, which
+    is why the closure below runs over base_target rather than trusting each
+    image's own globs: ubuntu-cuda-rocm-fio declares no interest in
+    ubuntu-cuda-rocm/, but a change there is still a change to its base layer.
+    """
+
+    always = [str(p) for p in (cfg.spec.path_filter.get("always") or [])]
+    for path in changed:
+        if any(path_matches(glob, path) for glob in always):
+            return list(targets)
+
+    selected = {
+        t
+        for t in targets
+        if any(path_matches(g, p) for g in target_paths(cfg, t) for p in changed)
+    }
+
+    # Descendants: a rebuilt base invalidates everything on top of it.
+    # Iterate to a fixed point, because a three-deep chain (ubuntu-base ->
+    # ubuntu-qemu-libvfio-user -> ubuntu-qcow2-gen) needs the newly selected
+    # middle to pull in the leaf, which one pass over the list cannot do.
+    known = set(targets)
+    while True:
+        grew = {
+            t
+            for t in known - selected
+            if (base := base_target(cfg, t)) is not None and base in selected
+        }
+        if not grew:
+            break
+        selected |= grew
+
+    # Ancestors, for a reason that is about CI rather than about layering: the
+    # derived job resolves its base as <registry>:<base_scope>-<run sha>, a tag
+    # only this run's matrix job pushes. Select ubuntu-qcow2-gen without
+    # ubuntu-qemu-libvfio-user and that ref simply does not exist, so the job
+    # fails on a pull the filter is what caused to be necessary. Rebuilding the
+    # base is nearly free off the registry layer cache; guessing which older
+    # tag to fall back to would not be.
+    for t in list(selected):
+        base = base_target(cfg, t)
+        while base is not None and base in known:
+            selected.add(base)
+            base = base_target(cfg, base)
+
+    return [t for t in targets if t in selected]
 
 
 def base_target(cfg: Config, target: Target) -> Target | None:
@@ -1733,8 +1855,22 @@ def cmd_targets(args: argparse.Namespace) -> None:
     """
 
     cfg = load_config(env_file=args.env_file)
+
+    # Filtering runs over every target, not over the job slice: the closure
+    # has to see ubuntu-cuda-rocm (job: matrix) to decide that
+    # ubuntu-cuda-rocm-fio (job: derived) is affected, and slicing first would
+    # hide exactly that edge.
+    targets = discover_targets(cfg)
+    if args.changed_from:
+        changed = read_changed_paths(args.changed_from)
+        targets = changed_targets(cfg, targets, changed)
+        err_console.print(
+            f"[cyan]note:[/] {len(changed)} changed path(s) select "
+            f"{len(targets)} of {len(discover_targets(cfg))} target(s)"
+        )
+
     rows = []
-    for t in discover_targets(cfg):
+    for t in targets:
         job = str(target_attr(cfg, t, "job", "matrix"))
         if args.job and job != args.job:
             continue
@@ -3574,6 +3710,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Emit a JSON array for a GitHub Actions matrix",
+    )
+    p_targets.add_argument(
+        "--changed-from",
+        metavar="FILE",
+        help=(
+            "Only targets affected by the repo-relative paths in FILE "
+            "(one per line, '-' for stdin), plus everything layered on them"
+        ),
     )
     _add_common_args(p_targets)
 
