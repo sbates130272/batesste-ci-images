@@ -229,3 +229,5 @@ GETs
 PUTs
 loopback
 hipFile's
+allowlist
+kvdev

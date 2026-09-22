@@ -10,6 +10,7 @@
 # Usage:
 #   entrypoint.sh            serve until killed (the default)
 #   entrypoint.sh --probe    configure, assert the socket appeared, tear down
+#   entrypoint.sh --kv-check --probe plus a KV round trip over the socket
 #   entrypoint.sh <cmd> ...  run something else in this image (rpc.py, bash)
 #
 
@@ -37,8 +38,13 @@ die() { echo "[spdk-vfu] ERROR: $*" >&2; exit 1; }
 rpc() { python3 "${SPDK_DIR}/scripts/rpc.py" -s "${SPDK_RPC_SOCK}" "$@"; }
 
 PROBE=0
+KV_CHECK=0
 case "${1:-}" in
     --probe) PROBE=1; shift ;;
+    # A superset of --probe, kept as its own flag because --probe asserts only
+    # what the target was configured with: it never attaches a host, so it
+    # passes on a build that serves a KV namespace no host can actually use.
+    --kv-check) PROBE=1; KV_CHECK=1; shift ;;
     "")      ;;
     # Anything else is a command to run in this image instead of the target.
     *)       exec "$@" ;;
@@ -274,6 +280,16 @@ print("[spdk-vfu] target reports %d LBA + %d KV namespace(s), nsid map %s"
 if got != want:
     sys.exit(f"expected nsid map {want}, got {got}")
 ' "${NQN}" "${ns_map}"
+    if [ "${KV_CHECK}" -eq 1 ]; then
+        # The data path, not just the configuration: this attaches a host over
+        # the same socket a guest would use and round-trips a key through the
+        # KV command set. Refused rather than skipped when no KV namespace was
+        # asked for, because a --kv-check that quietly passes on an LBA-only
+        # config proves nothing it was run to prove.
+        [ "${kv_count}" -gt 0 ] || \
+            die "--kv-check needs a KV namespace: NVME_NAMESPACES=${NVME_NAMESPACES} has none"
+        kv-smoke "${VFIO_USER_SOCKET_DIR}"
+    fi
     log "probe OK"
     exit 0
 fi

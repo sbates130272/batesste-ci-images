@@ -487,6 +487,8 @@ jobs:
             bash -lc '
               set -e
               which nvmf_tgt
+              which kv-host
+              which kv-smoke
               rpc.py --help > /dev/null
               cat /usr/local/share/spdk-commit.txt
               cat /usr/local/share/libvfio-user-commit.txt
@@ -521,6 +523,12 @@ jobs:
               test -f /tmp/ns.img
               rpc.py nvmf_get_subsystems > /tmp/subsystems.json
               python3 -c "import json;subs=[s for s in json.load(open(\"/tmp/subsystems.json\")) if s[\"nqn\"]==\"nqn.2019-07.io.spdk:cnode1\"];got={n[\"nsid\"]:(\"kv\" if \"kvdev_name\" in n else \"lba\") for n in subs[0][\"namespaces\"]};print(\"nsid map\",got);assert got=={1:\"lba\",2:\"lba\",3:\"kv\"},got"
+              # Everything above this line is target-side: it would pass on a
+              # build whose KV namespace no host can reach. kv-smoke attaches
+              # over the socket and round-trips a key, which is the only check
+              # here that covers the KV command set end to end.
+              kv-smoke
+              rpc.py kvdev_mem_get_entry KvMem0 kvkey01
               echo "SPDK vfio-user target is serving (PID ${SERVER_PID})"
               kill ${SERVER_PID}
               wait ${SERVER_PID} || true

@@ -110,8 +110,8 @@ docker run --rm \
   docker.io/sbates130272/batesste-ci-images-ubuntu-spdk-libvfio-user:latest
 ```
 
-Any argument other than `--probe` is run instead of the target, so the image
-doubles as its own client:
+Any argument other than `--probe` or `--kv-check` is run instead of the target,
+so the image doubles as its own client:
 
 ```bash
 docker exec <container> rpc.py nvmf_get_subsystems
@@ -137,6 +137,49 @@ docker run --rm \
 
 Exit 0 means the target really built what was requested, rather than that the
 RPC calls returned success.
+
+### Checking the KV data path
+
+Every check above is target-side: they say what the target was configured with,
+not whether a host can drive it. `kv-smoke` closes that gap. It attaches over
+the same vfio-user socket a guest would use, finds the first namespace whose
+command set identifier is KV, and round-trips a key through Store, Retrieve,
+Exist, Delete and List, then asserts KV Exec is refused for an op-ID no
+allowlist names:
+
+```bash
+docker exec <container> kv-smoke
+```
+
+The work is done by the fork's own `test/nvmf/kv/kv_host`, installed here as
+`kv-host` — the image builds it (upstream `make` does not build `test/`) and
+patches in a `--no-huge` path it otherwise lacks, because a container gets no
+hugepages unless it is privileged. See `kv-host-no-huge.patch`.
+
+Two things to know before running it. **libvfio-user serves one client at a
+time**, so it cannot attach to a socket a guest already holds — stop the guest
+first. And it **writes its own keys into the KV namespace it finds**
+(`kvkey01`, `alpha`, `bravo`, `charlie`, `delta`), so it is a smoke test, not a
+read-only inspection.
+
+`--kv-check` is `--probe` plus this round trip in one run, for a configuration
+you are about to deploy rather than one already serving. It is what the image
+build runs, and it fails rather than passes if `NVME_NAMESPACES` names no KV
+namespace:
+
+```bash
+docker run --rm \
+  -e NVME_NAMESPACES='kv:mem' \
+  docker.io/sbates130272/batesste-ci-images-ubuntu-spdk-libvfio-user:latest \
+  --kv-check
+```
+
+This is the first thing to run when a guest reports that KV I/O fails, because
+it splits the question in two. If `kv-smoke` passes, the target, the kvdev and
+the KV command set are all working and the fault is above the socket — most
+often the wrong NSID (see below), the wrong controller, or a guest that never
+enumerated the namespace. If it fails, the fault is at or below the socket and
+the output names the phase that broke.
 
 ### Namespace grammar
 
@@ -166,6 +209,16 @@ Addressing the right NSID is the host's problem and it is not a safe one to get
 wrong: KV Store and Retrieve are opcodes 0x01 and 0x02, the same numbers as
 block Write and Read. A KV command sent to an LBA namespace is not rejected —
 it executes as a block write, with the key dwords interpreted as LBA fields.
+With the default `NVME_NAMESPACES` the KV namespace is NSID **2**, not 1.
+
+A Linux guest will not hand you the answer either: it enumerates no block
+device for a KV namespace, so `/dev/nvmeXnY` exists only for the LBA ones and
+KV traffic has to go through a passthrough ioctl naming the NSID itself. A
+completion carrying status `0x0b` (Invalid Namespace or Format) means that NSID
+is not present on the controller the command reached — the KV command set's own
+failures are `0x85`–`0x89` (invalid value size, invalid key size, key does not
+exist, …). So `0x0b` is a question about which namespace and which controller,
+not about KV; `kv-smoke` above settles whether the target side works at all.
 
 ### Value size
 
