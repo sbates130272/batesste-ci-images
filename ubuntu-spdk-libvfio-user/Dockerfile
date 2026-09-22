@@ -102,11 +102,30 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     PATH=/usr/lib/ccache:${PATH} make -j"$(nproc)" && \
     test -x "${SPDK_DIR}/build/bin/nvmf_tgt"
 
+# The fork ships a KV initiator -- test/nvmf/kv/kv_host, which attaches over
+# vfio-user and drives a Store/Retrieve/Exist/Delete/List round trip -- but
+# `make` above does not build test/, so the source sat in the image unusable.
+# Building it is what lets a KV fault be split into "below the socket" and
+# "above the socket" without standing up a guest; see kv-smoke.sh.
+#
+# The patch teaches it --no-huge, which it has no argument for and which a
+# container normally needs. `make -C` and not a full test build: this directory
+# is the only part of test/ that has a use here, and the rest drags in tooling
+# the image deliberately lacks.
+COPY ubuntu-spdk-libvfio-user/kv-host-no-huge.patch /build/kv-host-no-huge.patch
+# hadolint ignore=DL3003
+RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
+    cd "${SPDK_DIR}" && \
+    git apply /build/kv-host-no-huge.patch && \
+    PATH=/usr/lib/ccache:${PATH} make -C test/nvmf/kv && \
+    test -x "${SPDK_DIR}/test/nvmf/kv/kv_host"
+
 # No `make install`: SPDK installs its libraries and headers but not nvmf_tgt,
 # and the RPC scripts expect to sit inside the tree. Symlink what callers need
 # onto PATH and leave the tree where it is.
 RUN ln -sf "${SPDK_DIR}/build/bin/nvmf_tgt" /usr/local/bin/nvmf_tgt && \
     ln -sf "${SPDK_DIR}/scripts/rpc.py" /usr/local/bin/rpc.py && \
+    ln -sf "${SPDK_DIR}/test/nvmf/kv/kv_host" /usr/local/bin/kv-host && \
     cp /build/spdk-commit.txt /usr/local/share/spdk-commit.txt && \
     cp /build/libvfio-user-commit.txt \
         /usr/local/share/libvfio-user-commit.txt && \
@@ -119,7 +138,8 @@ RUN ln -sf "${SPDK_DIR}/build/bin/nvmf_tgt" /usr/local/bin/nvmf_tgt && \
   "configure_flags": ["--with-vfio-user", "--without-nvme-cuse",\n\
                       "--target-arch=corei7"],\n\
   "rbd_enabled": false,\n\
-  "kv_backends": ["mem"]\n\
+  "kv_backends": ["mem"],\n\
+  "kv_smoke": "kv-smoke"\n\
 }\n' \
         "${SPDK_REPO}" \
         "${SPDK_BRANCH}" \
@@ -136,7 +156,10 @@ ENV NVME_NAMESPACES="lba:malloc:512M,kv:mem" \
     SPDK_MEM_SIZE=1024
 
 COPY ubuntu-spdk-libvfio-user/entrypoint.sh /build/entrypoint.sh
-RUN chmod +x /build/entrypoint.sh
+# Straight onto PATH rather than into /build: this one is meant to be reached
+# with `docker exec <container> kv-smoke` against a target already running.
+COPY ubuntu-spdk-libvfio-user/kv-smoke.sh /usr/local/bin/kv-smoke
+RUN chmod +x /build/entrypoint.sh /usr/local/bin/kv-smoke
 
 # rpc.py finds its spdk package relative to __file__, which resolves to
 # /usr/local/bin through the symlink above -- so `docker exec <c> rpc.py ...`
@@ -152,6 +175,11 @@ ENV PATH=/usr/local/bin:${PATH} \
 # the rocjitsu image takes, and it is the step that catches a fork whose RPC
 # names have moved under us.
 #
+# --kv-check and not --probe: the configuration checks above are all
+# target-side, so they would pass on a build whose KV namespace no host can
+# reach. This attaches kv-host over the socket and round-trips a key, which is
+# the only assertion here that covers the command set end to end.
+#
 # No hugepages exist inside a BuildKit step, so this exercises the --no-huge
 # fallback path specifically; SPDK_HUGE=auto would pick it anyway. The rpc.py
 # --help first is not redundant with the entrypoint's own RPC calls: it is the
@@ -163,7 +191,7 @@ RUN set -eux; \
     VFIO_USER_SOCKET_DIR=/tmp/probe-sockets \
     SPDK_HUGE=off \
     SPDK_MEM_SIZE=512 \
-    /build/entrypoint.sh --probe; \
+    /build/entrypoint.sh --kv-check; \
     rm -rf /tmp/probe-ns.img /tmp/probe-sockets
 
 ENTRYPOINT ["/build/entrypoint.sh"]

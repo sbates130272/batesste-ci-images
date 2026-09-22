@@ -1,0 +1,36 @@
+Teach the fork's KV host to run without hugepages.
+
+test/nvmf/kv/kv_host.c is driven upstream by kv_vfio_user.sh, which runs inside
+SPDK's own test environment where scripts/setup.sh has already reserved
+hugepages. A container gets none unless it is privileged or /dev/hugepages is
+mounted with pages reserved -- the same case entrypoint.sh's --no-huge fallback
+exists for -- and kv_host takes no EAL arguments, so it dies at DPDK init
+before it ever reaches the vfio-user socket.
+
+Driven by an environment variable rather than a new argv option: argv is
+positional in kv_host (<socket-dir> [reject|allow|rados-exec]) and adding a
+flag there would diverge from the fork's own driver scripts. With the variable
+unset the binary behaves exactly as it does upstream, so this cannot change
+what the fork's tests exercise.
+
+Retire this patch when the fork grows a --no-huge of its own; `git apply` fails
+loudly if the context moves, which is the signal to come back here.
+
+--- a/test/nvmf/kv/kv_host.c
++++ b/test/nvmf/kv/kv_host.c
+@@ -193,6 +193,15 @@
+ 	opts.opts_size = sizeof(opts);
+ 	spdk_env_opts_init(&opts);
+ 	opts.name = "kv_host";
++	/* batesste-ci-images: no hugepages in a plain container. */
++	if (getenv("KV_HOST_NO_HUGE") != NULL) {
++		const char *mem_size = getenv("KV_HOST_MEM_SIZE");
++		int mem_mib = mem_size != NULL ? spdk_strtol(mem_size, 10) : -1;
++
++		opts.no_huge = true;
++		opts.mem_size = mem_mib > 0 ? mem_mib : 256;
++	}
++
+ 	if (spdk_env_init(&opts) < 0) {
+ 		fprintf(stderr, "Unable to initialize SPDK env\n");
+ 		return 1;

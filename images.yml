@@ -106,9 +106,9 @@ prune:
   protect: []
 
 # Which changed files rebuild which image, for `targets --changed-from`.
-# dockerfile-test.yml hands it the branch's changed paths and builds only the
-# targets that come back, instead of rebuilding all thirteen because one
-# Dockerfile moved.
+# The dockerfile-test workflow hands it the branch's changed paths and builds
+# only the targets that come back, instead of rebuilding all thirteen because
+# one Dockerfile moved.
 #
 # An image needs nothing here: the default is its own directory (plus any
 # context_dirs), which is the honest answer for all of them. Declare `paths:`
@@ -129,7 +129,7 @@ path_filter:
     - images.yml
     - ci-images-tool.py
     - requirements.txt
-    - .github/workflows/dockerfile-test.yml
+    - .github/workflows/batesste-ci-images-dockerfile-test.yml
     # compose/ belongs here rather than on an image, because the only job that
     # exercises the stack -- test-compose -- requires four targets to have been
     # selected, and a compose-only diff selects none of them. Leave it out and a
@@ -475,7 +475,7 @@ images:
       # ubuntu-qcow2-gen -- the ansible/ tree its guest builds are driven by, so
       # the CLI and the playbooks always come from one commit.
       qemu_minimal_repo: https://github.com/sbates130272/qemu-minimal.git
-      qemu_minimal_commit: 63cc0bcc4c44b881bec9226c2880577cbea05a0f
+      qemu_minimal_commit: 724324f0c9cf0cc1b51c5594a47c1b60cc049dbb
       # Provenance only, and empty here: the default target builds a release
       # tag, which belongs to no branch. A fork variant fills it in and the
       # label appears only there.
@@ -502,12 +502,12 @@ images:
         # A SHA, not the branch name: the branch is rebased and force-pushed as
         # the series is reworked upstream, so a branch pin silently rebuilds a
         # different QEMU and the tag it publishes never changes. This commit is
-        # the head of dev/stephen/pci-mmio-bridge-submit as of 2026-09-16.
+        # the head of dev/stephen/pci-mmio-bridge-submit as of 2026-09-22.
         # version-scrub.sh must not touch it -- it tracks QEMU releases, and
         # this is not one.
         vars:
           qemu_repo: https://github.com/sbates130272/qemu.git
-          qemu_commit: 7794baafe95677c0aa0bf5356f3ae1813391ba55
+          qemu_commit: d757fa6cb3072fe1f2fc5767e9a76a298d4c7635
           qemu_branch: dev/stephen/pci-mmio-bridge-submit
 
   # Guest qcow2 images. One parameterised Dockerfile, one repository per

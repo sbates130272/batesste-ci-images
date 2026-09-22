@@ -1,4 +1,4 @@
-name: Spell Check
+name: batesste-ci-images-spell-check
 
 on:
   workflow_dispatch:

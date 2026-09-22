@@ -59,7 +59,7 @@ STATUS_END = "<!-- END BUILD STATUS -->"
 
 # The workflow whose per-target jobs the table reports, and the branch and
 # event that identify a release build of them.
-STATUS_WORKFLOW = "dockerfile-test.yml"
+STATUS_WORKFLOW = "batesste-ci-images-dockerfile-test.yml"
 STATUS_BRANCH = "main"
 STATUS_EVENT = "push"
 # job: bases builds ubuntu-base and ubuntu-libvfio-user together, so those two

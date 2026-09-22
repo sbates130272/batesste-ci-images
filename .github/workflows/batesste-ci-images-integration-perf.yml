@@ -8,7 +8,7 @@
 # one guest against both sockets is what used to reduce the ernic result to a
 # device-enumeration count. See the header of compose/perf-stack.yml.
 #
-# Separate from dockerfile-test.yml on purpose. That workflow answers "does
+# Separate from the dockerfile-test workflow on purpose. That one answers "does
 # each image build, and does it pass its own checks"; this one answers "do
 # five of them work together", which is a question no single image's checks
 # can ask -- ubuntu-qcow2-gen's probe boot has no vfio-user device at all, so
@@ -30,18 +30,20 @@
 # The measurements land on gh-pages as a trend site plus shields.io endpoint
 # JSON that the README badges read.
 
-name: Integration & Performance
+name: batesste-ci-images-integration-perf
 
 on:
-  # After Release, not after Dockerfile Test. Dockerfile Test builds every
-  # image and pushes nothing to Docker Hub -- its matrix and derived tiers are
-  # `push: false`, and the only refs it writes are the per-SHA GHCR base
-  # images the next job in that same run consumes. Docker Hub publication
-  # happens in release.yml on a `v*` tag. Triggering off the build would mean
+  # After the release workflow, not after the dockerfile-test one. That builds
+  # every image and pushes nothing to Docker Hub -- its matrix and derived
+  # tiers are `push: false`, and the only refs it writes are the per-SHA GHCR
+  # base images the next job in that same run consumes. Docker Hub publication
+  # happens on a `v*` tag. Triggering off the build would mean
   # resolving a pinned Docker Hub tag on the very commit that moved the pin,
   # which is exactly when it does not exist yet.
   workflow_run:
-    workflows: ["Release"]
+    # Matched by workflow *name*, not filename, so this has to move whenever
+    # the release workflow's `name:` does.
+    workflows: ["batesste-ci-images-release"]
     types: [completed]
   # Nightly, so the trend has points even in a quiet week and so a regression
   # that comes from a moving upstream apt repository rather than from a commit
@@ -337,6 +339,14 @@ jobs:
       # scheduled run on a broken main should leave the trend alone rather than
       # writing a row of nulls into it.
       #
+      # "Something was measured" is the hashFiles test, not the job's status:
+      # the harness writes its summary before it exits, so a run that collects
+      # boot_seconds and then dies loading amdgpu still has a real data point
+      # to contribute. Gating on success() threw those away, which is how a
+      # partial regression stayed invisible -- the metric that still worked
+      # never reached the trend. !cancelled() keeps the one case worth
+      # suppressing: a cancelled run can be mid-write.
+      #
       # The github.ref test is what makes the "only from main" half true. It is
       # redundant for workflow_run and schedule, which always report the default
       # branch, and it is the whole point for workflow_dispatch, which can be
@@ -346,7 +356,7 @@ jobs:
       # branch they came from.
       - name: Publish to gh-pages
         if: >-
-          success() &&
+          !cancelled() &&
           github.ref == 'refs/heads/main' &&
           !inputs.keep_up &&
           (github.event_name != 'workflow_dispatch' || inputs.publish) &&

@@ -1,4 +1,4 @@
-name: Release
+name: batesste-ci-images-release
 
 on:
   push:
@@ -339,10 +339,19 @@ jobs:
   build-and-push-derived:
     name: Build and Push ${{ matrix.target.key }}
     runs-on: ubuntu-latest
-    needs: [discover-images, build-and-push]
+    # Deliberately *not* `needs: build-and-push`. A derived target consumes
+    # exactly one base, named in its own matrix.target.base_scope, and a
+    # job-level `needs` cannot say "only that leg" -- so every guest used to
+    # wait on ubuntu-cuda-rocm, which no qcow2 flavour touches. The "Wait for
+    # base image" step below gates each leg on its own base instead. Mirrors
+    # build-derived in dockerfile-test.yml.
+    needs: [discover-images, build-bases]
     permissions:
       contents: read
       packages: write
+      # The wait step reads this run's job list to tell "base still building"
+      # from "base already failed".
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -463,6 +472,51 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
+
+      # Everything above is this leg's own setup and runs while the base is
+      # still building; only the build itself needs the base, so the wait goes
+      # here rather than at the top of the job.
+      #
+      # The ref polled is the same first-line-of-the-tag-set the step below
+      # resolves BASE_IMAGE to, asked of ci-images-tool.py rather than spelled
+      # out, so the two cannot drift. A release builds every target, so the
+      # base is always in the matrix and the loop terminates.
+      - name: Wait for base image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SCOPE: ${{ matrix.target.base_scope }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -uo pipefail
+          REF=$(./ci-images-tool.py tags "${BASE_SCOPE}" --tag "${VERSION}" \
+            | head -1)
+          [ -n "$REF" ] || { echo "::error::no tag for ${BASE_SCOPE}"; exit 1; }
+          # A base is always a non-variant target, so its scope is its key and
+          # the producing job is named "Build and Push <scope>".
+          JOB="Build and Push ${BASE_SCOPE}"
+          # 90 minutes: a cold ubuntu-cuda-rocm release build is the long pole.
+          for _ in $(seq 1 180); do
+            if docker buildx imagetools inspect "$REF" > /dev/null 2>&1; then
+              echo "base ready: ${REF}"
+              exit 0
+            fi
+            # Bail out rather than sit out the full timeout if the base is
+            # never coming. A job still running reports a null conclusion.
+            concl=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" \
+              --paginate \
+              -q ".jobs[] | select(.name == \"${JOB}\") | .conclusion" \
+              2>/dev/null || true)
+            case "$concl" in
+              failure|cancelled|timed_out)
+                echo "::error::base job '${JOB}' ended: ${concl}"
+                exit 1
+                ;;
+            esac
+            sleep 30
+          done
+          echo "::error::timed out waiting for ${REF}"
+          exit 1
 
       # BASE_IMAGE resolves to the first line of the base's tag set: the
       # immutable, fully specified tag build-and-push just published.
