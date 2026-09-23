@@ -712,7 +712,12 @@ images:
       #     guest boots with. It comes from ubuntu-rocm-rocjitsu's
       #     vfio_guest_firmware.py, whose default --set gap emits it and
       #     nothing that would overwrite the packaged blobs.
-      #   * The amdgpu-probe helper and the CI user's passwordless sudo.
+      #   * The CI user's passwordless sudo.
+      #
+      # The amdgpu-probe helper was on that list and is now in, from
+      # assets/shared/ -- offered, not run.  Nothing in the image invokes it and
+      # amdgpu stays blacklisted; it is there because the parameters belong with
+      # the driver build, and because the perf lane calls it by name.
       #
       # The KFD atomics patch is applied to the DKMS source and the module is
       # rebuilt from it, which is what survives a later dkms autoinstall.

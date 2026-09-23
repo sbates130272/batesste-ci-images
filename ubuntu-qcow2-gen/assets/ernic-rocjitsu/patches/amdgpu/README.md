@@ -13,6 +13,15 @@ They arrived here from hipObject's `ci/ernic/patches/amdgpu/`, where they were
 scp'd into the guest at job time. That directory and the workflow step that
 used it go away once this flavour is published.
 
+`0003` is **not in this directory**. It lives in
+[`assets/shared/patches/amdgpu/`](../../../shared/README.md) and is copied into
+both this flavour's payload and the `rocjitsu` flavour's by the Dockerfile,
+because it is needed by any guest that runs a DKMS amdgpu under rocjitsu and a
+patch applied to one guest and not the other is a driver that oopses in only
+one lane. It is still documented below, and it still arrives at
+`/tmp/payload/patches/amdgpu/0003-…` with the same name and number — nothing in
+the provision script changes.
+
 ## `0001-amdkfd-fail-closed-ptrace-gate-7.2` — **unreviewed**
 
 **TODO(unreviewed): this patch changes a KFD security check and has not been

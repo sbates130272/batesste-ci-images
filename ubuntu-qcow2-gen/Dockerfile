@@ -79,6 +79,20 @@ COPY ubuntu-qcow2-gen/checks/ /build/checks/
 # primitive the mainline kernel .debs already travel by.
 COPY ubuntu-qcow2-gen/assets/ /build/assets/
 
+# assets/shared/ is not a flavour -- build-vm.sh never looks for it. Its
+# contents are grafted onto the payload of each flavour that wants them, so the
+# amdgpu-probe helper and the RAS patch exist once in the repo and cannot drift
+# between the two guests that build the same driver. See assets/shared/README.md.
+#
+# One COPY per source: a directory source contributes its *contents*, so
+# "patches/" and "patches/" in one multi-source COPY would both land as
+# amdgpu/ at the top of the payload rather than under patches/.
+COPY ubuntu-qcow2-gen/assets/shared/amdgpu-probe /build/assets/rocjitsu/amdgpu-probe
+COPY ubuntu-qcow2-gen/assets/shared/patches/ /build/assets/rocjitsu/patches/
+COPY ubuntu-qcow2-gen/assets/shared/amdgpu-probe \
+     /build/assets/ernic-rocjitsu/amdgpu-probe
+COPY ubuntu-qcow2-gen/assets/shared/patches/ /build/assets/ernic-rocjitsu/patches/
+
 # The firmware generator, wired in here rather than vendored a second time:
 # ubuntu-rocm-rocjitsu owns it, the ernic-rocjitsu guest runs it (with
 # --generation, since no rocjitsu config exists in a guest), and one copy in

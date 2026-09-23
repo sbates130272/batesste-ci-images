@@ -65,6 +65,11 @@ dkms status amdgpu | grep -q '^amdgpu'
 grep -q 'amdgpu_emu_mode == 1' \
     /usr/src/amdgpu-*/amd/amdkfd/kfd_device.c
 
+# The RAS vbios guard: rocjitsu serves no option ROM, so atom_context is NULL
+# and the unguarded query oopses in amdgpu_atom_parse_data_header on probe.
+grep -q 'adev->mode_info.atom_context' \
+    /usr/src/amdgpu-*/amd/amdgpu/amdgpu_ras.c
+
 # On 26.04 the DKMS module is the driver that loads, so it has to exist for the
 # kernel this guest actually booted -- not merely for some kernel. A module
 # built for the provisioning kernel and nothing else is exactly the failure this
@@ -93,6 +98,14 @@ grep -qx 'blacklist amdgpu' /etc/modprobe.d/amdgpu-blacklist.conf
 grep -q 'modprobe.blacklist=amdgpu' /proc/cmdline
 ! lsmod | grep -q '^amdgpu '
 
+# The probe helper is offered, not run: the blacklist above still stands.  It
+# is asserted because the perf lane invokes it by name, and because a guest
+# without it sends every consumer back to reconstructing the parameters.
+test -x /usr/local/bin/amdgpu-probe
+bash -n /usr/local/bin/amdgpu-probe
+grep -q 'ip_block_mask=0x7f' /usr/local/bin/amdgpu-probe
+grep -q 'vramlimit=1024' /usr/local/bin/amdgpu-probe
+
 # /dev/kfd and /dev/dri/render* are root:render 0660, and a login user in
 # neither group gets a HIP runtime that enumerates no agent and a hipMalloc
 # returning hipErrorNoDevice with a healthy KFD node three lines up the log.
@@ -101,8 +114,10 @@ grep -q 'modprobe.blacklist=amdgpu' /proc/cmdline
 id -nG | tr ' ' '\n' | grep -qx render
 id -nG | tr ' ' '\n' | grep -qx video
 
-# The flavour's own record, for a consumer reading it from inside the guest.
+# The flavour's own record, for a consumer reading it from inside the guest,
+# and the same facts as prose where someone who has just ssh'd in will see them.
 test -s /etc/rocjitsu-guest.json
+test -s "${HOME}/WELCOME.md"
 
 # fio, built from source with the libhipfile ioengine.  Asserted by the engine
 # and not by the binary: a distro fio would satisfy "command -v fio" and has no

@@ -210,6 +210,37 @@ open(path, 'w').write(content.replace(old, new, 1))
 print(f'patched {path}')
 PYEOF
 
+# The rest of the patch set, from assets/shared/patches/amdgpu/ by way of
+# /tmp/payload.  Today that is the RAS VBIOS guard and nothing else:
+#
+#   rocjitsu serves no option ROM (rombar=0), so adev->mode_info.atom_context is
+#   NULL.  amdgpu_ras_init queries RAS capabilities from the VBIOS anyway and
+#   amdgpu_ras_query_ras_capablity_from_vbios() dereferences atom_context
+#   unconditionally, so the probe oopses in amdgpu_atom_parse_data_header+0x9.
+#
+# It is needed on every kernel, not just 7.2, and it was missing here for as
+# long as this flavour has existed: the patch lived only in qemu-minimal's
+# vm-rocjitsu.yml, which this flavour does not run.  A consumer who built the
+# guest from the playbook got it and a consumer who pulled the published qcow2
+# did not, which is the kind of difference that costs a day.
+#
+# Same source tree as the atomics patch above, and for the same reason: what is
+# patched is what a later "dkms autoinstall" rebuilds from.
+if [ ! -d /tmp/payload/patches/amdgpu ]; then
+    echo "Error: no amdgpu patches at /tmp/payload/patches/amdgpu; the guest" \
+         "would boot a driver that oopses on probe under rocjitsu" >&2
+    exit 1
+fi
+AMDGPU_SRC=$(ls -d /usr/src/amdgpu-* | tail -1)
+PATCHES=""
+for p in /tmp/payload/patches/amdgpu/*.patch; do
+    echo "applying $(basename "${p}")"
+    sudo patch -p1 -d "${AMDGPU_SRC}" --no-backup-if-mismatch < "${p}"
+    PATCHES="${PATCHES}${PATCHES:+,}\"$(basename "${p}"):$(sha256sum "${p}" |
+        cut -c1-16)\""
+done
+test -n "${PATCHES}"
+
 # Rebuild from the patched source.  On resolute the kernel that matters is the
 # HWE one the guest reboots into, not the one this script runs on, and both have
 # headers by now -- so build for both and let the boot pick.  On noble only the
@@ -287,6 +318,20 @@ done
 # to prevent.  Consumers working around it by running their payload under sudo
 # are unaffected; this only means they no longer have to.
 sudo usermod -aG render,video "${USERNAME}"
+
+# The probe helper, offered rather than imposed.  Nothing in the image runs it,
+# amdgpu stays blacklisted, and a consumer who owns the parameters can ignore
+# the file -- rocm-xio's original request put it on the "do not want" list and
+# that stays true of the *policy*.  What changed is the cost of not shipping
+# anything: ip_block_mask and vramlimit are both wrong in upstream's
+# qemu-vfio.md in ways that present as an oops in the command processor and as
+# a dispatch that never returns, and the corrected values belong with the
+# driver build rather than with whoever happens to call it.
+#
+# It is also what scripts/perf-harness.sh invokes, so a guest without it fails
+# this repository's own integration lane.
+sudo install -m 0755 /tmp/payload/amdgpu-probe /usr/local/bin/amdgpu-probe
+bash -n /usr/local/bin/amdgpu-probe
 
 # fio with the libhipfile ioengine, so a consumer can measure GPU-side I/O
 # against an emulated NVMe controller from inside the guest.
@@ -395,9 +440,11 @@ sudo tee /etc/rocjitsu-guest.json > /dev/null <<EOF
   "rocm_stream": "therock",
   "kfd_atomics_patched": true,
   "kfd_atomics_patch_applies_to": "amdgpu-dkms source and the module built from it",
+  "amdgpu_patches": [${PATCHES}],
   "runtime_driver": "${RUNTIME_DRIVER}",
   "amdgpu_autoload_blacklisted": true,
   "amdgpu_blacklisted_on_cmdline": true,
+  "amdgpu_probe_helper": "/usr/local/bin/amdgpu-probe",
   "render_video_groups": true,
   "amdgpu_dkms_firmware_version": "${FW_PKG}",
   "gfx1250_firmware": "packaged",
@@ -413,3 +460,69 @@ sudo tee /etc/rocjitsu-guest.json > /dev/null <<EOF
 }
 EOF
 cat /etc/rocjitsu-guest.json
+
+# The same facts as prose, in the first place someone looks.  /etc/*-guest.json
+# is for a script; this is for the person who has just SSH'd in and does not
+# know that the GPU will not appear until they start a vfio-user server, or
+# that a bare "modprobe amdgpu" is the wrong thing to try.  Generated here
+# rather than checked in so the versions in it are the resolved ones.
+tee "/home/${USERNAME}/WELCOME.md" > /dev/null <<EOF
+# rocjitsu guest
+
+Built by batesste-ci-images \`ubuntu-qcow2-gen\`, flavour \`rocjitsu\`, for
+running an emulated gfx1250 served by rocjitsu over vfio-user.
+
+    kernel        ${HWE_KVER}
+    amdgpu-dkms   ${AMDGPU_PKG}  (module ${VER})
+    ROCm          ${ROCM_PKG} from the therock stream
+    driver repo   repo.radeon.com/amdgpu/${AMDGPU_DRIVER_VERSION}
+
+## There is no GPU yet, and that is expected
+
+\`amdgpu\` is blacklisted -- in \`/etc/modprobe.d/amdgpu-blacklist.conf\` and
+again on the kernel command line -- so nothing loads it at boot. There is no
+device to bind to until something outside this guest serves one. \`lspci\` will
+not show it, \`/dev/kfd\` will not exist, and \`rocminfo\` is not installed.
+
+## Next steps
+
+1. On the host, start rocjitsu with a vfio-user socket and attach the function
+   to this VM. That is the consumer's job, not the image's -- see
+   \`ubuntu-rocm-rocjitsu\` in batesste-ci-images.
+2. Stage the two firmware files this image deliberately does not carry, because
+   they must match the rocjitsu build you are running rather than this disk:
+   \`gc_12_1_0_imu.bin\` and \`ip_discovery.bin\`, from
+   \`vfio_guest_firmware.py --set gap\` and \`rj-ip-discovery gfx1250\`. Install
+   them into \`/lib/firmware/amdgpu/\`. Everything else is already here, in
+   ${FW_DIR} -- do not overwrite it.
+3. Load the driver:
+
+       sudo amdgpu-probe
+
+   That is a convenience wrapper around \`modprobe amdgpu\` with the emulation
+   parameters. Read it before you trust it -- two of the values differ from
+   upstream's qemu-vfio.md, for reasons written down in the script. You are
+   free to ignore it and pass your own.
+4. Check it came up:
+
+       ls /sys/bus/pci/drivers/amdgpu/   # a bound BDF
+       ls /dev/kfd                       # the KFD node
+       sudo dmesg | grep -i amdgpu       # no vcn/jpeg failure
+
+## Things that will waste your time
+
+- **A warm reboot with the device attached does not work.** Cold-boot instead.
+- **\`modprobe\` on an already-resident amdgpu silently discards parameters**
+  and returns 0. \`amdgpu-probe\` checks for this and refuses; a bare
+  \`modprobe\` will not tell you.
+- **\`hipMalloc\` returning \`hipErrorNoDevice\` under a healthy KFD node**
+  usually means group membership. This image already puts \`${USERNAME}\` in
+  \`render\` and \`video\`, so if you see it, check \`id -nG\` first.
+
+## More
+
+- \`/etc/rocjitsu-guest.json\` -- the same facts, machine-readable
+- \`/output/vm-info.json\` in the published payload -- release, kernel, commits
+- \`ubuntu-qcow2-gen/consumers/rocm-xio-rocjitsu.md\` in batesste-ci-images
+EOF
+chmod 0644 "/home/${USERNAME}/WELCOME.md"

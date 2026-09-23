@@ -133,6 +133,14 @@ grep -qx 'blacklist amdgpu' /etc/modprobe.d/amdgpu-blacklist.conf
 grep -q 'modprobe.blacklist=amdgpu' /proc/cmdline
 ! lsmod | grep -q '^amdgpu '
 
+# The probe helper is offered, not run: the blacklist above still stands.  The
+# same file the rocjitsu flavour installs, from assets/shared -- asserted in
+# both so the two cannot drift.
+test -x /usr/local/bin/amdgpu-probe
+bash -n /usr/local/bin/amdgpu-probe
+grep -q 'ip_block_mask=0x7f' /usr/local/bin/amdgpu-probe
+grep -q 'vramlimit=1024' /usr/local/bin/amdgpu-probe
+
 # Firmware.  Unlike the rocjitsu flavour, this guest carries the generated gap
 # set as well as the packaged blobs, so there is nothing left that amdgpu opens
 # and the guest lacks -- and that is asserted as an empty list rather than an
@@ -177,8 +185,10 @@ test ! -e /lib/firmware/updates/amdgpu/ip_discovery.bin
 id -nG | tr ' ' '\n' | grep -qx render
 id -nG | tr ' ' '\n' | grep -qx video
 
-# The flavour's own record, for a consumer reading it from inside the guest.
+# The flavour's own record, for a consumer reading it from inside the guest,
+# and the same facts as prose where someone who has just ssh'd in will see them.
 test -s /etc/ernic-rocjitsu-guest.json
+test -s "${HOME}/WELCOME.md"
 
 # Headroom for a kernel tree, rdma-core, the ionic-ernic DKMS build and a
 # consumer's own build tree.

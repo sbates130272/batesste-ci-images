@@ -114,20 +114,38 @@ Fixed in the image: `usermod -aG render,video`. The same change was made to the
 Neither device node exists in the probe boot, so the checks assert group
 membership, which is the half that is the image's to get right.
 
-## Probe parameters stay with the consumer
+## Probe parameters, and the helper that carries them
 
 The image blacklists autoload — `/etc/modprobe.d/amdgpu-blacklist.conf` plus
-`modprobe.blacklist=amdgpu` on the kernel cmdline — and ships no probe helper.
-The parameters belong where the vfio-user socket is set up:
+`modprobe.blacklist=amdgpu` on the kernel cmdline — so nothing loads the driver
+for you. The parameters it wants are:
 
 ```text
 emu_mode=1 discovery=2 fw_load_type=0 ip_block_mask=0x7f vm_update_mode=3 \
-    gpu_recovery=0 vramlimit=256
+    gpu_recovery=0 vramlimit=1024
 ```
+
+These ship as `/usr/local/bin/amdgpu-probe`, a copy of the helper
+qemu-minimal's `vm-rocjitsu.yml` installs. It is **offered, not imposed**:
+nothing in the image runs it, the blacklist stands either way, and a consumer
+that wants to own the parameters can ignore the file. It is there because the
+two values below are easy to get wrong in ways that present as something else,
+and because they belong with the driver build rather than with whoever happens
+to be calling.
 
 `ip_block_mask` is `0x7f` and not `0x3f`: this DKMS build enumerates an extra
 `ras_v1_0` at index 5, which pushes MES to 6. A mask copied from a guest on a
 different driver build will silently omit MES.
+
+`vramlimit` is 1024 and not the 256 an earlier draft of this document quoted.
+It is not a performance knob — it is the budget ROCr provisions queue scratch
+from, and 256 runs scratch-free kernels fine while making a private-segment
+dispatch wait forever for an allocation that never arrives. Unrelated to
+`vram_aperture_bytes` in the rocjitsu config, which is the BAR window.
+
+The helper also refuses, loudly, when amdgpu is already resident with the wrong
+parameters — `modprobe` returns 0 in that case and discards everything you
+passed it, which is the single most expensive way to lose an afternoon here.
 
 ## The ionic half
 

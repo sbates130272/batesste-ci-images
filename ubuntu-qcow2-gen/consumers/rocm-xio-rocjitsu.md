@@ -23,8 +23,10 @@ flavour's shape.
 The "nice to have" list — `build-essential`, `cmake`, `git`, `pciutils`,
 `nvme-cli` — is in, along with the rest of rocm-xio's build dependencies.
 
-Everything on the "do not want" list stays out: no `ip_discovery.bin`, no
-`amdgpu-probe` helper, no passwordless sudo.
+Everything on the "do not want" list stays out except one item: no
+`ip_discovery.bin`, no passwordless sudo. `amdgpu-probe` **is** now installed at
+`/usr/local/bin/amdgpu-probe` — see
+[The probe helper](#the-probe-helper-is-in-after-all).
 
 ## Which driver actually loads
 
@@ -161,6 +163,34 @@ autoloaded copy wedges the guest: the in-tree module's `modprobe` returns 0
 without rebinding, and unloading the DKMS one has been seen to GPF in
 `kgd2kfd_device_exit`. The checks assert both, and that `amdgpu` is not loaded.
 
+## The probe helper is in, after all
+
+`/usr/local/bin/amdgpu-probe`, a copy of the script qemu-minimal's
+`vm-rocjitsu.yml` installs. This reverses the original "do not want": the
+reasoning was that the parameters belong on the rocm-xio side, and that is still
+true of *ownership* — nothing in the image runs it, the blacklist above stands
+regardless, and you are free to ignore the file and pass your own parameters.
+
+What changed is the cost of shipping nothing. This flavour does not run that
+playbook, so a guest built here had no helper at all, and anyone reconstructing
+the parameters by hand gets two of them wrong in ways that present as something
+else:
+
+```text
+emu_mode=1 fw_load_type=0 discovery=2 ip_block_mask=0x7f vm_update_mode=3 \
+    gpu_recovery=0 vramlimit=1024
+```
+
+`ip_block_mask` is `0x7f`, not the `0x3f` upstream's `qemu-vfio.md` quotes: this
+DKMS build enumerates an extra `ras_v1_0` at index 5, pushing MES to 6, and
+`gfx_v12_1` oopses in `gfx_v12_1_xcc_cp_resume` without it. `vramlimit` is 1024,
+not 256 — it is the budget ROCr provisions queue scratch from, so 256 runs
+scratch-free kernels fine and then hangs a private-segment dispatch forever.
+
+The helper also refuses when `amdgpu` is already resident with the wrong
+parameters, rather than exiting 0 having done nothing, which is what a bare
+`modprobe` does on a loaded module.
+
 ## `amdrocm-blas-dev` is headers-only
 
 In the `therock` stream `amdrocm-blas-dev` depends on `libc6` and nothing else —
@@ -208,9 +238,12 @@ than as a 404 several steps later.
   "rocm_stream": "therock",
   "kfd_atomics_patched": true,
   "kfd_atomics_patch_applies_to": "amdgpu-dkms source and the module built from it",
+  "amdgpu_patches": ["0003-amdgpu-ras-guard-vbios-query.patch:3f1c0b9a2e4d5678"],
   "runtime_driver": "amdgpu-dkms 1:7.1.9.31600000-2403767.26.04, built for the booted kernel 7.0.0-31-generic",
   "amdgpu_autoload_blacklisted": true,
   "amdgpu_blacklisted_on_cmdline": true,
+  "amdgpu_probe_helper": "/usr/local/bin/amdgpu-probe",
+  "render_video_groups": true,
   "amdgpu_dkms_firmware_version": "1:31.60.0.0.31600000-2403767.26.04",
   "gfx1250_firmware": "packaged",
   "gfx1250_firmware_dir": "/lib/firmware/updates/amdgpu",
@@ -226,15 +259,22 @@ in earlier builds of this image and is now `"packaged"`; read it rather than
 assuming either. `gfx1250_firmware_missing` and `ip_discovery_bin` are the
 contract for what rocm-xio must still do at runtime.
 
+`amdgpu_patches` lists every patch applied to the DKMS source beyond the
+atomics one, each with the first 16 hex of its SHA-256, so a guest can be asked
+what it was built from rather than inferred from a version number. It is new,
+alongside `amdgpu_probe_helper`; both are absent from images built before this
+change, so test for the key rather than assuming it.
+
 ## What rocm-xio still has to do at job time
 
 1. Install everything `vfio_guest_firmware.py`'s manifest names into
    `/lib/firmware/amdgpu/` — `gc_12_1_0_imu.bin`, `ip_discovery.bin` and the
    two `uni_mes` aliases — generated from the rocjitsu image it runs. The rest
    of the gfx1250 firmware is already in the guest; do not overwrite it.
-2. `modprobe amdgpu` with the emulation parameters once the vfio-user server is
-   serving. The image blacklists autoload but ships no helper; keep
-   `amdgpu-probe` on the rocm-xio side, where the parameters belong.
+2. Load the driver once the vfio-user server is serving. The image blacklists
+   autoload; `sudo amdgpu-probe` is now in the guest if you want it, or pass
+   your own parameters — see
+   [The probe helper](#the-probe-helper-is-in-after-all).
 
 Everything else in the current playbook — apt sources, keyrings, ROCm userspace,
 the kernel, the DKMS install, the patch, the rebuild — is already in the disk.

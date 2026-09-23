@@ -406,6 +406,7 @@ batesste-ci-images/
 │   ├── packages/              # cloud-init package manifests per flavour
 │   ├── provision/             # In-guest provisioning scripts per flavour
 │   ├── assets/                # Files a provision script needs in the guest
+│   │   └── shared/            # Not a flavour: grafted onto several payloads
 │   ├── checks/                # In-guest assertions run at build time
 │   └── consumers/             # Per-consumer image contracts
 ├── output/                    # Guest payloads from local builds (gitignored)
