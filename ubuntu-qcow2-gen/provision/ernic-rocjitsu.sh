@@ -293,7 +293,11 @@ for fw in ${GENERATED}; do
 done
 sudo install -m 0644 /tmp/fw-gap/manifest.json \
     "${FW_DIR}/rocjitsu-gap-manifest.json"
-rm -rf /tmp/fw-gap
+# sudo, because the generator above ran under sudo and its output is root-owned.
+# /tmp is sticky, so an unprivileged unlink of a root-owned file there fails
+# even though the directory is world-writable -- and "set -e" makes that the end
+# of the provisioning boot, 40 minutes in, after the DKMS build.
+sudo rm -rf /tmp/fw-gap
 FW_PKG=$(dpkg-query -W -f='${Version}' amdgpu-dkms-firmware)
 echo "gfx1250 firmware: packaged from amdgpu-dkms-firmware ${FW_PKG}, plus" \
      "generated ${GENERATED}"
