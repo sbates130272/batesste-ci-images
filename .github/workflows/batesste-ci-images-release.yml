@@ -1,4 +1,4 @@
-name: batesste-ci-images-release
+name: batesste-ci-images - Release
 
 on:
   push:
@@ -608,7 +608,7 @@ jobs:
   # DOCKERHUB_TOKEN has to be a read/write/**delete** PAT: Hub refuses the
   # PATCH under a plain read/write token, with a 403 rather than an auth error.
   sync-descriptions:
-    name: Sync Docker Hub descriptions
+    name: Sync Docker Hub Descriptions
     runs-on: ubuntu-latest
     needs: [build-bases, build-and-push, build-and-push-derived]
     steps:

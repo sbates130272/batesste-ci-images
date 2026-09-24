@@ -1,27 +1,25 @@
-name: batesste-ci-images-spell-check
+name: batesste-ci-images - Spell Check
 
+# PR only, no push to main: a merge re-checks a tree the PR already checked.
+#
+# No path filter, deliberately. The check is 20 seconds and it is not
+# incremental -- pyspelling reads every .md in the tree on every run -- so the
+# filter only ever decided whether an unchanged result got reported, never what
+# was checked. Against that, the filter was a list to keep in step with
+# .spellcheck.yaml's sources, and it had already drifted: its own workflow file
+# was missing, so an edit to this file did not run this file. It also skips the
+# lane outright on a non-markdown PR, which reports no status at all -- fine
+# while the job is continue-on-error, and a permanently pending required
+# context the day it is not.
 on:
   workflow_dispatch:
   pull_request:
     branches:
       - main
-      - master
-    paths:
-      - '**.md'
-      - '.wordlist.txt'
-      - '.spellcheck.yaml'
-  push:
-    branches:
-      - main
-      - master
-    paths:
-      - '**.md'
-      - '.wordlist.txt'
-      - '.spellcheck.yaml'
 
 jobs:
   spell-check:
-    name: spell-check
+    name: Spell Check
     runs-on: ubuntu-latest
     steps:
       - name: Check out code

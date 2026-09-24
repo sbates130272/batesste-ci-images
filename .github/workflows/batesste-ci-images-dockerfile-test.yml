@@ -1,12 +1,18 @@
-name: batesste-ci-images-dockerfile-test
+name: batesste-ci-images - Dockerfile Test
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# The push trigger duplicates what the PR already built, and is kept anyway:
+# the 16 per-image README badges are keyed to branch=main&event=push of this
+# workflow (STATUS_BRANCH / STATUS_EVENT in ci-images-tool.py), so they have no
+# run to report without it. It also keeps the GHCR layer cache warm against
+# main, which is the tree every branch forks from. Lint and Spell Check carry
+# no such dependency and are PR-only.
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
     paths:
       - '**/Dockerfile'
       - '**/entrypoint.sh'
@@ -20,7 +26,7 @@ on:
       - 'common/**'
       - '.github/workflows/batesste-ci-images-dockerfile-test.yml'
   pull_request:
-    branches: [ main, master ]
+    branches: [ main ]
     paths:
       - '**/Dockerfile'
       - '**/entrypoint.sh'
@@ -33,6 +39,10 @@ on:
       - 'compose/**'
       - 'common/**'
       - '.github/workflows/batesste-ci-images-dockerfile-test.yml'
+  # A manual run has no changed-path base to diff against, so discover-images
+  # falls through to its "build everything" branch. That is the point: it is
+  # the only way to rebuild the full matrix without pushing a commit.
+  workflow_dispatch:
 
 # Layer cache and the intermediate base images both live in GHCR. The GitHub
 # Actions cache is capped at 10 GB per repository with LRU eviction, and

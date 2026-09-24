@@ -1,14 +1,15 @@
-name: batesste-ci-images-lint
+name: batesste-ci-images - Lint
 
+# PR only, no push to main: everything lands through a PR, so a push trigger
+# just re-ran the same checks on the same tree at merge time.
 on:
-  push:
-    branches: [ main, master ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   shellcheck:
-    name: Shell Script Linting
+    name: Shell Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -21,7 +22,7 @@ jobs:
           ignore: SC2046
 
   python-lint:
-    name: Python Linting
+    name: Python Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -37,7 +38,7 @@ jobs:
         run: ruff format --check .
 
   images-config:
-    name: Image Config Validation
+    name: Image Config Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -59,7 +60,7 @@ jobs:
         run: ./ci-images-tool.py badges --check
 
   readme-structure:
-    name: README Project Structure
+    name: README Structure Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -67,7 +68,7 @@ jobs:
         run: bash scripts/check-readme-structure.sh
 
   qemu-tool-only:
-    name: qemu-tool CLI Only
+    name: qemu-tool CLI Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -78,7 +79,7 @@ jobs:
         run: bash scripts/check-qemu-tool.sh
 
   dockerfile-lint:
-    name: Dockerfile Linting
+    name: Dockerfile Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
