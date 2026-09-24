@@ -1250,7 +1250,15 @@ needs and how it will use the image is written down in
 `ubuntu-qcow2-gen/consumers/<name>.md`, so the reason a flavour exists outlives
 the conversation that created it.
 
-`vm-info.json` is `schema_version` 3 here, and every earlier key is unchanged —
+Every flavour is hardened against unattended upgrades before any other
+provisioning runs: `unattended-upgrades` is purged, `apt-daily.timer` and
+`apt-daily-upgrade.timer` are masked, and the `APT::Periodic` knobs are zeroed
+in `/etc/apt/apt.conf.d/99-no-unattended-upgrades`. That keeps the timers off
+the dpkg lock during the build, and stops a long-lived guest replacing the
+pinned kernel or `amdgpu-dkms` underneath a module the image was built to ship.
+The verification boot asserts it for every flavour.
+
+`vm-info.json` is `schema_version` 6 here, and every earlier key is unchanged —
 read `schema_version` before reaching for anything newer:
 
 - **v2** added `flavour`, `kernel_release` and a `provisioning` object
@@ -1262,6 +1270,10 @@ read `schema_version` before reaching for anything newer:
   (identifies the keypair without publishing it), `provisioning.checks`, and
   `build_info.qemu_version`, `build_host_kernel`, `build_vcpus` and
   `build_vmem_mib`.
+- **v4** adds `provisioning.provision`, naming the flavour's provision script.
+- **v5** adds `provisioning.assets`, naming the assets directory that script
+  was given.
+- **v6** adds `provisioning.unattended_upgrades`, always `purged`.
 
 Most of this is hoisted into the pushed artifact's annotations as well, so
 `oras manifest fetch` answers the common questions without the referrer — see

@@ -173,6 +173,41 @@ cp /root/.ssh/id_rsa /output/id_rsa
 cp /root/.ssh/id_rsa.pub /output/id_rsa.pub
 chmod 600 /output/id_rsa
 
+# Ubuntu cloud images enable unattended-upgrades, and it costs us twice: its
+# timers take the dpkg lock while the layers below are mid-apt, which fails the
+# build outright under "set -eu", and in a consumer's long-lived guest it will
+# replace the pinned kernel or amdgpu-dkms underneath the patched module the
+# image exists to ship.  First of the provisioning boots, so nothing apt-heavy
+# runs before it, and unconditional so the basic flavour -- which pins no kernel
+# and has no provision script -- is covered too.
+HARDEN=/tmp/disable-unattended-upgrades.sh
+cat > "${HARDEN}" <<'HARDEN_EOF'
+set -eu
+# Mask before purging: purging while apt-daily is mid-run blocks on the dpkg
+# lock, and dpkg is what the purge needs.
+sudo systemctl mask --now apt-daily.timer apt-daily-upgrade.timer
+sudo systemctl stop apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+sudo systemctl mask unattended-upgrades.service 2>/dev/null || true
+
+# Masking stops the timers but not a run already in flight, and this is the one
+# apt call in the build that can still meet one, so it is the one that waits.
+sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 \
+    purge -y unattended-upgrades
+
+# Belt and braces: a later apt-get install that pulls the package back in as a
+# recommend still finds the periodic knobs zeroed.
+sudo tee /etc/apt/apt.conf.d/99-no-unattended-upgrades > /dev/null <<'CONF_EOF'
+APT::Periodic::Update-Package-Lists "0";
+APT::Periodic::Unattended-Upgrade "0";
+APT::Periodic::Download-Upgradeable-Packages "0";
+APT::Periodic::AutocleanInterval "0";
+CONF_EOF
+HARDEN_EOF
+
+echo "Disabling unattended upgrades in the guest"
+PROBE_PERSIST=1 probe-guest "/output/${FINAL_VM_NAME}.qcow2" \
+    "${FINAL_USERNAME}" "${HARDEN}"
+
 # An Ubuntu mainline kernel, when the flavour pins one.  Not expressible as
 # cloud-init packages -- these are loose .debs, in no apt repository -- and
 # gen-vm's cloud-config has no hook to run a command, so it is a provisioning
@@ -289,8 +324,14 @@ cat > "${PROBE}" <<'PROBE_EOF'
 set -eu
 printf 'PROBE_KERNEL=%s\n' "$(uname -r)"
 # Passwordless sudo and sshd on 22 are the contract for every flavour, so they
-# are asserted here rather than repeated in each checks file.
+# are asserted here rather than repeated in each checks file.  So is the
+# absence of unattended upgrades: a later apt step pulling the package back in
+# would otherwise be invisible until a consumer's guest upgraded itself.
 sudo -n true
+test ! -e /usr/bin/unattended-upgrade
+test -f /etc/apt/apt.conf.d/99-no-unattended-upgrades
+systemctl is-enabled apt-daily.timer 2>/dev/null | grep -qx masked
+systemctl is-enabled apt-daily-upgrade.timer 2>/dev/null | grep -qx masked
 PROBE_EOF
 
 # A pinned kernel that did not end up being the one that boots is the failure
@@ -382,9 +423,9 @@ BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # the kernel pin on top of the v1 keys; 3 adds the virtual size, the qemu
 # version, the SSH key fingerprint, the checks script and the build-time boot
 # shape; 4 adds the provision script; 5 adds the assets directory that
-# provision script was given.  Every earlier key is kept, so a v1, v2, v3 or v4
-# consumer is unaffected -- read schema_version before reaching for anything
-# newer.
+# provision script was given; 6 adds the unattended-upgrades state.  Every
+# earlier key is kept, so a v1 through v5 consumer is unaffected -- read
+# schema_version before reaching for anything newer.
 #
 # What a provision script installed is deliberately not hoisted here: this file
 # is flavour-agnostic, and a flavour with its own versions to report writes its
@@ -397,7 +438,7 @@ BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # so "oras manifest fetch" answers the common questions without the referrer.
 cat > /output/vm-info.json <<EOF
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "vm_name": "${FINAL_VM_NAME}",
   "flavour": "${FLAVOUR}",
   "username": "${FINAL_USERNAME}",
@@ -426,7 +467,8 @@ cat > /output/vm-info.json <<EOF
     "kernel_debs": "${KERNEL_DEBS}",
     "provision": "${PROVISION_NAME}",
     "assets": "${ASSETS_NAME}",
-    "checks": "${CHECKS_NAME}"
+    "checks": "${CHECKS_NAME}",
+    "unattended_upgrades": "purged"
   },
   "build_info": {
     "qemu_version": "${QEMU_VERSION}",
