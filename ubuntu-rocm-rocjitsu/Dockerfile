@@ -22,7 +22,7 @@ ARG ROCJITSU_BRANCH=develop
 # bdc4aea25 "harden PCI and VFIO compute transport" and d5927b503 "qualify the
 # QEMU VFIO compute workflow", and then deleted, so the old pin is not an
 # ancestor of anything that still exists.
-ARG ROCJITSU_COMMIT=8e01a5a3fbee92f2b570dde97f314000d5226327
+ARG ROCJITSU_COMMIT=c85bb752577b6608745f4ff7835e3da91a190795
 # Which config the vfio-user probe below and the default CMD serve. A build
 # variant pinned to a different upstream ref can point at a renamed or newly
 # added profile from images.yml without editing this file.

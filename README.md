@@ -35,7 +35,7 @@ adding an image or a variant adds its row.
 [![libvfio-user 8039244](https://img.shields.io/badge/libvfio--user-8039244-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/803924493a7c787b2ba358751f55f07d5dba64b2)
 [![qemu-minimal 724324f](https://img.shields.io/badge/qemu--minimal-724324f-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/724324f0c9cf0cc1b51c5594a47c1b60cc049dbb)
 [![rocm-ernic 0b48aa1](https://img.shields.io/badge/rocm--ernic-0b48aa1-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/0b48aa1d5821a66c4fb5b78f049b1d9a759a6e17)
-[![rocjitsu 8e01a5a](https://img.shields.io/badge/rocjitsu-8e01a5a-ED1C24)](https://github.com/ROCm/rocm-systems/commit/8e01a5a3fbee92f2b570dde97f314000d5226327)
+[![rocjitsu c85bb75](https://img.shields.io/badge/rocjitsu-c85bb75-ED1C24)](https://github.com/ROCm/rocm-systems/commit/c85bb752577b6608745f4ff7835e3da91a190795)
 [![spdk 18d1d8d](https://img.shields.io/badge/spdk-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
 [![fio 6bc57a9](https://img.shields.io/badge/fio-6bc57a9-4B8BBE)](https://github.com/axboe/fio/commit/6bc57a931f04fa3f50348d8c8f087187f050c6e1)
 [![ucx 12d6aa6](https://img.shields.io/badge/ucx-12d6aa6-4B8BBE)](https://github.com/openucx/ucx/commit/12d6aa65956996625c8daf39cbb3475ef4a1a35b)

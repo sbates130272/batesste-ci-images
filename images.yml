@@ -369,7 +369,7 @@ images:
       # that exists -- no CI anywhere enables ROCJITSU_ENABLE_VFIO, so develop
       # can lose the vfio-user compute path with every upstream check green.
       rocjitsu_commit:
-        value: 8e01a5a3fbee92f2b570dde97f314000d5226327
+        value: c85bb752577b6608745f4ff7835e3da91a190795
         env: ROCM_ROCJITSU_COMMIT
       # Compile-time log groups (emulation/rocjitsu/cmake/rj_log.cmake): OFF,
       # ALL, a comma-separated subset of VM, CP, DBT_HOOKS, PLUGINS, DRIVER, or
