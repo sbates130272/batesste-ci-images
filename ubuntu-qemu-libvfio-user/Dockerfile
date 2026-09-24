@@ -142,15 +142,24 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # pipx defaults to ~/.local/bin, which is not on PATH here, so point it at
 # /usr/local/bin instead: "pipx install <tool>" then just works, at build
 # time and at run time.
+# python3-pip is here because pipx does not depend on it and the venv's pip is
+# not on PATH as pip3, so every qemu-minimal VM job was doing its own apt-get
+# update and install to get it.  --no-install-recommends is load-bearing rather
+# than tidying: python3-pip recommends python3-dev, which drags in
+# libexpat1-dev and so forces a system expat upgrade -- the fetch that has been
+# 404ing against one of the security.ubuntu.com mirrors.  Nothing here compiles
+# a wheel, so none of that is wanted.
 ENV PIPX_HOME=/opt/pipx \
     PIPX_BIN_DIR=/usr/local/bin \
     PIPX_MAN_DIR=/usr/local/share/man
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update -qq && \
-    apt-get install -y -qq \
+    apt-get install -y -qq --no-install-recommends \
     pipx \
-    python3-setuptools
+    python3-pip \
+    python3-setuptools && \
+    pip3 --version
 
 # Ansible provisions guest images beyond what cloud-init can express (source
 # builds, git checkouts, systemd units).  qemu-tool's --ansible-playbook needs

@@ -35,6 +35,11 @@ guest.
   image drive the host daemon over a bind-mounted `/var/run/docker.sock`.
 - **`oras` and `zstd`**, pinned by version and SHA256, for pulling published
   guest artifacts without installing them on the critical path of every job
+- **`pip3`** (`python3-pip`), so a consumer job does not have to `apt-get
+  install` it itself. Installed `--no-install-recommends`, which is
+  load-bearing: pip recommends `python3-dev`, which drags in `libexpat1-dev`
+  and forces a system expat upgrade -- a fetch that has been 404ing against one
+  of the `security.ubuntu.com` mirrors. Nothing in this image compiles a wheel.
 - `cloud-image-utils`, `qemu-utils`, `openssh-client`, `jq`
 
 The `qemu-minimal` checkout `qemu-tool` was installed from is deleted after
