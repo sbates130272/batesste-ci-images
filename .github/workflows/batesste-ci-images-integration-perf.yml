@@ -30,7 +30,7 @@
 # The measurements land on gh-pages as a trend site plus shields.io endpoint
 # JSON that the README badges read.
 
-name: batesste-ci-images-integration-perf
+name: batesste-ci-images - Integration Perf
 
 on:
   # After the release workflow, not after the dockerfile-test one. That builds
@@ -43,7 +43,7 @@ on:
   workflow_run:
     # Matched by workflow *name*, not filename, so this has to move whenever
     # the release workflow's `name:` does.
-    workflows: ["batesste-ci-images-release"]
+    workflows: ["batesste-ci-images - Release"]
     types: [completed]
   # Nightly, so the trend has points even in a quiet week and so a regression
   # that comes from a moving upstream apt repository rather than from a commit
@@ -82,6 +82,7 @@ env:
 
 jobs:
   integration-perf:
+    name: Integration Perf
     # Skip the run when the build that triggered it failed -- there is nothing
     # newly published to measure, and measuring the previous images again would
     # put a duplicate point on the trend.

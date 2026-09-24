@@ -1,9 +1,11 @@
-name: batesste-ci-images-version-scrub
+name: batesste-ci-images - Version Scrub
 
 on:
   schedule:
-    # Monday 08:00 UTC
-    - cron: '0 8 * * 1'
+    # Daily 08:17 UTC. Off the hour on purpose: GitHub queues scheduled runs
+    # globally and the :00 slot is the most contended, so a run asked for at
+    # 08:00 is the one most likely to start late or be dropped under load.
+    - cron: '17 8 * * *'
   workflow_dispatch:
 
 permissions:
@@ -12,13 +14,26 @@ permissions:
 
 jobs:
   version-scrub:
-    name: Check and Update Pinned Versions
+    name: Version Scrub
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
       - name: Install dependencies
         run: sudo apt-get install -y jq
+
+      # version-scrub.sh reads the pins through ci-images-tool.py, which
+      # imports docker, requests, yaml, dotenv and rich at module scope. jq
+      # alone is not enough: without these the very first `==> Fetching latest
+      # QEMU release tag...` line is followed by ModuleNotFoundError.
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install tool dependencies
+        run: pip install -r requirements.txt
 
       - name: Run version scrub
         env:
