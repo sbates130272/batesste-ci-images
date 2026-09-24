@@ -224,6 +224,11 @@ RUN rocjitsu --config "${ROCJITSU_CONFIG_PATH}" \
 # strictly worse than not writing it. The aliases have to carry their source's
 # bytes. And a config this generator has no firmware for has to be refused
 # rather than served gfx1250 stubs under a different GPU's name.
+#
+# --generation is the path the ernic-rocjitsu guest build takes, where no
+# rocjitsu config exists to read. It has to produce the same bytes the config
+# path does and be refused on the same unsupported generations: nothing
+# downstream of it can tell the two apart.
 RUN set -eux; \
     rj-ip-discovery gfx1250 /tmp/ip_discovery.bin; \
     test -s /tmp/ip_discovery.bin; \
@@ -249,7 +254,21 @@ RUN set -eux; \
     ! python3 /usr/local/bin/vfio_guest_firmware.py \
         --config gfx950_mi355x.json --output /tmp/fw-unsupported; \
     test ! -e /tmp/fw-unsupported; \
-    rm -rf /tmp/ip_discovery.bin /tmp/fw-gap /tmp/fw-full
+    python3 /usr/local/bin/vfio_guest_firmware.py \
+        --generation gfx1250 --no-ip-discovery --output /tmp/fw-gen; \
+    cmp /tmp/fw-gen/gc_12_1_0_imu.bin /tmp/fw-gap/gc_12_1_0_imu.bin; \
+    cmp /tmp/fw-gen/gc_12_1_0_mes.bin /tmp/fw-gap/gc_12_1_0_mes.bin; \
+    cmp /tmp/fw-gen/gc_12_1_0_mes1.bin /tmp/fw-gap/gc_12_1_0_mes1.bin; \
+    test ! -e /tmp/fw-gen/ip_discovery.bin; \
+    test "$(python3 -c \
+        'import json,sys;print(json.load(open(sys.argv[1]))["gfx_target_version"])' \
+        /tmp/fw-gen/manifest.json)" = "$(python3 -c \
+        'import json,sys;print(json.load(open(sys.argv[1]))["gfx_target_version"])' \
+        /tmp/fw-gap/manifest.json)"; \
+    ! python3 /usr/local/bin/vfio_guest_firmware.py \
+        --generation gfx950 --no-ip-discovery --output /tmp/fw-unsupported-gen; \
+    test ! -e /tmp/fw-unsupported-gen; \
+    rm -rf /tmp/ip_discovery.bin /tmp/fw-gap /tmp/fw-full /tmp/fw-gen
 
 # Three upstream behaviours are the difference between an image that serves a
 # device and one a guest can boot and run kernels on. They replaced the local

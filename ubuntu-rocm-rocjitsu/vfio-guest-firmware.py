@@ -22,6 +22,12 @@ So the default output is that gap and nothing else: a set that lands beside the
 packaged blobs rather than over them. `--set full` still emits the whole stub
 set for a guest whose driver release predates the packaged firmware.
 
+The generation normally comes from a rocjitsu config, which only exists where
+rocjitsu is installed. `--generation gfx1250 --no-ip-discovery` names it
+directly instead, for a caller that has neither -- the ernic-rocjitsu guest
+image build runs this inside the guest, where the fixtures are all that is
+wanted and rj-ip-discovery belongs to the consumer's rocjitsu pin anyway.
+
 The fixture bytes are upstream's builders, vendored here at 730bc62 rather than
 fetched: the file was deleted, so the only way to fetch it is from a commit on
 a branch that has already been deleted once and can be pruned at any time.
@@ -302,6 +308,25 @@ def generation_of(version: int) -> str:
     return f"gfx{version // 10000}{version // 100 % 100:x}{version % 100:x}"
 
 
+def version_of(generation: str) -> int:
+    """The inverse of generation_of, for a caller that has only a name.
+
+    --generation exists for a caller with no config to read -- the qcow2-gen
+    guest build runs this script inside the guest, where the rocjitsu config
+    directory does not exist -- and the manifest still has to carry a
+    gfx_target_version.
+    """
+    digits = generation[3:] if generation.startswith("gfx") else ""
+    if len(digits) < 3:
+        raise FirmwareError(f"not a generation name: {generation}")
+    try:
+        return (
+            int(digits[:-2]) * 10000 + int(digits[-2], 16) * 100 + int(digits[-1], 16)
+        )
+    except ValueError as error:
+        raise FirmwareError(f"not a generation name: {generation}") from error
+
+
 def generation_for_config(config: Path) -> tuple[str, int]:
     try:
         parsed = json.loads(config.read_text())
@@ -348,12 +373,18 @@ def planned_files(firmware_set: str) -> dict[str, str]:
 
 
 def generate(
-    *, output: Path, config: Path, ip_discovery: bool, firmware_set: str
+    *,
+    output: Path,
+    generation: str,
+    version: int,
+    config_name: str | None,
+    ip_discovery: bool,
+    firmware_set: str,
 ) -> None:
-    generation, version = generation_for_config(config)
     if generation not in SUPPORTED_GENERATIONS:
+        source = config_name or f"--generation {generation}"
         raise FirmwareError(
-            f"{config.name} models {generation} (gfx_target_version {version}); "
+            f"{source} models {generation} (gfx_target_version {version}); "
             f"stub generation covers {', '.join(SUPPORTED_GENERATIONS)} only"
         )
 
@@ -382,7 +413,7 @@ def generate(
     manifest = {
         "generation": generation,
         "gfx_target_version": version,
-        "config": config.name,
+        "config": config_name,
         "set": firmware_set,
         # What the set deliberately leaves to the guest's own driver release.
         # A consumer that finds one of these missing in the guest is looking at
@@ -396,11 +427,17 @@ def generate(
 def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument(
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument(
         "--config",
-        default=os.environ.get("ROCJITSU_CONFIG_PATH", "gfx1250_mi455x.json"),
         help="a config name under ROCJITSU_CONFIG_DIR, or a path. Defaults to "
         "ROCJITSU_CONFIG_PATH, the config this image serves.",
+    )
+    source.add_argument(
+        "--generation",
+        help="name the generation directly, for a caller with no rocjitsu "
+        "config to read -- the guest image build runs this script inside the "
+        "guest. Validated against the same supported list a config is.",
     )
     parser.add_argument(
         "--set",
@@ -421,9 +458,22 @@ def main(arguments: list[str] | None = None) -> int:
     )
     args = parser.parse_args(arguments)
     try:
+        if args.generation:
+            generation = args.generation
+            version = version_of(generation)
+            config_name = None
+        else:
+            name = args.config or os.environ.get(
+                "ROCJITSU_CONFIG_PATH", "gfx1250_mi455x.json"
+            )
+            config = resolve_config(name)
+            generation, version = generation_for_config(config)
+            config_name = config.name
         generate(
             output=args.output,
-            config=resolve_config(args.config),
+            generation=generation,
+            version=version,
+            config_name=config_name,
             ip_discovery=args.ip_discovery,
             firmware_set=args.firmware_set,
         )
