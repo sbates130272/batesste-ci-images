@@ -465,6 +465,14 @@ Preview the docker commands without executing them:
 ./ci-images-tool.py build --dry-run
 ```
 
+A build with registry credentials set pushes every tag as soon as the image is
+built, rolling aliases and qcow2 artifacts included. `--no-push` builds and tags
+locally and publishes nothing, which is what a throwaway test build wants:
+
+```bash
+./ci-images-tool.py build ubuntu-qcow2-gen@rocjitsu --no-push
+```
+
 Specify a password file for registry authentication:
 
 ```bash
@@ -497,7 +505,10 @@ dependant falls back to the `default` builder, which cannot grant
 `/dev/kvm`, errors out rather than building without it. Pass
 `--base-from-registry` to keep every image on the buildx builder and retain
 KVM, or set registry credentials so the base is published before its dependant
-is built.
+is built. `--no-push` publishes nothing, so it puts a credentialed run back in
+exactly that position and `--base-from-registry` becomes the only way through —
+note that it then layers on whatever base is *already* on Docker Hub, not the
+one this run just built.
 
 Two caches are in play:
 
