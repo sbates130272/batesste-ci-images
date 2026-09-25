@@ -95,7 +95,26 @@ if ! { [ -c /dev/kvm ] && (exec 3<> /dev/kvm); } 2>/dev/null; then
 fi
 
 mkdir -p "${QM}/images"
-cp "${CTX}"/cloud-image-cache/*.img "${QM}/images/" 2>/dev/null || true
+# common/cloud-image-cache/ is a *read-only* bind mount of the build context, so
+# this seeds gen-vm's image directory but the build can never write back into
+# it: an empty cache stays empty until someone drops an .img there by hand, and
+# every build then re-downloads ~800 MB with nothing in the log to say so. That
+# went unnoticed from 2026-09-02 to 2026-09-25 because the cp discarded both
+# stderr and its exit status. Report which way it went instead.
+#
+# What lands here is not asserted against ${FINAL_RELEASE}/${FINAL_ARCH}: the
+# cloud image filenames are gen-vm's convention, upstream in qemu-minimal, and
+# duplicating it here is one more thing to drift. A seeded-but-unused cache
+# shows up as this line naming the file, followed by gen-vm downloading anyway.
+if cp "${CTX}"/cloud-image-cache/*.img "${QM}/images/" 2>/dev/null; then
+    echo "Cloud image cache: seeded from common/cloud-image-cache/"
+    for img in "${QM}"/images/*.img; do
+        echo "  $(basename "${img}") ($(du -h "${img}" | cut -f1))"
+    done
+else
+    echo "Cloud image cache: EMPTY (common/cloud-image-cache/)," \
+         "gen-vm will download the ${FINAL_RELEASE} ${FINAL_ARCH} image"
+fi
 
 # Extra packages are appended to qemu-minimal's default cloud-init manifest,
 # one "  - name" entry per line.  ${KERNEL_VERSION} expands to the *host*
@@ -227,9 +246,25 @@ if [ -n "${FINAL_KERNEL_REF}" ]; then
     rm -rf "${DEBDIR}"
     mkdir -p "${DEBDIR}"
 
+    # Two observed failure modes against kernel.ubuntu.com, both minutes into a
+    # build and neither previously guarded: a .deb transfer died with curl 92
+    # (HTTP/2 PROTOCOL_ERROR, stream reset mid-transfer), and the directory
+    # listing 503s in bursts that clear within the minute. --http1.1 sidesteps
+    # the first by not multiplexing at all -- the reset was not traced to a
+    # cause, and nothing here needs HTTP/2, so avoiding it is cheaper than
+    # diagnosing it.
+    #
+    # --retry-all-errors is what makes the retries apply: plain --retry covers
+    # timeouts, refused connections and 5xx, and a mid-transfer protocol error
+    # is none of those, so without it curl gives up on the first failure. That
+    # is why --retry-connrefused, used elsewhere in the repo, would not have
+    # caught this.
+    CURL_RETRY="--http1.1 --retry 5 --retry-delay 2 --retry-all-errors"
+
     # -64k is the arm64 page-size variant; taking both would install two
     # kernels and leave grub picking between them.
-    NAMES=$(curl -fsSL "${MAINLINE}/" |
+    # shellcheck disable=SC2086
+    NAMES=$(curl -fsSL ${CURL_RETRY} --max-time 120 "${MAINLINE}/" |
         grep -oE 'linux-[a-z-]+-[0-9][^"]*\.deb' |
         grep -v -- '-64k' | sort -u)
     [ -n "${NAMES}" ] || {
@@ -239,9 +274,13 @@ if [ -n "${FINAL_KERNEL_REF}" ]; then
         exit 1
     }
     echo "Fetching mainline kernel ${FINAL_KERNEL_REF}:"
+    # No --max-time: linux-modules is ~100 MB and this runs on links where the
+    # 120s the listing gets is not enough for it. The retry budget above is the
+    # guard against a hung transfer, not a deadline.
     for n in ${NAMES}; do
         echo "  ${n}"
-        curl -fsSL -o "${DEBDIR}/${n}" "${MAINLINE}/${n}"
+        # shellcheck disable=SC2086
+        curl -fsSL ${CURL_RETRY} -o "${DEBDIR}/${n}" "${MAINLINE}/${n}"
     done
     KERNEL_DEBS=$(echo "${NAMES}" | tr '\n' ' ' | sed 's/ $//')
 

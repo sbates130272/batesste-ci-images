@@ -1312,6 +1312,10 @@ def cmd_build(args: argparse.Namespace) -> None:
     )
     targets = resolve_targets(cfg, args.image)
     dry_run: bool = args.dry_run
+    # --no-push governs what this run *writes*, not what it may read: the login
+    # below still happens, so base pulls stay authenticated rather than
+    # dropping onto Docker Hub's anonymous rate limit for a multi-GB base.
+    pushing = has_credentials(cfg) and not args.no_push
 
     insecure_ok = True
     if not dry_run:
@@ -1342,18 +1346,23 @@ def cmd_build(args: argparse.Namespace) -> None:
     # builder, rather than trading KVM for a local image reference. Only worth it
     # for entitlement-needing images -- routing ubuntu-cuda-rocm-fio the same way
     # would re-pull a 28 GB base for no gain.
-    if has_credentials(cfg):
+    #
+    # --no-push takes that away again: nothing this run builds reaches the
+    # registry, so the published base is whatever was there beforehand. The
+    # target stays in local_bases and the check below makes the choice explicit
+    # rather than silently building a guest on a stale base.
+    if pushing:
         local_bases -= {t for t in local_bases if needs_entitlement(cfg, t)}
 
     for t in sorted(local_bases, key=lambda x: x.key):
         if needs_entitlement(cfg, t):
             console.print(
                 f"[red]Error:[/] {base_target(cfg, t)} is being built in this "
-                f"run and no registry credentials are set, so {t.key} would have "
+                f"run and is not being published, so {t.key} would have "
                 "to build on the 'default' builder, which cannot grant "
                 "security.insecure -- and its VM build needs /dev/kvm.\n"
                 "Pass --base-from-registry to build against the published base "
-                "and keep KVM, or set registry credentials."
+                "and keep KVM, or drop --no-push / set registry credentials."
             )
             sys.exit(1)
 
@@ -1426,7 +1435,7 @@ def cmd_build(args: argparse.Namespace) -> None:
             export_payload(dest, staging)
             console.print(f"[green]Payload[/] {dest}")
 
-        if has_credentials(cfg):
+        if pushing:
             console.rule("[bold]Pushing to registry[/]")
             for ref in refs:
                 subprocess.run(["docker", "push", ref], check=True)
@@ -1438,6 +1447,8 @@ def cmd_build(args: argparse.Namespace) -> None:
                     payload_dir(cfg, target),
                     [f"{t}{DEFAULT_ARTIFACT_TAG_SUFFIX}" for t in tag_set(cfg, target)],
                 )
+        elif args.no_push:
+            console.print("[dim]--no-push given, skipping push and artifact publish[/]")
         else:
             console.print("[dim]Registry credentials not provided, skipping push[/]")
 
@@ -1482,6 +1493,8 @@ def _print_build_summary(
         table.add_row("Cache Bust", args.cache_bust)
     if args.no_cache:
         table.add_row("No Cache", "true")
+    if args.no_push:
+        table.add_row("Push", "false (--no-push)")
     console.print(table)
 
 
@@ -3582,6 +3595,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--password-file",
         metavar="FILE",
         help="File containing registry password",
+    )
+    p_build.add_argument(
+        "--no-push",
+        action="store_true",
+        help=(
+            "Build and tag locally without pushing anything: no image push, "
+            "no qcow2 artifact, and no move of the rolling aliases"
+        ),
     )
     p_build.add_argument(
         "--base-from-registry",
