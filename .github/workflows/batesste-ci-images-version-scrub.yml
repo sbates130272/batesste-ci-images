@@ -35,14 +35,25 @@ jobs:
       - name: Install tool dependencies
         run: pip install -r requirements.txt
 
+      # Every repo version-scrub.sh reads is public, so these lookups need no
+      # privileged credential -- the default token is enough, and two of the
+      # fetches send no header at all. A PAT was only ever here on the theory
+      # that some pin source was private; none is. It was also actively harmful:
+      # gh_curl branches on the token being non-empty, never on it working, so
+      # once VERSION_SCRUB_PAT expired every authenticated fetch 401'd and the
+      # lane failed on requests that would have succeeded unauthenticated.
       - name: Run version scrub
         env:
-          GITHUB_TOKEN: ${{ secrets.VERSION_SCRUB_PAT || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/version-scrub.sh
 
+      # The permissions block above grants what this needs. One accepted cost:
+      # a PR opened by the default GITHUB_TOKEN does not trigger pull_request
+      # workflows, so the scrub PR arrives with no Lint or Dockerfile Test
+      # result. Push any commit to its branch to run them.
       - name: Open PR if versions changed
         env:
-          GITHUB_TOKEN: ${{ secrets.VERSION_SCRUB_PAT || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_BODY: |
             Automated version scrub — upstream dependency updates detected
             and applied by `scripts/version-scrub.sh`.
