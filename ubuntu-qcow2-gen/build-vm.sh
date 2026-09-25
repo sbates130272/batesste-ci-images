@@ -95,7 +95,26 @@ if ! { [ -c /dev/kvm ] && (exec 3<> /dev/kvm); } 2>/dev/null; then
 fi
 
 mkdir -p "${QM}/images"
-cp "${CTX}"/cloud-image-cache/*.img "${QM}/images/" 2>/dev/null || true
+# common/cloud-image-cache/ is a *read-only* bind mount of the build context, so
+# this seeds gen-vm's image directory but the build can never write back into
+# it: an empty cache stays empty until someone drops an .img there by hand, and
+# every build then re-downloads ~800 MB with nothing in the log to say so. That
+# went unnoticed from 2026-09-02 to 2026-09-25 because the cp discarded both
+# stderr and its exit status. Report which way it went instead.
+#
+# What lands here is not asserted against ${FINAL_RELEASE}/${FINAL_ARCH}: the
+# cloud image filenames are gen-vm's convention, upstream in qemu-minimal, and
+# duplicating it here is one more thing to drift. A seeded-but-unused cache
+# shows up as this line naming the file, followed by gen-vm downloading anyway.
+if cp "${CTX}"/cloud-image-cache/*.img "${QM}/images/" 2>/dev/null; then
+    echo "Cloud image cache: seeded from common/cloud-image-cache/"
+    for img in "${QM}"/images/*.img; do
+        echo "  $(basename "${img}") ($(du -h "${img}" | cut -f1))"
+    done
+else
+    echo "Cloud image cache: EMPTY (common/cloud-image-cache/)," \
+         "gen-vm will download the ${FINAL_RELEASE} ${FINAL_ARCH} image"
+fi
 
 # Extra packages are appended to qemu-minimal's default cloud-init manifest,
 # one "  - name" entry per line.  ${KERNEL_VERSION} expands to the *host*
