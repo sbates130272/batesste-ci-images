@@ -227,9 +227,25 @@ if [ -n "${FINAL_KERNEL_REF}" ]; then
     rm -rf "${DEBDIR}"
     mkdir -p "${DEBDIR}"
 
+    # Two observed failure modes against kernel.ubuntu.com, both minutes into a
+    # build and neither previously guarded: a .deb transfer died with curl 92
+    # (HTTP/2 PROTOCOL_ERROR, stream reset mid-transfer), and the directory
+    # listing 503s in bursts that clear within the minute. --http1.1 sidesteps
+    # the first by not multiplexing at all -- the reset was not traced to a
+    # cause, and nothing here needs HTTP/2, so avoiding it is cheaper than
+    # diagnosing it.
+    #
+    # --retry-all-errors is what makes the retries apply: plain --retry covers
+    # timeouts, refused connections and 5xx, and a mid-transfer protocol error
+    # is none of those, so without it curl gives up on the first failure. That
+    # is why --retry-connrefused, used elsewhere in the repo, would not have
+    # caught this.
+    CURL_RETRY="--http1.1 --retry 5 --retry-delay 2 --retry-all-errors"
+
     # -64k is the arm64 page-size variant; taking both would install two
     # kernels and leave grub picking between them.
-    NAMES=$(curl -fsSL "${MAINLINE}/" |
+    # shellcheck disable=SC2086
+    NAMES=$(curl -fsSL ${CURL_RETRY} --max-time 120 "${MAINLINE}/" |
         grep -oE 'linux-[a-z-]+-[0-9][^"]*\.deb' |
         grep -v -- '-64k' | sort -u)
     [ -n "${NAMES}" ] || {
@@ -239,9 +255,13 @@ if [ -n "${FINAL_KERNEL_REF}" ]; then
         exit 1
     }
     echo "Fetching mainline kernel ${FINAL_KERNEL_REF}:"
+    # No --max-time: linux-modules is ~100 MB and this runs on links where the
+    # 120s the listing gets is not enough for it. The retry budget above is the
+    # guard against a hung transfer, not a deadline.
     for n in ${NAMES}; do
         echo "  ${n}"
-        curl -fsSL -o "${DEBDIR}/${n}" "${MAINLINE}/${n}"
+        # shellcheck disable=SC2086
+        curl -fsSL ${CURL_RETRY} -o "${DEBDIR}/${n}" "${MAINLINE}/${n}"
     done
     KERNEL_DEBS=$(echo "${NAMES}" | tr '\n' ' ' | sed 's/ $//')
 
