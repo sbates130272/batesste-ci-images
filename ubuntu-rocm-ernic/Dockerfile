@@ -16,7 +16,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     librdmacm-dev
 
 ARG ROCM_ERNIC_REPO=https://github.com/ROCm/rocm-ernic.git
-ARG ROCM_ERNIC_COMMIT=0b48aa1d5821a66c4fb5b78f049b1d9a759a6e17
+ARG ROCM_ERNIC_COMMIT=1484557971b038f655da85b0d77ef0ba88308c22
 
 WORKDIR /build
 

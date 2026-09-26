@@ -33,12 +33,12 @@ adding an image or a variant adds its row.
 **Pinned commits**
 
 [![libvfio-user 8039244](https://img.shields.io/badge/libvfio--user-8039244-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/803924493a7c787b2ba358751f55f07d5dba64b2)
-[![qemu-minimal e73a1e6](https://img.shields.io/badge/qemu--minimal-e73a1e6-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/e73a1e636fecf2258968a01225c7425fb98d6aa2)
-[![rocm-ernic 0b48aa1](https://img.shields.io/badge/rocm--ernic-0b48aa1-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/0b48aa1d5821a66c4fb5b78f049b1d9a759a6e17)
-[![rocjitsu c85bb75](https://img.shields.io/badge/rocjitsu-c85bb75-ED1C24)](https://github.com/ROCm/rocm-systems/commit/c85bb752577b6608745f4ff7835e3da91a190795)
+[![qemu-minimal fa6d855](https://img.shields.io/badge/qemu--minimal-fa6d855-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/fa6d8556572e6a71cc99a193f1624f7c529c4a20)
+[![rocm-ernic 1484557](https://img.shields.io/badge/rocm--ernic-1484557-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/1484557971b038f655da85b0d77ef0ba88308c22)
+[![rocjitsu fafcb3f](https://img.shields.io/badge/rocjitsu-fafcb3f-ED1C24)](https://github.com/ROCm/rocm-systems/commit/fafcb3f6e08ec314968040df4b4fd1b7319199ec)
 [![spdk 18d1d8d](https://img.shields.io/badge/spdk-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
-[![fio 6bc57a9](https://img.shields.io/badge/fio-6bc57a9-4B8BBE)](https://github.com/axboe/fio/commit/6bc57a931f04fa3f50348d8c8f087187f050c6e1)
-[![ucx 12d6aa6](https://img.shields.io/badge/ucx-12d6aa6-4B8BBE)](https://github.com/openucx/ucx/commit/12d6aa65956996625c8daf39cbb3475ef4a1a35b)
+[![fio 270b6fb](https://img.shields.io/badge/fio-270b6fb-4B8BBE)](https://github.com/axboe/fio/commit/270b6fb4e295ef1f24545b72eda33281088b46e0)
+[![ucx 49c5d7f](https://img.shields.io/badge/ucx-49c5d7f-4B8BBE)](https://github.com/openucx/ucx/commit/49c5d7f5fbc9342cbf437729e009f5abe12912b2)
 [![etcd-cpp-apiv3 7c6e714](https://img.shields.io/badge/etcd--cpp--apiv3-7c6e714-419EDA)](https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3/commit/7c6e714f188f9576e25e0350cac4181139eec23e)
 
 <!-- END PINNED BADGES -->

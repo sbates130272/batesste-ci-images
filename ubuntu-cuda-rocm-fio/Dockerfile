@@ -10,7 +10,7 @@ ARG FIO_REPO=https://github.com/axboe/fio.git
 # The asynchronous hipFile engine is not upstream at all: the
 # ubuntu-cuda-rocm-fio@async-hipfile variant overrides both args to build it
 # from a ROCm fork branch. Everything below is written to work either way.
-ARG FIO_COMMIT=6bc57a931f04fa3f50348d8c8f087187f050c6e1
+ARG FIO_COMMIT=270b6fb4e295ef1f24545b72eda33281088b46e0
 ARG CACHE_BUST=
 
 RUN echo "Cache bust: ${CACHE_BUST:-none}" > /tmp/fio_cache_bust.txt

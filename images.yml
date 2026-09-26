@@ -219,7 +219,7 @@ images:
     vars:
       # Must be a master commit -- the libhipfile engine is not in any fio tag yet
       fio_repo: https://github.com/axboe/fio.git
-      fio_commit: 6bc57a931f04fa3f50348d8c8f087187f050c6e1
+      fio_commit: 270b6fb4e295ef1f24545b72eda33281088b46e0
       # Provenance only, and empty here: the default target tracks master HEAD,
       # so it has no branch of its own worth recording. A variant built from a
       # fork branch fills it in and the label appears only there.
@@ -281,7 +281,7 @@ images:
       # whichever branch ucx_branch names.
       ucx_repo: https://github.com/openucx/ucx.git
       ucx_branch: v1.23.x
-      ucx_commit: 12d6aa65956996625c8daf39cbb3475ef4a1a35b
+      ucx_commit: 49c5d7f5fbc9342cbf437729e009f5abe12912b2
       etcd_repo: https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git
       etcd_commit: 7c6e714f188f9576e25e0350cac4181139eec23e
       # Abseil and gRPC are built from source because Ubuntu's libgrpc++-dev
@@ -332,7 +332,7 @@ images:
     base: ubuntu-libvfio-user
     artifact: true
     vars:
-      rocm_ernic_commit: 0b48aa1d5821a66c4fb5b78f049b1d9a759a6e17
+      rocm_ernic_commit: 1484557971b038f655da85b0d77ef0ba88308c22
     build_args:
       ROCM_ERNIC_COMMIT: "{rocm_ernic_commit}"
     # This image links against libvfio-user, so that pin belongs in the tag:
@@ -369,7 +369,7 @@ images:
       # that exists -- no CI anywhere enables ROCJITSU_ENABLE_VFIO, so develop
       # can lose the vfio-user compute path with every upstream check green.
       rocjitsu_commit:
-        value: c85bb752577b6608745f4ff7835e3da91a190795
+        value: fafcb3f6e08ec314968040df4b4fd1b7319199ec
         env: ROCM_ROCJITSU_COMMIT
       # Compile-time log groups (emulation/rocjitsu/cmake/rj_log.cmake): OFF,
       # ALL, a comma-separated subset of VM, CP, DBT_HOOKS, PLUGINS, DRIVER, or
@@ -475,7 +475,7 @@ images:
       # ubuntu-qcow2-gen -- the ansible/ tree its guest builds are driven by, so
       # the CLI and the playbooks always come from one commit.
       qemu_minimal_repo: https://github.com/sbates130272/qemu-minimal.git
-      qemu_minimal_commit: e73a1e636fecf2258968a01225c7425fb98d6aa2
+      qemu_minimal_commit: fa6d8556572e6a71cc99a193f1624f7c529c4a20
       # Provenance only, and empty here: the default target builds a release
       # tag, which belongs to no branch. A fork variant fills it in and the
       # label appears only there.
