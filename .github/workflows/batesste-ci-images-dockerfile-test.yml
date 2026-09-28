@@ -52,6 +52,9 @@ on:
 env:
   CACHE_REGISTRY: ghcr.io/${{ github.repository }}/buildcache
   BASE_REGISTRY: ghcr.io/${{ github.repository }}/ci-base
+  FORK_PR: ${{ github.event_name == 'pull_request' &&
+    github.event.pull_request.head.repo.full_name != github.repository &&
+    'true' || 'false' }}
 
 jobs:
   discover-images:
@@ -164,6 +167,8 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+        with:
+          driver-opts: network=host
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
@@ -172,42 +177,89 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
+      - name: Start local registry
+        if: env.FORK_PR == 'true'
+        run: docker run -d -p 5000:5000 --name ci-local-registry registry:2
+
       - name: Compute base refs
         id: refs
         run: |
-          echo "base=${BASE_REGISTRY}:ubuntu-base-${GITHUB_SHA}" \
-            >> "$GITHUB_OUTPUT"
-          echo "vfu=${BASE_REGISTRY}:ubuntu-libvfio-user-${GITHUB_SHA}" \
-            >> "$GITHUB_OUTPUT"
+          if [ "${FORK_PR}" = "true" ]; then
+            echo "base=127.0.0.1:5000/ci-base:ubuntu-base-${GITHUB_SHA}" \
+              >> "$GITHUB_OUTPUT"
+            echo "vfu=127.0.0.1:5000/ci-base:ubuntu-libvfio-user-${GITHUB_SHA}" \
+              >> "$GITHUB_OUTPUT"
+          else
+            echo "base=${BASE_REGISTRY}:ubuntu-base-${GITHUB_SHA}" \
+              >> "$GITHUB_OUTPUT"
+            echo "vfu=${BASE_REGISTRY}:ubuntu-libvfio-user-${GITHUB_SHA}" \
+              >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build and push ubuntu-base
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ubuntu-base/Dockerfile
-          push: true
+          push: ${{ env.FORK_PR != 'true' }}
+          load: ${{ env.FORK_PR == 'true' }}
           tags: ${{ steps.refs.outputs.base }}
           cache-from: type=registry,ref=${{ env.CACHE_REGISTRY }}:ubuntu-base
-          cache-to: >-
-            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
+          cache-to: ${{ env.FORK_PR != 'true' &&
+            format(
+              'type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref={0}:ubuntu-base',
               env.CACHE_REGISTRY
-            }}:ubuntu-base
+            ) || '' }}
+
+      - name: Publish ubuntu-base to local registry
+        if: env.FORK_PR == 'true'
+        run: docker push "${{ steps.refs.outputs.base }}"
 
       - name: Build and push ubuntu-libvfio-user
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ubuntu-libvfio-user/Dockerfile
-          push: true
+          push: ${{ env.FORK_PR != 'true' }}
+          load: ${{ env.FORK_PR == 'true' }}
           tags: ${{ steps.refs.outputs.vfu }}
           build-args: |
             BASE_IMAGE=${{ steps.refs.outputs.base }}
           cache-from: >-
             type=registry,ref=${{ env.CACHE_REGISTRY }}:ubuntu-libvfio-user
-          cache-to: >-
-            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
+          cache-to: ${{ env.FORK_PR != 'true' &&
+            format(
+              'type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref={0}:ubuntu-libvfio-user',
               env.CACHE_REGISTRY
-            }}:ubuntu-libvfio-user
+            ) || '' }}
+
+      - name: Export ubuntu-base image
+        if: env.FORK_PR == 'true'
+        run: |
+          docker save "${{ steps.refs.outputs.base }}" \
+            | zstd -T0 -3 > /tmp/ubuntu-base.tar.zst
+
+      - uses: actions/upload-artifact@v7
+        if: env.FORK_PR == 'true'
+        with:
+          name: docker-image-ubuntu-base
+          path: /tmp/ubuntu-base.tar.zst
+          compression-level: 0
+          retention-days: 1
+
+      - name: Export ubuntu-libvfio-user image
+        if: env.FORK_PR == 'true'
+        run: |
+          docker save "${{ steps.refs.outputs.vfu }}" \
+            | zstd -T0 -3 > /tmp/ubuntu-libvfio-user.tar.zst
+
+      - uses: actions/upload-artifact@v7
+        if: env.FORK_PR == 'true'
+        with:
+          name: docker-image-ubuntu-libvfio-user
+          path: /tmp/ubuntu-libvfio-user.tar.zst
+          compression-level: 0
+          retention-days: 1
 
       - name: Verify libvfio-user commit
         run: |
@@ -330,6 +382,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
         with:
+          driver-opts: network=host
           # Guest builds reach /dev/kvm only from a RUN --security=insecure
           # step. No matrix-tier target needs this today -- the guests are all
           # `job: derived` -- but the gating below is on the entitlement, not on
@@ -344,6 +397,30 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
+
+      - name: Start local registry
+        if: env.FORK_PR == 'true'
+        run: docker run -d -p 5000:5000 --name ci-local-registry registry:2
+
+      - name: Download ubuntu-base image artifact
+        if: env.FORK_PR == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: docker-image-ubuntu-base
+
+      - name: Download ubuntu-libvfio-user image artifact
+        if: env.FORK_PR == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: docker-image-ubuntu-libvfio-user
+
+      - name: Load fork base images
+        if: env.FORK_PR == 'true'
+        run: |
+          zstd -dc ubuntu-base.tar.zst | docker load
+          zstd -dc ubuntu-libvfio-user.tar.zst | docker load
+          docker push "${BASE_IMAGE_FOR_UBUNTU_BASE}"
+          docker push "${BASE_IMAGE_FOR_UBUNTU_LIBVFIO_USER}"
 
       # Pins live only in ci-images-tool.py; the workflow asks for them
       # rather than repeating them, so the two cannot drift.
@@ -368,10 +445,12 @@ jobs:
             batesste-ci-images-${{ matrix.target.scope }}:test
           cache-from: >-
             type=registry,ref=${{ env.CACHE_REGISTRY }}:${{ matrix.target.scope }}
-          cache-to: >-
-            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
-              env.CACHE_REGISTRY
-            }}:${{ matrix.target.scope }}
+          cache-to: ${{ env.FORK_PR != 'true' &&
+            format(
+              'type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref={0}:{1}',
+              env.CACHE_REGISTRY,
+              matrix.target.scope
+            ) || '' }}
           build-args: ${{ steps.buildargs.outputs.args }}
 
       # ── per-image checks, run here rather than in a downstream job:
@@ -587,6 +666,7 @@ jobs:
       # different content to the same ref.
       - name: Push base to GHCR for build-derived
         if: >-
+          env.FORK_PR != 'true' &&
           contains(
             fromJson(needs.discover-images.outputs.derived_bases),
             matrix.target.scope
@@ -600,7 +680,15 @@ jobs:
       # job still pay the artifact round-trip. zstd rather than gzip: these
       # images are multi-GB and gzip is the slowest part of the hop.
       - name: Export Docker image
-        if: matrix.target.artifact
+        if: >-
+          matrix.target.artifact ||
+          (
+            env.FORK_PR == 'true' &&
+            contains(
+              fromJson(needs.discover-images.outputs.derived_bases),
+              matrix.target.scope
+            )
+          )
         run: |
           docker save \
             "batesste-ci-images-${{ matrix.target.scope }}:test" \
@@ -608,7 +696,15 @@ jobs:
             > "/tmp/${{ matrix.target.scope }}.tar.zst"
 
       - uses: actions/upload-artifact@v7
-        if: matrix.target.artifact
+        if: >-
+          matrix.target.artifact ||
+          (
+            env.FORK_PR == 'true' &&
+            contains(
+              fromJson(needs.discover-images.outputs.derived_bases),
+              matrix.target.scope
+            )
+          )
         with:
           name: >-
             docker-image-${{ matrix.target.scope }}
@@ -673,6 +769,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
         with:
+          driver-opts: network=host
           buildkitd-flags: >-
             --allow-insecure-entitlement security.insecure
             --allow-insecure-entitlement network.host
@@ -684,6 +781,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
+      - name: Start local registry
+        if: env.FORK_PR == 'true'
+        run: docker run -d -p 5000:5000 --name ci-local-registry registry:2
+
       # The base used to be loaded from an artifact into the local daemon,
       # which forced this build onto the plain docker driver and cost it the
       # layer cache entirely. The build job now pushes it to GHCR directly,
@@ -691,8 +792,13 @@ jobs:
       - name: Resolve base ref
         id: base
         run: |
-          echo "ref=${BASE_REGISTRY}:${{ matrix.target.base_scope }}-${GITHUB_SHA}" \
-            >> "$GITHUB_OUTPUT"
+          if [ "${FORK_PR}" = "true" ]; then
+            echo "ref=127.0.0.1:5000/ci-base:${{ matrix.target.base_scope }}-${GITHUB_SHA}" \
+              >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${BASE_REGISTRY}:${{ matrix.target.base_scope }}-${GITHUB_SHA}" \
+              >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -762,6 +868,7 @@ jobs:
       # `base:` -- a run that selects a derived target always selects its base
       # into the matrix too. See the path-filter section of the README.
       - name: Wait for base image
+        if: env.FORK_PR != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REF: ${{ steps.base.outputs.ref }}
@@ -793,6 +900,49 @@ jobs:
           done
           echo "::error::timed out waiting for ${REF}"
           exit 1
+
+      - name: Wait for base artifact
+        if: env.FORK_PR == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SCOPE: ${{ matrix.target.base_scope }}
+        run: |
+          set -uo pipefail
+          JOB="Build ${BASE_SCOPE}"
+          for _ in $(seq 1 120); do
+            concl=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" \
+              --paginate \
+              -q ".jobs[] | select(.name == \"${JOB}\") | .conclusion" \
+              2>/dev/null || true)
+            case "$concl" in
+              success)
+                exit 0
+                ;;
+              failure|cancelled|timed_out)
+                echo "::error::base job '${JOB}' ended: ${concl}"
+                exit 1
+                ;;
+            esac
+            sleep 30
+          done
+          echo "::error::timed out waiting for base artifact from ${JOB}"
+          exit 1
+
+      - name: Download base image artifact
+        if: env.FORK_PR == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: docker-image-${{ matrix.target.base_scope }}
+
+      - name: Load base image into local registry
+        if: env.FORK_PR == 'true'
+        run: |
+          zstd -dc "${{ matrix.target.base_scope }}.tar.zst" | docker load
+          docker tag \
+            "batesste-ci-images-${{ matrix.target.base_scope }}:test" \
+            "${{ steps.base.outputs.ref }}"
+          docker push "${{ steps.base.outputs.ref }}"
 
       # BASE_IMAGE_<SCOPE> is the dependant-keyed override, so the env var
       # name has to be built from the target rather than written out. That
@@ -830,10 +980,12 @@ jobs:
           build-args: ${{ steps.buildargs.outputs.args }}
           cache-from: >-
             type=registry,ref=${{ env.CACHE_REGISTRY }}:${{ matrix.target.scope }}
-          cache-to: >-
-            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
-              env.CACHE_REGISTRY
-            }}:${{ matrix.target.scope }}
+          cache-to: ${{ env.FORK_PR != 'true' &&
+            format(
+              'type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref={0}:{1}',
+              env.CACHE_REGISTRY,
+              matrix.target.scope
+            ) || '' }}
 
       # The payload stage copies to /output/, which the local exporter
       # faithfully reproduces; renaming the inner directory into place strips a
@@ -1057,7 +1209,7 @@ jobs:
   test-compose:
     name: Test Docker Compose Stack
     runs-on: ubuntu-latest
-    needs: [discover-images, build, build-derived]
+    needs: [discover-images, build-bases, build, build-derived]
     # The guest comes from the derived tier and the three containers from the
     # matrix tier, so this reads both key lists. Checking ubuntu-qcow2-gen
     # against `keys` is why this job did not run at all: `keys` is matrix-only.
@@ -1068,8 +1220,9 @@ jobs:
     # skipping this job for the wrong reason.
     if: >-
       !cancelled() &&
-      needs.build.result != 'failure' &&
-      needs.build-derived.result != 'failure' &&
+      needs.build-bases.result == 'success' &&
+      needs.build.result == 'success' &&
+      needs.build-derived.result == 'success' &&
       contains(
         fromJson(needs.discover-images.outputs.keys),
         'ubuntu-qemu-libvfio-user'
