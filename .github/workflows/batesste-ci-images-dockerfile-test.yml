@@ -171,6 +171,7 @@ jobs:
           driver-opts: network=host
 
       - name: Log in to GHCR
+        if: env.FORK_PR != 'true'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -204,7 +205,8 @@ jobs:
           push: ${{ env.FORK_PR != 'true' }}
           load: ${{ env.FORK_PR == 'true' }}
           tags: ${{ steps.refs.outputs.base }}
-          cache-from: type=registry,ref=${{ env.CACHE_REGISTRY }}:ubuntu-base
+          cache-from: ${{ env.FORK_PR != 'true' &&
+            format('type=registry,ref={0}:ubuntu-base', env.CACHE_REGISTRY) || '' }}
           cache-to: ${{ env.FORK_PR != 'true' &&
             format(
               'type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref={0}:ubuntu-base',
@@ -225,8 +227,8 @@ jobs:
           tags: ${{ steps.refs.outputs.vfu }}
           build-args: |
             BASE_IMAGE=${{ steps.refs.outputs.base }}
-          cache-from: >-
-            type=registry,ref=${{ env.CACHE_REGISTRY }}:ubuntu-libvfio-user
+          cache-from: ${{ env.FORK_PR != 'true' &&
+            format('type=registry,ref={0}:ubuntu-libvfio-user', env.CACHE_REGISTRY) || '' }}
           cache-to: ${{ env.FORK_PR != 'true' &&
             format(
               'type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref={0}:ubuntu-libvfio-user',
@@ -392,6 +394,7 @@ jobs:
             --allow-insecure-entitlement network.host
 
       - name: Log in to GHCR
+        if: env.FORK_PR != 'true'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -447,8 +450,8 @@ jobs:
           load: true
           tags: >-
             batesste-ci-images-${{ matrix.target.scope }}:test
-          cache-from: >-
-            type=registry,ref=${{ env.CACHE_REGISTRY }}:${{ matrix.target.scope }}
+          cache-from: ${{ env.FORK_PR != 'true' &&
+            format('type=registry,ref={0}:{1}', env.CACHE_REGISTRY, matrix.target.scope) || '' }}
           cache-to: ${{ env.FORK_PR != 'true' &&
             format(
               'type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref={0}:{1}',
@@ -779,6 +782,7 @@ jobs:
             --allow-insecure-entitlement network.host
 
       - name: Log in to GHCR
+        if: env.FORK_PR != 'true'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -984,8 +988,8 @@ jobs:
           tags: >-
             batesste-ci-images-${{ matrix.target.scope }}:test
           build-args: ${{ steps.buildargs.outputs.args }}
-          cache-from: >-
-            type=registry,ref=${{ env.CACHE_REGISTRY }}:${{ matrix.target.scope }}
+          cache-from: ${{ env.FORK_PR != 'true' &&
+            format('type=registry,ref={0}:{1}', env.CACHE_REGISTRY, matrix.target.scope) || '' }}
           cache-to: ${{ env.FORK_PR != 'true' &&
             format(
               'type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref={0}:{1}',
