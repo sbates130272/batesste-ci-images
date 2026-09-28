@@ -52,6 +52,11 @@ on:
 env:
   CACHE_REGISTRY: ghcr.io/${{ github.repository }}/buildcache
   BASE_REGISTRY: ghcr.io/${{ github.repository }}/ci-base
+  GHCR_WRITE_ALLOWED: >-
+    ${{
+      github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository
+    }}
 
 jobs:
   discover-images:
@@ -166,6 +171,7 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
+        if: env.GHCR_WRITE_ALLOWED == 'true'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -185,29 +191,41 @@ jobs:
         with:
           context: .
           file: ubuntu-base/Dockerfile
-          push: true
+          push: ${{ env.GHCR_WRITE_ALLOWED == 'true' }}
+          load: ${{ env.GHCR_WRITE_ALLOWED != 'true' }}
           tags: ${{ steps.refs.outputs.base }}
           cache-from: type=registry,ref=${{ env.CACHE_REGISTRY }}:ubuntu-base
           cache-to: >-
-            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
-              env.CACHE_REGISTRY
-            }}:ubuntu-base
+            ${{
+              env.GHCR_WRITE_ALLOWED == 'true'
+              && format(
+                'type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref={0}:ubuntu-base',
+                env.CACHE_REGISTRY
+              )
+              || ''
+            }}
 
       - name: Build and push ubuntu-libvfio-user
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ubuntu-libvfio-user/Dockerfile
-          push: true
+          push: ${{ env.GHCR_WRITE_ALLOWED == 'true' }}
+          load: ${{ env.GHCR_WRITE_ALLOWED != 'true' }}
           tags: ${{ steps.refs.outputs.vfu }}
           build-args: |
             BASE_IMAGE=${{ steps.refs.outputs.base }}
           cache-from: >-
             type=registry,ref=${{ env.CACHE_REGISTRY }}:ubuntu-libvfio-user
           cache-to: >-
-            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
-              env.CACHE_REGISTRY
-            }}:ubuntu-libvfio-user
+            ${{
+              env.GHCR_WRITE_ALLOWED == 'true'
+              && format(
+                'type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref={0}:ubuntu-libvfio-user',
+                env.CACHE_REGISTRY
+              )
+              || ''
+            }}
 
       - name: Verify libvfio-user commit
         run: |
@@ -241,8 +259,18 @@ jobs:
     env:
       # ci-images-tool.py owns the pins; these point its BASE_IMAGE
       # resolution at the images build-bases just published.
-      BASE_IMAGE_FOR_UBUNTU_BASE: ${{ needs.build-bases.outputs.base }}
-      BASE_IMAGE_FOR_UBUNTU_LIBVFIO_USER: ${{ needs.build-bases.outputs.vfu }}
+      BASE_IMAGE_FOR_UBUNTU_BASE: >-
+        ${{
+          env.GHCR_WRITE_ALLOWED == 'true'
+          && needs.build-bases.outputs.base
+          || ''
+        }}
+      BASE_IMAGE_FOR_UBUNTU_LIBVFIO_USER: >-
+        ${{
+          env.GHCR_WRITE_ALLOWED == 'true'
+          && needs.build-bases.outputs.vfu
+          || ''
+        }}
     steps:
       - uses: actions/checkout@v7
 
@@ -339,6 +367,7 @@ jobs:
             --allow-insecure-entitlement network.host
 
       - name: Log in to GHCR
+        if: env.GHCR_WRITE_ALLOWED == 'true'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -369,9 +398,15 @@ jobs:
           cache-from: >-
             type=registry,ref=${{ env.CACHE_REGISTRY }}:${{ matrix.target.scope }}
           cache-to: >-
-            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
-              env.CACHE_REGISTRY
-            }}:${{ matrix.target.scope }}
+            ${{
+              env.GHCR_WRITE_ALLOWED == 'true'
+              && format(
+                'type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref={0}:{1}',
+                env.CACHE_REGISTRY,
+                matrix.target.scope
+              )
+              || ''
+            }}
           build-args: ${{ steps.buildargs.outputs.args }}
 
       # ── per-image checks, run here rather than in a downstream job:
@@ -587,6 +622,7 @@ jobs:
       # different content to the same ref.
       - name: Push base to GHCR for build-derived
         if: >-
+          env.GHCR_WRITE_ALLOWED == 'true' &&
           contains(
             fromJson(needs.discover-images.outputs.derived_bases),
             matrix.target.scope
@@ -678,21 +714,12 @@ jobs:
             --allow-insecure-entitlement network.host
 
       - name: Log in to GHCR
+        if: env.GHCR_WRITE_ALLOWED == 'true'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-
-      # The base used to be loaded from an artifact into the local daemon,
-      # which forced this build onto the plain docker driver and cost it the
-      # layer cache entirely. The build job now pushes it to GHCR directly,
-      # so there is nothing to fetch: buildx pulls what it needs from the ref.
-      - name: Resolve base ref
-        id: base
-        run: |
-          echo "ref=${BASE_REGISTRY}:${{ matrix.target.base_scope }}-${GITHUB_SHA}" \
-            >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -702,6 +729,21 @@ jobs:
 
       - name: Install tool dependencies
         run: pip install -r requirements.txt
+
+      # The base used to be loaded from an artifact into the local daemon,
+      # which forced this build onto the plain docker driver and cost it the
+      # layer cache entirely. Writable runs still consume the copy this matrix
+      # run pushed to GHCR; fork PRs fall back to the published rolling tag,
+      # because their GITHUB_TOKEN cannot write the scratch package.
+      - name: Resolve base ref
+        id: base
+        run: |
+          if [ "${GHCR_WRITE_ALLOWED}" = "true" ]; then
+            echo "ref=${BASE_REGISTRY}:${{ matrix.target.base_scope }}-${GITHUB_SHA}" \
+              >> "$GITHUB_OUTPUT"
+          else
+            python -c "import importlib.util, sys; from pathlib import Path; mod_path = Path('ci-images-tool.py'); spec = importlib.util.spec_from_file_location('ci_images_tool', mod_path); mod = importlib.util.module_from_spec(spec); sys.modules[spec.name] = mod; spec.loader.exec_module(mod); cfg = mod.load_config(); target = mod.parse_target(cfg, '${{ matrix.target.base }}'); print(f'ref={mod.rolling_ref(cfg, target)}')" >> "$GITHUB_OUTPUT"
+          fi
 
       # ── guest-image support, gated on the entitlement rather than on an
       # image name, so a new `job: derived` guest flavour picks all of this up
@@ -762,6 +804,7 @@ jobs:
       # `base:` -- a run that selects a derived target always selects its base
       # into the matrix too. See the path-filter section of the README.
       - name: Wait for base image
+        if: env.GHCR_WRITE_ALLOWED == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REF: ${{ steps.base.outputs.ref }}
@@ -831,9 +874,15 @@ jobs:
           cache-from: >-
             type=registry,ref=${{ env.CACHE_REGISTRY }}:${{ matrix.target.scope }}
           cache-to: >-
-            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
-              env.CACHE_REGISTRY
-            }}:${{ matrix.target.scope }}
+            ${{
+              env.GHCR_WRITE_ALLOWED == 'true'
+              && format(
+                'type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref={0}:{1}',
+                env.CACHE_REGISTRY,
+                matrix.target.scope
+              )
+              || ''
+            }}
 
       # The payload stage copies to /output/, which the local exporter
       # faithfully reproduces; renaming the inner directory into place strips a
