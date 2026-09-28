@@ -407,18 +407,22 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: docker-image-ubuntu-base
+          path: /tmp/fork-base-images/ubuntu-base
 
       - name: Download ubuntu-libvfio-user image artifact
         if: env.FORK_PR == 'true'
         uses: actions/download-artifact@v8
         with:
           name: docker-image-ubuntu-libvfio-user
+          path: /tmp/fork-base-images/ubuntu-libvfio-user
 
       - name: Load fork base images
         if: env.FORK_PR == 'true'
         run: |
-          zstd -dc ubuntu-base.tar.zst | docker load
-          zstd -dc ubuntu-libvfio-user.tar.zst | docker load
+          zstd -dc /tmp/fork-base-images/ubuntu-base/ubuntu-base.tar.zst \
+            | docker load
+          zstd -dc /tmp/fork-base-images/ubuntu-libvfio-user/ubuntu-libvfio-user.tar.zst \
+            | docker load
           docker push "${BASE_IMAGE_FOR_UBUNTU_BASE}"
           docker push "${BASE_IMAGE_FOR_UBUNTU_LIBVFIO_USER}"
 
@@ -888,7 +892,7 @@ jobs:
             concl=$(gh api \
               "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" \
               --paginate \
-              -q ".jobs[] | select(.name == \"${JOB}\") | .conclusion" \
+              -q "[.jobs[] | select(.name == \"${JOB}\") | .conclusion] | last // \"\"" \
               2>/dev/null || true)
             case "$concl" in
               failure|cancelled|timed_out)
@@ -913,7 +917,7 @@ jobs:
             concl=$(gh api \
               "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" \
               --paginate \
-              -q ".jobs[] | select(.name == \"${JOB}\") | .conclusion" \
+              -q "[.jobs[] | select(.name == \"${JOB}\") | .conclusion] | last // \"\"" \
               2>/dev/null || true)
             case "$concl" in
               success)
@@ -934,11 +938,13 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: docker-image-${{ matrix.target.base_scope }}
+          path: /tmp/derived-base/${{ matrix.target.base_scope }}
 
       - name: Load base image into local registry
         if: env.FORK_PR == 'true'
         run: |
-          zstd -dc "${{ matrix.target.base_scope }}.tar.zst" | docker load
+          zstd -dc "/tmp/derived-base/${{ matrix.target.base_scope }}/${{ matrix.target.base_scope }}.tar.zst" \
+            | docker load
           docker tag \
             "batesste-ci-images-${{ matrix.target.base_scope }}:test" \
             "${{ steps.base.outputs.ref }}"
@@ -1221,8 +1227,10 @@ jobs:
     if: >-
       !cancelled() &&
       needs.build-bases.result == 'success' &&
-      needs.build.result == 'success' &&
-      needs.build-derived.result == 'success' &&
+      needs.build.result != 'failure' &&
+      needs.build.result != 'cancelled' &&
+      needs.build-derived.result != 'failure' &&
+      needs.build-derived.result != 'cancelled' &&
       contains(
         fromJson(needs.discover-images.outputs.keys),
         'ubuntu-qemu-libvfio-user'
