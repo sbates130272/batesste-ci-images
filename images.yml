@@ -444,15 +444,42 @@ images:
       spdk_commit:
         value: 18d1d8dab4f2020e10349009e69f94d47de100f9
         env: SPDK_COMMIT
+      # "false" by default (a real value, not empty, so the release image's
+      # spdk.debug label below reads false rather than blank -- matches
+      # rocjitsu_log_groups's OFF/CP pattern above): the release image is
+      # built with -DNDEBUG -O2 and SPDK_DEBUGLOG compiled out entirely
+      # (include/spdk/log.h gates it on #ifdef DEBUG; see mk/spdk.common.mk).
+      # Only the literal value "true" passes --enable-debug to configure,
+      # which restores it and switches to -DDEBUG -g3 -O0
+      # -fno-omit-frame-pointer -- useful for a stuck-dispatch or KV-fault
+      # investigation, not for ordinary use: it is slower and far noisier.
+      # See the debug variant below and its -L flag guidance in README.md.
+      spdk_debug:
+        value: "false"
+        env: SPDK_DEBUG
     build_args:
       SPDK_REPO: "{spdk_repo}"
       SPDK_BRANCH: "{spdk_branch}"
       SPDK_COMMIT: "{spdk_commit}"
+      SPDK_DEBUG: "{spdk_debug}"
     variant: "spdk.{spdk_commit|short}"
     labels:
       "{ns}.spdk.repo": "{spdk_repo}"
       "{ns}.spdk.branch": "{spdk_branch}"
       "{ns}.spdk.commit": "{spdk_commit}"
+      "{ns}.spdk.debug": "{spdk_debug}"
+    variants:
+      debug:
+        suffix: "-debug"
+        description: >-
+          SPDK built with --enable-debug, restoring SPDK_DEBUGLOG output
+          (-L nvmf, -L nvmf_vfio, -L vfio_user_db, -L nvme, ...; component
+          names come from each module's SPDK_LOG_REGISTER_COMPONENT call, not
+          the transport name) that the release image compiles out. Also
+          switches to -O0 -g3, no -DNDEBUG -- slower and much noisier, so
+          this is for debugging, not ordinary use.
+        vars:
+          spdk_debug: "true"
 
   # The builder/runner toolchain, and only that: QEMU, the qemu-tool CLI,
   # ansible-core, libvfio-user. It builds no guest of its own -- ubuntu-qcow2-gen

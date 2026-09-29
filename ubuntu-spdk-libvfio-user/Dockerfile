@@ -53,6 +53,17 @@ ARG SPDK_BRANCH=rados-nkv
 ARG SPDK_COMMIT=18d1d8dab4f2020e10349009e69f94d47de100f9
 ARG CACHE_BUST=
 
+# "false" by default, so the released image is exactly what it was before
+# this existed. Only the literal value "true" passes --enable-debug to
+# configure, which restores SPDK_DEBUGLOG (include/spdk/log.h gates it on
+# #ifdef DEBUG) and switches COMMON_CFLAGS from -DNDEBUG -O2 to -DDEBUG -g3
+# -O0 -fno-omit-frame-pointer (mk/spdk.common.mk). See images.yml's debug
+# variant. The debug variant also passes --disable-unit-tests: with it the
+# rpc_ut link fails with "multiple definition of spdk_json_strequal" (the
+# test's own copy vs lib/json/json_util.c), and the image never ships the
+# unit tests anyway.
+ARG SPDK_DEBUG=false
+
 RUN echo "Cache bust: ${CACHE_BUST:-none}" > /tmp/spdk_cache_bust.txt
 
 ENV SPDK_DIR=/opt/spdk
@@ -92,13 +103,18 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # PATH rather than CC="ccache gcc": SPDK's makefiles re-exec the compiler by
 # name, so a recorded "ccache gcc" is not preserved the way QEMU's configure
 # preserves it.
+# The base flag list is written once, here, to /build/spdk-configure-flags.txt
+# so the provenance JSON below reads back the flags actually passed instead
+# of carrying its own second copy of the list to keep in sync by hand.
 # hadolint ignore=DL3003
 RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     cd "${SPDK_DIR}" && \
-    PATH=/usr/lib/ccache:${PATH} ./configure \
-        --with-vfio-user \
-        --without-nvme-cuse \
-        --target-arch=corei7 && \
+    SPDK_CONFIGURE_FLAGS="--with-vfio-user --without-nvme-cuse --target-arch=corei7" && \
+    if [ "${SPDK_DEBUG}" = "true" ]; then \
+        SPDK_CONFIGURE_FLAGS="${SPDK_CONFIGURE_FLAGS} --enable-debug --disable-unit-tests"; \
+    fi && \
+    echo "${SPDK_CONFIGURE_FLAGS}" > /build/spdk-configure-flags.txt && \
+    PATH=/usr/lib/ccache:${PATH} ./configure ${SPDK_CONFIGURE_FLAGS} && \
     PATH=/usr/lib/ccache:${PATH} make -j"$(nproc)" && \
     test -x "${SPDK_DIR}/build/bin/nvmf_tgt"
 
@@ -135,8 +151,7 @@ RUN ln -sf "${SPDK_DIR}/build/bin/nvmf_tgt" /usr/local/bin/nvmf_tgt && \
   "spdk_commit": "%s",\n\
   "libvfio_user_commit": "%s",\n\
   "libvfio_user_source": "spdk-submodule",\n\
-  "configure_flags": ["--with-vfio-user", "--without-nvme-cuse",\n\
-                      "--target-arch=corei7"],\n\
+  "configure_flags": [%s],\n\
   "rbd_enabled": false,\n\
   "kv_backends": ["mem"],\n\
   "kv_smoke": "kv-smoke"\n\
@@ -145,6 +160,7 @@ RUN ln -sf "${SPDK_DIR}/build/bin/nvmf_tgt" /usr/local/bin/nvmf_tgt && \
         "${SPDK_BRANCH}" \
         "$(cat /build/spdk-commit.txt)" \
         "$(cat /build/libvfio-user-commit.txt)" \
+        "$(awk '{for (i = 1; i <= NF; i++) printf "%s\"%s\"", (i > 1 ? ", " : ""), $i}' /build/spdk-configure-flags.txt)" \
         > /usr/local/share/spdk-build.json
 
 ENV NVME_NAMESPACES="lba:malloc:512M,kv:mem" \
