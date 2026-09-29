@@ -49,9 +49,29 @@ on:
 # mode=max on ubuntu-cuda-rocm alone exceeds a large fraction of that, so the
 # per-image scopes used to evict each other and every "warm" build was cold.
 # A registry cache has no such cap.
+#
+# Both packages are public, so *reads* -- cache-from, and pulling a base --
+# need no credentials at all. Only the writes need a token, which is what
+# GHCR_WRITE below is about.
 env:
   CACHE_REGISTRY: ghcr.io/${{ github.repository }}/buildcache
   BASE_REGISTRY: ghcr.io/${{ github.repository }}/ci-base
+  # A pull_request from a fork gets a read-only GITHUB_TOKEN: every push to
+  # ghcr.io comes back "denied: installation not allowed to Write organization
+  # package", which failed build-bases and took the whole run with it (PR #96).
+  # Nothing here is a secret and nothing is gated for security -- this switch
+  # only says whether the token in hand can write, so the fork path can build
+  # the same images and keep them local instead.
+  GHCR_WRITE: >-
+    ${{ github.event_name != 'pull_request'
+        || github.event.pull_request.head.repo.full_name == github.repository }}
+  # Fork runs hand base images between build steps through a registry on
+  # localhost rather than GHCR. It has to be a registry and not the daemon's
+  # image store: buildx's docker-container driver cannot resolve a `FROM`
+  # against a --load-ed image, and dropping to the plain docker driver to get
+  # one is what cost this workflow its layer cache the last time it tried
+  # (see "Resolve base ref" in build-derived).
+  LOCAL_REGISTRY: 127.0.0.1:5000
 
 jobs:
   discover-images:
@@ -150,6 +170,11 @@ jobs:
   # used to do twice. Pushing them to a scratch GHCR repo is what lets the
   # matrix keep the docker-container driver (and therefore the layer cache)
   # while still resolving a base built in this same run.
+  #
+  # A fork run pushes the same two images to a registry on localhost instead.
+  # That keeps this job honest -- it still proves both bases build, and the
+  # second still resolves the first through a real ref -- but the refs die
+  # with the runner, so the jobs below rebuild them rather than consume these.
   build-bases:
     name: Build Base Images
     runs-on: ubuntu-latest
@@ -162,10 +187,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Start local registry
+        if: env.GHCR_WRITE != 'true'
+        run: |
+          docker run -d --restart=always -p 5000:5000 \
+            --name ci-local-registry registry:2
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+        with:
+          driver-opts: network=host
+          buildkitd-config-inline: |
+            [registry."127.0.0.1:5000"]
+              http = true
 
       - name: Log in to GHCR
+        if: env.GHCR_WRITE == 'true'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -175,11 +212,19 @@ jobs:
       - name: Compute base refs
         id: refs
         run: |
-          echo "base=${BASE_REGISTRY}:ubuntu-base-${GITHUB_SHA}" \
+          if [ "${GHCR_WRITE}" = true ]; then
+            PREFIX="${BASE_REGISTRY}:"
+          else
+            PREFIX="${LOCAL_REGISTRY}/ci-base:"
+          fi
+          echo "base=${PREFIX}ubuntu-base-${GITHUB_SHA}" \
             >> "$GITHUB_OUTPUT"
-          echo "vfu=${BASE_REGISTRY}:ubuntu-libvfio-user-${GITHUB_SHA}" \
+          echo "vfu=${PREFIX}ubuntu-libvfio-user-${GITHUB_SHA}" \
             >> "$GITHUB_OUTPUT"
 
+      # cache-from is unconditional: the buildcache package is public, so a
+      # fork run reads it anonymously and starts warm even though it cannot
+      # write back. cache-to is what needs the token.
       - name: Build and push ubuntu-base
         uses: docker/build-push-action@v7
         with:
@@ -189,9 +234,9 @@ jobs:
           tags: ${{ steps.refs.outputs.base }}
           cache-from: type=registry,ref=${{ env.CACHE_REGISTRY }}:ubuntu-base
           cache-to: >-
-            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
-              env.CACHE_REGISTRY
-            }}:ubuntu-base
+            ${{ env.GHCR_WRITE == 'true'
+              && format('type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref={0}:ubuntu-base', env.CACHE_REGISTRY)
+              || '' }}
 
       - name: Build and push ubuntu-libvfio-user
         uses: docker/build-push-action@v7
@@ -205,9 +250,9 @@ jobs:
           cache-from: >-
             type=registry,ref=${{ env.CACHE_REGISTRY }}:ubuntu-libvfio-user
           cache-to: >-
-            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
-              env.CACHE_REGISTRY
-            }}:ubuntu-libvfio-user
+            ${{ env.GHCR_WRITE == 'true'
+              && format('type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref={0}:ubuntu-libvfio-user', env.CACHE_REGISTRY)
+              || '' }}
 
       - name: Verify libvfio-user commit
         run: |
@@ -327,6 +372,12 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
 
+      - name: Start local registry
+        if: env.GHCR_WRITE != 'true'
+        run: |
+          docker run -d --restart=always -p 5000:5000 \
+            --name ci-local-registry registry:2
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
         with:
@@ -337,13 +388,42 @@ jobs:
           buildkitd-flags: >-
             --allow-insecure-entitlement security.insecure
             --allow-insecure-entitlement network.host
+          driver-opts: network=host
+          buildkitd-config-inline: |
+            [registry."127.0.0.1:5000"]
+              http = true
 
       - name: Log in to GHCR
+        if: env.GHCR_WRITE == 'true'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
+
+      # A fork run cannot consume what build-bases produced -- those refs point
+      # at a registry on a runner that is already gone -- so it rebuilds the
+      # two shared bases here and repoints BASE_IMAGE_FOR_* at local copies.
+      # This is the whole reason the fork path does not simply fall back to the
+      # published rolling tags: a PR that edits ubuntu-base has to be tested
+      # against the ubuntu-base it edits, not against the last released one.
+      #
+      # It is affordable because both bases are small and the public buildcache
+      # is readable anonymously: unless this PR touched them, every layer is a
+      # cache hit and the two builds cost well under a minute.
+      - name: Rebuild shared bases locally
+        if: env.GHCR_WRITE != 'true'
+        run: |
+          set -euo pipefail
+          BASE="${LOCAL_REGISTRY}/ci-base:ubuntu-base-${GITHUB_SHA}"
+          VFU="${LOCAL_REGISTRY}/ci-base:ubuntu-libvfio-user-${GITHUB_SHA}"
+          docker buildx build --push -f ubuntu-base/Dockerfile -t "${BASE}" \
+            --cache-from "type=registry,ref=${CACHE_REGISTRY}:ubuntu-base" .
+          docker buildx build --push -f ubuntu-libvfio-user/Dockerfile -t "${VFU}" \
+            --build-arg "BASE_IMAGE=${BASE}" \
+            --cache-from "type=registry,ref=${CACHE_REGISTRY}:ubuntu-libvfio-user" .
+          echo "BASE_IMAGE_FOR_UBUNTU_BASE=${BASE}" >> "$GITHUB_ENV"
+          echo "BASE_IMAGE_FOR_UBUNTU_LIBVFIO_USER=${VFU}" >> "$GITHUB_ENV"
 
       # Pins live only in ci-images-tool.py; the workflow asks for them
       # rather than repeating them, so the two cannot drift.
@@ -369,9 +449,9 @@ jobs:
           cache-from: >-
             type=registry,ref=${{ env.CACHE_REGISTRY }}:${{ matrix.target.scope }}
           cache-to: >-
-            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
-              env.CACHE_REGISTRY
-            }}:${{ matrix.target.scope }}
+            ${{ env.GHCR_WRITE == 'true'
+              && format('type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref={0}:{1}', env.CACHE_REGISTRY, matrix.target.scope)
+              || '' }}
           build-args: ${{ steps.buildargs.outputs.args }}
 
       # ── per-image checks, run here rather than in a downstream job:
@@ -585,9 +665,14 @@ jobs:
       # Gated on the scope, not the image or a hardcoded key: REF names one
       # base, so an image with variants must not have two jobs racing to push
       # different content to the same ref.
+      #
+      # Skipped on a fork run, which has nowhere to push it. build-derived
+      # handles its own absence rather than waiting for a ref that is never
+      # coming.
       - name: Push base to GHCR for build-derived
         if: >-
-          contains(
+          env.GHCR_WRITE == 'true'
+          && contains(
             fromJson(needs.discover-images.outputs.derived_bases),
             matrix.target.scope
           )
@@ -678,6 +763,7 @@ jobs:
             --allow-insecure-entitlement network.host
 
       - name: Log in to GHCR
+        if: env.GHCR_WRITE == 'true'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -688,11 +774,40 @@ jobs:
       # which forced this build onto the plain docker driver and cost it the
       # layer cache entirely. The build job now pushes it to GHCR directly,
       # so there is nothing to fetch: buildx pulls what it needs from the ref.
+      #
+      # A fork run has no such ref, and unlike the matrix tier it cannot just
+      # rebuild the base in-job: the two bases derived targets use are
+      # ubuntu-qemu-libvfio-user and ubuntu-cuda-rocm, and the latter is the
+      # 28 GB image this job already has to free disk space to unpack. So the
+      # ref is left empty and ci-images-tool.py falls back to the published
+      # rolling tag -- which is the *right* base, but only as long as this PR
+      # did not change it. discover-images closes the target set upwards over
+      # `base:`, so base_scope appearing in the matrix tier means exactly that
+      # it was changed, and there is no honest way to test this target here.
+      # Fail rather than go green against a base the PR already superseded.
       - name: Resolve base ref
         id: base
+        env:
+          BASE_SCOPE: ${{ matrix.target.base_scope }}
+          MATRIX_SCOPES: ${{ needs.discover-images.outputs.targets }}
         run: |
-          echo "ref=${BASE_REGISTRY}:${{ matrix.target.base_scope }}-${GITHUB_SHA}" \
-            >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [ "${GHCR_WRITE}" = true ]; then
+            echo "ref=${BASE_REGISTRY}:${BASE_SCOPE}-${GITHUB_SHA}" \
+              >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if echo "${MATRIX_SCOPES}" | jq -e --arg s "${BASE_SCOPE}" \
+               'any(.[]; .scope == $s)' > /dev/null; then
+            echo "::error::${BASE_SCOPE} was changed by this pull request, but a" \
+                 "fork run cannot publish the rebuilt base for this job to consume." \
+                 "Push the branch to the upstream repository and re-run to test" \
+                 "${{ matrix.target.key }} against it."
+            exit 1
+          fi
+          echo "::notice::fork run: building against the published" \
+               "${BASE_SCOPE}, which this pull request does not change."
+          echo "ref=" >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -761,7 +876,11 @@ jobs:
       # The loop terminates because target selection closes *upwards* over
       # `base:` -- a run that selects a derived target always selects its base
       # into the matrix too. See the path-filter section of the README.
+      #
+      # An empty ref is the fork path above: the base is a published tag that
+      # is already there, so there is nothing in this run to wait for.
       - name: Wait for base image
+        if: steps.base.outputs.ref != ''
         env:
           GH_TOKEN: ${{ github.token }}
           REF: ${{ steps.base.outputs.ref }}
@@ -831,9 +950,9 @@ jobs:
           cache-from: >-
             type=registry,ref=${{ env.CACHE_REGISTRY }}:${{ matrix.target.scope }}
           cache-to: >-
-            type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${{
-              env.CACHE_REGISTRY
-            }}:${{ matrix.target.scope }}
+            ${{ env.GHCR_WRITE == 'true'
+              && format('type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref={0}:{1}', env.CACHE_REGISTRY, matrix.target.scope)
+              || '' }}
 
       # The payload stage copies to /output/, which the local exporter
       # faithfully reproduces; renaming the inner directory into place strips a
@@ -1057,7 +1176,7 @@ jobs:
   test-compose:
     name: Test Docker Compose Stack
     runs-on: ubuntu-latest
-    needs: [discover-images, build, build-derived]
+    needs: [discover-images, build-bases, build, build-derived]
     # The guest comes from the derived tier and the three containers from the
     # matrix tier, so this reads both key lists. Checking ubuntu-qcow2-gen
     # against `keys` is why this job did not run at all: `keys` is matrix-only.
@@ -1066,8 +1185,14 @@ jobs:
     # of skipping the job on a branch that rebuilt none of them. The
     # cancelled/failure guard is what stops a skipped upstream tier from
     # skipping this job for the wrong reason.
+    #
+    # build-bases is named explicitly because a failure there *skips* the two
+    # build tiers rather than failing them, so the guards below stayed true
+    # and this job ran on to download artifacts that were never produced --
+    # the second red check on every run that lost its bases.
     if: >-
       !cancelled() &&
+      needs.build-bases.result == 'success' &&
       needs.build.result != 'failure' &&
       needs.build-derived.result != 'failure' &&
       contains(
