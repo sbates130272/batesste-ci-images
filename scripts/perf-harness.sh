@@ -730,9 +730,15 @@ bdf=$(lspci -Dn -d "${ERNIC_PCI_VENDOR}:${ERNIC_PCI_DEVICE}" | cut -d' ' -f1 | h
 [ -n "${bdf}" ] || { echo "no ionic function on the bus"; exit 1; }
 echo "ionic bdf=${bdf}"
 
-# Wait for ionic to claim the function and register a netdev. The module is
-# in-tree on this guest's 6.18 kernel, so this is a race with module load
-# rather than something that has to be built.
+# The emulator uses 1dd8:100a, which is not in the upstream ionic PCI ID
+# table. Register it for this guest rather than changing the host's driver or
+# the image's kernel.
+sudo -n modprobe ionic
+printf '%s %s\n' "${ERNIC_PCI_VENDOR}" "${ERNIC_PCI_DEVICE}" \
+    | sudo -n tee /sys/bus/pci/drivers/ionic/new_id > /dev/null
+sudo -n modprobe ionic_rdma
+
+# Wait for ionic to claim the function and register a netdev.
 nic=""
 for _ in $(seq 1 30); do
     nic=$(ls "/sys/bus/pci/devices/${bdf}/net" 2>/dev/null | head -1 || true)
