@@ -18,10 +18,12 @@
 #     and must match the rocjitsu pin the *consumer* runs, not this image's.
 #   * gfx1250 firmware.  See the note above the module build below.
 #
-# RELEASE, AMDGPU_DRIVER_VERSION and USERNAME come from the preamble.
+# RELEASE, AMDGPU_DRIVER_VERSION, ROCM_PATH and USERNAME come from the
+# preamble.
 
 echo "=== rocjitsu guest provisioning ==="
 echo "release: ${RELEASE}  amdgpu driver: ${AMDGPU_DRIVER_VERSION}"
+echo "rocm path: ${ROCM_PATH}"
 
 # TheRock publishes one package set per Ubuntu release; repo.radeon.com's
 # amdgpu driver repo uses the release codename as the apt suite.  Both are
@@ -112,6 +114,29 @@ done | sudo tee /etc/ld.so.conf.d/rocm.conf > /dev/null
 test -s /etc/ld.so.conf.d/rocm.conf
 sudo ldconfig
 sudo update-pciids || true
+
+# The linker now resolves ROCm, but a login shell still does not: the therock
+# component directory is versioned, so neither rocminfo nor hipcc is on PATH
+# and nothing exports ROCM_PATH.  That is reliably the first thing a consumer
+# trips over in this guest, and it costs one file to prevent.
+#
+# Pinned from images.yml (guest_rocm_version) rather than discovered, and
+# asserted rather than assumed: the therock stable stream it names moves, and a
+# stale pin has to fail the build here rather than bake a dead PATH entry into
+# an image that then looks fine until someone logs in.
+test -n "${ROCM_PATH}"
+if [ ! -d "${ROCM_PATH}" ]; then
+    echo "Error: ${ROCM_PATH} does not exist; guest_rocm_version in images.yml" \
+         "names a therock component directory this stream no longer ships." >&2
+    echo "Present instead:" >&2
+    ls -1d /opt/rocm/*/ >&2 2>/dev/null || true
+    exit 1
+fi
+sudo tee /etc/profile.d/rocm.sh > /dev/null <<EOF
+export ROCM_PATH=${ROCM_PATH}
+export PATH=${ROCM_PATH}/bin:\$PATH
+EOF
+sudo chmod 0644 /etc/profile.d/rocm.sh
 
 # amdgpu must not autoload.  It has to be modprobed by hand with the emulation
 # parameters once the vfio-user server is serving, and an autoloaded copy that
@@ -285,31 +310,28 @@ sudo update-grub
 # initramfs, and the probe boot is where that has to be caught.
 sudo grep -q 'modprobe.blacklist=amdgpu' /boot/grub/grub.cfg
 
-# gfx1250 firmware arrives with the driver, not by being copied in: amdgpu-dkms
-# Depends on amdgpu-dkms-firmware, and from the 31.60 tree that package ships
-# real gc_12_1_0 and sdma_7_1_0 blobs into /lib/firmware/updates/amdgpu.  That
-# is the pairing upstream's qemu-vfio.md asks for -- firmware from the same
-# public driver release as the guest's amdgpu.ko -- and it is the reason this
-# flavour is pinned to 31.60 rather than 31.50, whose firmware package had 683
-# files and not one of these.
+# gfx1250 firmware is the consumer's to install, not this disk's.
 #
-# Asserted rather than assumed.  A driver tree that stops shipping them takes
-# the guest back to needing a full stub set, and the place to find that out is
-# here, not in the emulated device's early init.
+# The 31.60 tree briefly shipped real gc_12_1_0 and sdma_7_1_0 blobs in
+# amdgpu-dkms-firmware -- the pairing upstream's qemu-vfio.md asks for,
+# firmware from the same public driver release as the guest's amdgpu.ko -- and
+# this flavour asserted their presence.  That tree has since been withdrawn
+# from repo.radeon.com altogether, and 31.50, the newest one still serving
+# resolute, ships 683 files and not one of these, so the assertion could only
+# fail from here on.
+#
+# The whole set is therefore generated rather than packaged:
+# ubuntu-rocm-rocjitsu's vfio_guest_firmware.py emits it under --set full
+# (the default --set gap omits exactly the blobs 31.60 used to carry, and
+# nothing carries them now), and --generation gfx1250 means it needs no
+# rocjitsu config on disk to do so.  That runs at the consumer's own rocjitsu
+# pin, from the server image they already run, which is why none of it is baked
+# in here.  checks/rocjitsu.sh asserts the driver declares gfx1250 firmware;
+# which files back those declarations is the consumer's half of the contract.
 FW_DIR=/lib/firmware/updates/amdgpu
-for fw in gc_12_1_0_mec.bin gc_12_1_0_mec_1.bin gc_12_1_0_rlc.bin \
-          gc_12_1_0_rlc_1.bin gc_12_1_0_uni_mes.bin sdma_7_1_0.bin; do
-    if [ ! -s "${FW_DIR}/${fw}" ] && [ ! -s "${FW_DIR}/${fw}.xz" ]; then
-        echo "Error: amdgpu-dkms-firmware ${AMDGPU_DRIVER_VERSION} did not" \
-             "install ${fw}; this flavour assumes it does" >&2
-        exit 1
-    fi
-done
 FW_PKG=$(dpkg-query -W -f='${Version}' amdgpu-dkms-firmware)
-echo "gfx1250 firmware from amdgpu-dkms-firmware ${FW_PKG}:"
-for fw in "${FW_DIR}"/gc_12_1_0* "${FW_DIR}"/sdma_7_1_0*; do
-    [ -e "${fw}" ] && echo "  $(basename "${fw}")"
-done
+echo "amdgpu-dkms-firmware ${FW_PKG}: no gfx1250 set baked in," \
+     "see /etc/rocjitsu-guest.json"
 
 # /dev/kfd and /dev/dri/render* are root:render 0660.  A login user in neither
 # render nor video gets a HIP runtime that enumerates no agent at all and a
@@ -367,18 +389,12 @@ if [ -n "${FIO_COMMIT:-}" ]; then
         --no-install-recommends amdrocm-hipfile-dev
     sudo ldconfig
 
-    # The therock layout again: hipcc and the hipFile headers are under a
-    # versioned component directory, so ROCM_PATH is found rather than assumed.
-    ROCM_PATH=""
-    for d in /opt/rocm /opt/rocm/*; do
-        [ -e "${d}/include/hipfile/hipfile.h" ] && ROCM_PATH="${d}"
-    done
-    if [ -z "${ROCM_PATH}" ]; then
-        for d in /opt/rocm /opt/rocm/*; do
-            [ -d "${d}/lib" ] && ROCM_PATH="${d}"
-        done
-    fi
+    # The same ROCM_PATH the guest's own /etc/profile.d/rocm.sh exports, rather
+    # than a second search that could disagree with it: a fio linked against one
+    # component directory while the guest's PATH points at another is a bug
+    # nobody would think to look for.  Asserted where it is set, above.
     export ROCM_PATH
+    test -e "${ROCM_PATH}/include/hipfile/hipfile.h"
     echo "ROCM_PATH for the fio build: ${ROCM_PATH}"
 
     rm -rf /tmp/fio
@@ -447,10 +463,10 @@ sudo tee /etc/rocjitsu-guest.json > /dev/null <<EOF
   "amdgpu_probe_helper": "/usr/local/bin/amdgpu-probe",
   "render_video_groups": true,
   "amdgpu_dkms_firmware_version": "${FW_PKG}",
-  "gfx1250_firmware": "packaged",
+  "gfx1250_firmware": "none -- generated by the consumer",
   "gfx1250_firmware_dir": "${FW_DIR}",
-  "gfx1250_firmware_missing": ["gc_12_1_0_imu.bin"],
-  "gfx1250_firmware_missing_source": "vfio_guest_firmware.py --set gap, from the rocjitsu image the consumer runs",
+  "gfx1250_firmware_missing": ["the whole gfx1250 set"],
+  "gfx1250_firmware_missing_source": "vfio_guest_firmware.py --set full --generation gfx1250, from the rocjitsu image the consumer runs",
   "ip_discovery_bin": false,
   "fio_commit": "${FIO_COMMIT:-}",
   "fio_version": "${FIO_VERSION}",
@@ -489,12 +505,19 @@ not show it, \`/dev/kfd\` will not exist, and \`rocminfo\` is not installed.
 1. On the host, start rocjitsu with a vfio-user socket and attach the function
    to this VM. That is the consumer's job, not the image's -- see
    \`ubuntu-rocm-rocjitsu\` in batesste-ci-images.
-2. Stage the two firmware files this image deliberately does not carry, because
-   they must match the rocjitsu build you are running rather than this disk:
-   \`gc_12_1_0_imu.bin\` and \`ip_discovery.bin\`, from
-   \`vfio_guest_firmware.py --set gap\` and \`rj-ip-discovery gfx1250\`. Install
-   them into \`/lib/firmware/amdgpu/\`. Everything else is already here, in
-   ${FW_DIR} -- do not overwrite it.
+2. Stage the gfx1250 firmware. This image deliberately carries none of it: no
+   amdgpu driver tree that still serves this Ubuntu release packages it, and
+   what you install has to match the rocjitsu build you are running rather than
+   this disk. From the rocjitsu image you already run:
+
+       vfio_guest_firmware.py --set full --generation gfx1250 --output fw
+       rj-ip-discovery gfx1250
+
+   \`--set full\` rather than the default \`--set gap\`: gap omits the blobs the
+   withdrawn 31.60 driver tree used to package, and nothing packages them now.
+   \`--generation gfx1250\` means no rocjitsu config file is needed to generate
+   them. Install the result plus \`ip_discovery.bin\` into
+   \`/lib/firmware/amdgpu/\`.
 3. Load the driver:
 
        sudo amdgpu-probe

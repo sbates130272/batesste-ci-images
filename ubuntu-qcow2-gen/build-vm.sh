@@ -50,6 +50,11 @@ FINAL_KERNEL_REF="${KERNEL_REF:-}"
 # Only read by a provision script that installs the AMD kernel driver; inert
 # for every other flavour.
 FINAL_AMDGPU_DRIVER_VERSION="${AMDGPU_DRIVER_VERSION:-latest}"
+# Where the guest's ROCm userspace lands. Composed in images.yml from
+# guest_rocm_version, so a flavour that pins none hands us the bare
+# "/opt/rocm/core-"; only a provision script that installs ROCm reads it, and
+# that script asserts the directory exists.
+FINAL_ROCM_PATH="${ROCM_PATH:-}"
 # Likewise read only by a provision script that stamps the guest's rdma-core.
 FINAL_RDMA_CORE_VERSION="${RDMA_CORE_VERSION:-}"
 # Empty means the flavour installs no fio; see the var's note in images.yml.
@@ -72,6 +77,7 @@ echo "VM_PACKAGES: ${FINAL_PACKAGES}"
 echo "VM_PLAYBOOK: ${FINAL_PLAYBOOK:-none}"
 echo "KERNEL_REF: ${FINAL_KERNEL_REF:-none (release kernel)}"
 echo "AMDGPU_DRIVER_VERSION: ${FINAL_AMDGPU_DRIVER_VERSION}"
+echo "ROCM_PATH: ${FINAL_ROCM_PATH:-none (no ROCm in the guest)}"
 echo "RDMA_CORE_VERSION: ${FINAL_RDMA_CORE_VERSION:-none}"
 echo "FIO_COMMIT: ${FINAL_FIO_COMMIT:-none (no fio in the guest)}"
 
@@ -332,6 +338,7 @@ FLAVOUR='${FLAVOUR}'
 RELEASE='${FINAL_RELEASE}'
 USERNAME='${FINAL_USERNAME}'
 AMDGPU_DRIVER_VERSION='${FINAL_AMDGPU_DRIVER_VERSION}'
+ROCM_PATH='${FINAL_ROCM_PATH}'
 RDMA_CORE_VERSION='${FINAL_RDMA_CORE_VERSION}'
 FIO_COMMIT='${FINAL_FIO_COMMIT}'
 EOF

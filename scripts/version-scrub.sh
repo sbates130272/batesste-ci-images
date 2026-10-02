@@ -465,6 +465,55 @@ else
     echo "    stream is '$ROCM_STREAM_CURRENT', not therock — rocm_version is a real pin, skipping."
 fi
 
+echo "==> Fetching the therock ROCm version the guests install..."
+# Same stream, different index: the qcow2 guests are resolute and take their
+# ROCm from core/packages/ubuntu2604, where the container above reads ubuntu2404.
+# The two can legitimately differ, so this is its own query rather than a reuse
+# of ROCM_LATEST.
+#
+# guest_rocm_version is what images.yml composes ROCM_PATH out of, and the
+# guests' provisioning asserts that /opt/rocm/core-<version> exists. That makes
+# a stale value a red build rather than a quiet one -- which is the point, but
+# it also means this has to be kept current here rather than by hand.
+GUEST_ROCM_LATEST=$(curl -fsSL \
+    "https://stable.repo.amd.com/rocm/core/packages/ubuntu2604/dists/stable/main/binary-amd64/Packages" \
+    | awk '/^Package: amdrocm$/{f=1} f&&/^Version:/{print $2; exit}' \
+    | cut -d- -f1 | cut -d. -f1,2)
+GUEST_ROCM_CURRENT=$(current_pin ubuntu-qcow2-gen@rocjitsu guest_rocm_version)
+echo "    current: $GUEST_ROCM_CURRENT  latest: $GUEST_ROCM_LATEST"
+if check_nonempty "$GUEST_ROCM_LATEST" "therock guest ROCm version" \
+    && [[ "$GUEST_ROCM_CURRENT" != "$GUEST_ROCM_LATEST" ]]; then
+    # Pinned per flavour, so both variants move together: replace_yaml_var only
+    # rewrites outside variants: blocks, which is where these live.
+    replace_in_yaml "guest_rocm_version: \"$GUEST_ROCM_CURRENT\"" \
+                    "guest_rocm_version: \"$GUEST_ROCM_LATEST\""
+fi
+
+echo "==> Checking the pinned amdgpu driver trees still serve their release..."
+# Deliberately a check and not a bump.
+#
+# repo.radeon.com withdraws these directories without notice -- 31.60 was
+# removed outright, taking the resolute suite with it, and the first anyone
+# knew was a consumer's apt-get update failing in a published guest. But
+# bumping to the newest tree is precisely the wrong reflex: the newer trees are
+# the ones that dropped resolute, so an auto-bump would walk the pin straight
+# off a cliff. Warn, and let a human choose the replacement.
+for t in ubuntu-qcow2-gen@rocjitsu ubuntu-qcow2-gen@ernic-rocjitsu; do
+    drv=$(current_pin "$t" amdgpu_driver_version)
+    rel=$(current_pin "$t" release)
+    [[ -z "$drv" || "$drv" == "none" ]] && continue
+    if curl -fsS --max-time 30 -o /dev/null \
+        "https://repo.radeon.com/amdgpu/${drv}/ubuntu/dists/${rel}/Release" 2>/dev/null
+    then
+        echo "    $t: amdgpu/$drv serves $rel"
+    else
+        echo "  WARNING: $t pins amdgpu_driver_version $drv, which no longer" \
+             "serves '$rel'. The guest build will fail at the suite guard in" \
+             "provision/. Pick another tree that does -- do not simply take" \
+             "the newest."
+    fi
+done
+
 if [[ "$changed" -eq 0 ]]; then
     echo "==> All versions are current, no changes needed."
 else

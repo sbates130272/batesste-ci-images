@@ -72,6 +72,23 @@ dpkg-query -W -f='${Status}' amdrocm-blas-dev |
     grep -q '^install ok installed$'
 ldconfig -p | grep -q libamdhip64
 ldconfig -p | grep -q libhsa-runtime64
+
+# ROCM_PATH and PATH, from /etc/profile.d/rocm.sh. ld.so.conf above covers the
+# linker; this covers the shell, which is a different failure and the one
+# consumers actually hit -- the therock component directory is versioned, so a
+# login session finds no ROCm tooling and no ROCM_PATH without being told.
+#
+# Asserted through an actual login shell rather than by reading the file: that
+# the file exists proves nothing about whether anything sources it.
+test -s /etc/profile.d/rocm.sh
+LOGIN_ROCM_PATH=$(bash -lc 'echo "${ROCM_PATH}"')
+test -n "${LOGIN_ROCM_PATH}"
+test -d "${LOGIN_ROCM_PATH}"
+# By the PATH entry itself, not by resolving a tool through it: rocminfo and
+# friends are not in this guest's minimal set, for the reasons above.
+bash -lc 'case ":${PATH}:" in *":${ROCM_PATH}/bin:"*) ;; *) exit 1 ;; esac'
+echo "note: login-shell ROCM_PATH=${LOGIN_ROCM_PATH}"
+
 # BLAS is asserted by its headers, not by a library: amdrocm-blas-dev is
 # headers-only in the therock stream and does not depend on the runtime
 # amdrocm-blas, so there is no librocblas.so here.
