@@ -402,7 +402,13 @@ if [ -n "${FIO_COMMIT:-}" ]; then
     # component directory while the guest's PATH points at another is a bug
     # nobody would think to look for.  Asserted where it is set, above.
     export ROCM_PATH
-    test -e "${ROCM_PATH}/include/hipfile/hipfile.h"
+    # include/hipfile.h, not include/hipfile/hipfile.h: amdrocm-hipfile-dev
+    # ships the header flat beside hipfile-api-trace.h, and no hipfile/
+    # directory exists. The nested spelling is what the search this replaced
+    # looked for first -- it never matched, so that search always fell through
+    # to its "any directory with a lib/" arm and landed on the right answer by
+    # luck. An assertion cannot afford the same mistake.
+    test -e "${ROCM_PATH}/include/hipfile.h"
     echo "ROCM_PATH for the fio build: ${ROCM_PATH}"
 
     rm -rf /tmp/fio

@@ -615,7 +615,13 @@ hipcc=$(command -v hipcc || ls /opt/rocm*/bin/hipcc /opt/rocm/*/bin/hipcc 2>/dev
 # plugin expects, so offer both and let the source's __has_include choose.
 rocm=""
 for d in /opt/rocm /opt/rocm-* /opt/rocm/*; do
-    [ -e "${d}/include/hipfile/hipfile.h" ] && rocm="${d}"
+    # Both spellings. amdrocm-hipfile-dev ships the header flat today
+    # (include/hipfile.h, beside hipfile-api-trace.h); the nested one this
+    # used to look for exclusively does not exist, so the search could only
+    # ever fall through to the exit below.
+    for h in "${d}/include/hipfile.h" "${d}/include/hipfile/hipfile.h"; do
+        [ -e "${h}" ] && rocm="${d}"
+    done
 done
 [ -n "${rocm}" ] || { echo "no hipfile.h under /opt/rocm*; is amdrocm-hipfile-dev installed?"; exit 2; }
 echo "hipcc: ${hipcc}"
