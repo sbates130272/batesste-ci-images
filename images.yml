@@ -281,7 +281,7 @@ images:
       # whichever branch ucx_branch names.
       ucx_repo: https://github.com/openucx/ucx.git
       ucx_branch: v1.23.x
-      ucx_commit: e5292cc486c316743502647a7022270f7346d776
+      ucx_commit: 16c3cc06ced79f2159c8cbe0179bffd6236bddc5
       etcd_repo: https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git
       etcd_commit: 7c6e714f188f9576e25e0350cac4181139eec23e
       # Abseil and gRPC are built from source because Ubuntu's libgrpc++-dev
@@ -369,7 +369,7 @@ images:
       # that exists -- no CI anywhere enables ROCJITSU_ENABLE_VFIO, so develop
       # can lose the vfio-user compute path with every upstream check green.
       rocjitsu_commit:
-        value: 559173e37c5be736b7ae2a937065a58703fb1044
+        value: dfdb4fb2377c470f69da60f4cd0b0a7245ae6053
         env: ROCM_ROCJITSU_COMMIT
       # Compile-time log groups (emulation/rocjitsu/cmake/rj_log.cmake): OFF,
       # ALL, a comma-separated subset of VM, CP, DBT_HOOKS, PLUGINS, DRIVER, or
