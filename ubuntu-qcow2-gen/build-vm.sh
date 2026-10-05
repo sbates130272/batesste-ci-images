@@ -55,6 +55,9 @@ FINAL_AMDGPU_DRIVER_VERSION="${AMDGPU_DRIVER_VERSION:-latest}"
 # "/opt/rocm/core-"; only a provision script that installs ROCm reads it, and
 # that script asserts the directory exists.
 FINAL_ROCM_PATH="${ROCM_PATH:-}"
+# The same component line, for the therock package names. Empty for a flavour
+# that installs no ROCm.
+FINAL_ROCM_VERSION="${ROCM_VERSION:-}"
 # Likewise read only by a provision script that stamps the guest's rdma-core.
 FINAL_RDMA_CORE_VERSION="${RDMA_CORE_VERSION:-}"
 # Empty means the flavour installs no fio; see the var's note in images.yml.
@@ -78,6 +81,7 @@ echo "VM_PLAYBOOK: ${FINAL_PLAYBOOK:-none}"
 echo "KERNEL_REF: ${FINAL_KERNEL_REF:-none (release kernel)}"
 echo "AMDGPU_DRIVER_VERSION: ${FINAL_AMDGPU_DRIVER_VERSION}"
 echo "ROCM_PATH: ${FINAL_ROCM_PATH:-none (no ROCm in the guest)}"
+echo "ROCM_VERSION: ${FINAL_ROCM_VERSION:-none}"
 echo "RDMA_CORE_VERSION: ${FINAL_RDMA_CORE_VERSION:-none}"
 echo "FIO_COMMIT: ${FINAL_FIO_COMMIT:-none (no fio in the guest)}"
 
@@ -339,6 +343,7 @@ RELEASE='${FINAL_RELEASE}'
 USERNAME='${FINAL_USERNAME}'
 AMDGPU_DRIVER_VERSION='${FINAL_AMDGPU_DRIVER_VERSION}'
 ROCM_PATH='${FINAL_ROCM_PATH}'
+ROCM_VERSION='${FINAL_ROCM_VERSION}'
 RDMA_CORE_VERSION='${FINAL_RDMA_CORE_VERSION}'
 FIO_COMMIT='${FINAL_FIO_COMMIT}'
 EOF

@@ -29,8 +29,8 @@
 #   * Three more patches, from assets/ernic-rocjitsu/patches/amdgpu/.  DKMS
 #     7.1.9 does not build on 7.2.4 as shipped.
 #
-# RELEASE, AMDGPU_DRIVER_VERSION, ROCM_PATH, RDMA_CORE_VERSION and USERNAME
-# come from the preamble; the patches and the firmware generator arrive at
+# RELEASE, AMDGPU_DRIVER_VERSION, ROCM_PATH, ROCM_VERSION, RDMA_CORE_VERSION
+# and USERNAME come from the preamble; the patches and the firmware generator arrive at
 # /tmp/payload.
 
 echo "=== ernic-rocjitsu guest provisioning ==="
@@ -117,10 +117,16 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get update
 
 # The minimal ROCm set: enough for the HIP runtime and linking, without the
 # full amdrocm meta and its multi-gigabyte tail.
+#
+# Named with the component line rather than bare.  The therock suite is
+# versionless but carries several lines at once, /opt/rocm is an alternatives
+# symlink resolving to exactly one of them, and a bare name follows whichever
+# is newest -- so a line appearing upstream installs packages the guest's own
+# ROCM_PATH cannot see.
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     libstdc++-14-dev \
-    amdrocm-runtime-dev \
-    amdrocm-blas-dev
+    "amdrocm-runtime-dev${ROCM_VERSION}" \
+    "amdrocm-blas-dev${ROCM_VERSION}"
 
 # Distro copies of the same runtime, if anything pulled them in before the pin
 # above was in place.  Harmless when absent.
@@ -381,7 +387,7 @@ sudo chmod 0644 /usr/local/share/rocm-ernic/provider.stamp
 # What this image is, recorded where a consumer inside the guest can read it.
 # vm-info.json stays flavour-agnostic; this is the flavour's own record.
 AMDGPU_PKG=$(dpkg-query -W -f='${Version}' amdgpu-dkms)
-ROCM_PKG=$(dpkg-query -W -f='${Version}' amdrocm-runtime-dev)
+ROCM_PKG=$(dpkg-query -W -f='${Version}' "amdrocm-runtime-dev${ROCM_VERSION}")
 sudo tee /etc/ernic-rocjitsu-guest.json > /dev/null <<EOF
 {
   "booted_kernel": "${KVER}",

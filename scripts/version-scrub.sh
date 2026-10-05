@@ -441,53 +441,73 @@ if check_nonempty "$CUDA_LATEST" "CUDA toolkit version" \
         "$REPO_ROOT/ubuntu-cuda-rocm/Dockerfile"
 fi
 
-echo "==> Fetching ROCm version on the therock stable stream..."
-# The therock apt source is versionless, so rocm_version only *describes* what
-# stable currently ships -- read it back out of the repo index rather than
-# trusting the checked-in value, which is how it drifted to 7.14 while stable
-# had moved to 10.0. Skipped on the legacy stream, where it is a real pin that
-# selects a repo URL and so must not be auto-bumped.
+echo "==> Checking the therock component lines the pins name..."
+# Deliberately a check and not a bump, as with the amdgpu trees below.
+#
+# rocm_version and guest_rocm_version used to be descriptive: the therock apt
+# source is versionless, the Dockerfiles installed bare package names, and this
+# block read the amdrocm metapackage version back out of the index to keep the
+# label honest.
+#
+# They are selective now. therock serves several component lines out of that
+# one "stable" suite, and /opt/rocm is a Debian alternatives symlink resolving
+# to exactly one of them, so a bare package name follows whichever line is
+# newest and can install outside the root everything else reads through. That
+# is how a 10.1 hipFile landed under core-10.1 on a 10.0 image and failed the
+# fio build with the headers present but unreachable. The pins are appended to
+# the package names now, which makes them real.
+#
+# So: warn, do not rewrite. An auto-bump here would move the whole ROCm stack
+# unreviewed, which is the failure this replaced -- and it would also fight the
+# checked-in value every run. The metapackage is reported alongside because it
+# is a different question: it names the line therock calls default, which is
+# not necessarily the newest one published.
+rocm_line_report() {
+    local label="$1" index="$2" pinned="$3"
+    local pkgs newest meta
+    pkgs=$(curl -fsSL "$index" || true)
+    if [[ -z "$pkgs" ]]; then
+        echo "  WARNING: could not fetch the $label package index, skipping."
+        return
+    fi
+    # Every core metapackage is amdrocm-core<line>-gfx<arch>; the line is what
+    # /opt/rocm can resolve to, so that is what the pin has to name.
+    # Here-strings rather than pipes throughout. Under `set -o pipefail` a
+    # reader that exits early -- grep -q on its first match, awk on its first
+    # Version: -- SIGPIPEs the writer and the pipeline reports 141, so a
+    # *successful* match reads as a failure. That is not theoretical: it made
+    # this function warn that the line it had just found was missing.
+    newest=$(sed -n -E 's/^Package: amdrocm-core([0-9]+\.[0-9]+)-gfx.*/\1/p' \
+        <<< "$pkgs" | sort -V | tail -1)
+    meta=$(awk '/^Package: amdrocm$/{f=1} f&&/^Version:/{print $2; exit}' \
+        <<< "$pkgs" | cut -d- -f1 | cut -d. -f1,2)
+    echo "    $label: pinned $pinned, newest line ${newest:-unknown}," \
+         "amdrocm meta ${meta:-unknown}"
+    if [[ -n "$newest" ]] \
+        && ! grep -q "^Package: amdrocm-core${pinned}-gfx" <<< "$pkgs"; then
+        echo "  WARNING: $label pins ROCm $pinned, which this index no longer" \
+             "publishes a core line for. The build will fail at the root" \
+             "assertion. Move it deliberately."
+    elif [[ -n "$newest" && "$newest" != "$pinned" ]]; then
+        echo "  note: $label could move to $newest -- a deliberate bump," \
+             "not an automatic one."
+    fi
+}
+
 ROCM_STREAM_CURRENT=$(current_pin ubuntu-cuda-rocm rocm_stream)
 if [[ "$ROCM_STREAM_CURRENT" == "therock" ]]; then
-    ROCM_LATEST=$(curl -fsSL \
+    rocm_line_report "ubuntu-cuda-rocm" \
         "https://stable.repo.amd.com/rocm/core/packages/ubuntu2404/dists/stable/main/binary-amd64/Packages" \
-        | awk '/^Package: amdrocm$/{f=1} f&&/^Version:/{print $2; exit}' \
-        | cut -d- -f1 | cut -d. -f1,2)
-    ROCM_CURRENT=$(current_pin ubuntu-cuda-rocm rocm_version)
-    echo "    current: $ROCM_CURRENT  latest: $ROCM_LATEST"
-    if check_nonempty "$ROCM_LATEST" "ROCm stable version" \
-        && [[ "$ROCM_CURRENT" != "$ROCM_LATEST" ]]; then
-        replace_yaml_var rocm_version "$ROCM_LATEST" "$ROCM_CURRENT"
-        replace_arg_default ROCM_VERSION "$ROCM_LATEST" \
-            "$REPO_ROOT/ubuntu-cuda-rocm/Dockerfile"
-    fi
+        "$(current_pin ubuntu-cuda-rocm rocm_version)"
 else
-    echo "    stream is '$ROCM_STREAM_CURRENT', not therock — rocm_version is a real pin, skipping."
+    echo "    stream is '$ROCM_STREAM_CURRENT', not therock — rocm_version selects a repo URL, skipping."
 fi
 
-echo "==> Fetching the therock ROCm version the guests install..."
-# Same stream, different index: the qcow2 guests are resolute and take their
-# ROCm from core/packages/ubuntu2604, where the container above reads ubuntu2404.
-# The two can legitimately differ, so this is its own query rather than a reuse
-# of ROCM_LATEST.
-#
-# guest_rocm_version is what images.yml composes ROCM_PATH out of, and the
-# guests' provisioning asserts that /opt/rocm/core-<version> exists. That makes
-# a stale value a red build rather than a quiet one -- which is the point, but
-# it also means this has to be kept current here rather than by hand.
-GUEST_ROCM_LATEST=$(curl -fsSL \
+# The guests are resolute and read ubuntu2604, where the container above reads
+# ubuntu2404; the two lines can legitimately differ.
+rocm_line_report "ubuntu-qcow2-gen guests" \
     "https://stable.repo.amd.com/rocm/core/packages/ubuntu2604/dists/stable/main/binary-amd64/Packages" \
-    | awk '/^Package: amdrocm$/{f=1} f&&/^Version:/{print $2; exit}' \
-    | cut -d- -f1 | cut -d. -f1,2)
-GUEST_ROCM_CURRENT=$(current_pin ubuntu-qcow2-gen@rocjitsu guest_rocm_version)
-echo "    current: $GUEST_ROCM_CURRENT  latest: $GUEST_ROCM_LATEST"
-if check_nonempty "$GUEST_ROCM_LATEST" "therock guest ROCm version" \
-    && [[ "$GUEST_ROCM_CURRENT" != "$GUEST_ROCM_LATEST" ]]; then
-    # Pinned per flavour, so both variants move together: replace_yaml_var only
-    # rewrites outside variants: blocks, which is where these live.
-    replace_in_yaml "guest_rocm_version: \"$GUEST_ROCM_CURRENT\"" \
-                    "guest_rocm_version: \"$GUEST_ROCM_LATEST\""
-fi
+    "$(current_pin ubuntu-qcow2-gen@rocjitsu guest_rocm_version)"
 
 echo "==> Checking the pinned amdgpu driver trees still serve their release..."
 # Deliberately a check and not a bump.

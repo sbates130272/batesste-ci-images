@@ -19,7 +19,7 @@ adding an image or a variant adds its row.
 **Pinned versions**
 
 [![ubuntu 24.04](https://img.shields.io/badge/ubuntu-24.04-E95420)](https://hub.docker.com/_/ubuntu)
-[![rocm 10.0](https://img.shields.io/badge/rocm-10.0-ED1C24)](https://rocm.docs.amd.com/)
+[![rocm 10.1](https://img.shields.io/badge/rocm-10.1-ED1C24)](https://rocm.docs.amd.com/)
 [![cuda 13.4](https://img.shields.io/badge/cuda-13.4-76B900)](https://developer.nvidia.com/cuda-toolkit)
 [![qemu v11.1.2](https://img.shields.io/badge/qemu-v11.1.2-FF6600)](https://gitlab.com/qemu-project/qemu/-/tags/v11.1.2)
 [![nixl v1.5.0](https://img.shields.io/badge/nixl-v1.5.0-76B900)](https://github.com/ai-dynamo/nixl/releases/tag/v1.5.0)
@@ -35,7 +35,7 @@ adding an image or a variant adds its row.
 [![libvfio-user 8039244](https://img.shields.io/badge/libvfio--user-8039244-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/803924493a7c787b2ba358751f55f07d5dba64b2)
 [![qemu-minimal 4bb8f75](https://img.shields.io/badge/qemu--minimal-4bb8f75-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/4bb8f75f090a22998e108f3b47a9ecb1a5dc2f45)
 [![rocm-ernic 76af59f](https://img.shields.io/badge/rocm--ernic-76af59f-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/76af59f34764bed0462d78b3866c76640bb70695)
-[![rocjitsu dfdb4fb](https://img.shields.io/badge/rocjitsu-dfdb4fb-ED1C24)](https://github.com/ROCm/rocm-systems/commit/dfdb4fb2377c470f69da60f4cd0b0a7245ae6053)
+[![rocjitsu 8677978](https://img.shields.io/badge/rocjitsu-8677978-ED1C24)](https://github.com/ROCm/rocm-systems/commit/86779787fdda5aedb2aec240620bad87c5a43b56)
 [![spdk 18d1d8d](https://img.shields.io/badge/spdk-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
 [![fio daf3f3b](https://img.shields.io/badge/fio-daf3f3b-4B8BBE)](https://github.com/axboe/fio/commit/daf3f3b837f81ac2464c6a67bba829c984d65a3f)
 [![ucx 16c3cc0](https://img.shields.io/badge/ucx-16c3cc0-4B8BBE)](https://github.com/openucx/ucx/commit/16c3cc06ced79f2159c8cbe0179bffd6236bddc5)

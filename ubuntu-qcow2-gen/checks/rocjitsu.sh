@@ -24,10 +24,14 @@ test -d /lib/modules/"$(uname -r)"/build
 
 # ROCm userspace: the minimal set rocm-xio links against, from the therock
 # stream rather than the universe copies pinned out in provisioning.
-dpkg-query -W -f='${Status}' amdrocm-runtime-dev |
-    grep -q '^install ok installed$'
-dpkg-query -W -f='${Status}' amdrocm-blas-dev |
-    grep -q '^install ok installed$'
+# Matched by glob, not by exact name: the guest installs the component-line
+# package (amdrocm-runtime-dev10.1 and friends), because a bare name follows
+# whichever therock line is newest and can land outside the root /opt/rocm
+# resolves to. This file gets no build-side vars, so it cannot spell the line.
+dpkg-query -W -f='${Package} ${Status}\n' 'amdrocm-runtime-dev*' |
+    grep -q ' install ok installed$'
+dpkg-query -W -f='${Package} ${Status}\n' 'amdrocm-blas-dev*' |
+    grep -q ' install ok installed$'
 #
 # rocminfo is deliberately not asserted: it is not in the requested minimal
 # set, the therock runtime package does not carry it, and the distro copy is

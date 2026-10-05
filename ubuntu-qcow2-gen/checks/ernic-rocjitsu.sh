@@ -66,10 +66,14 @@ command -v ib_send_bw ib_write_bw ib_read_bw ib_send_lat
 # pinned out in provisioning.  Assert the libraries, not rocminfo: it is not in
 # the minimal set, the therock runtime package does not carry it, and the
 # distro copy is pinned to never-install.
-dpkg-query -W -f='${Status}' amdrocm-runtime-dev |
-    grep -q '^install ok installed$'
-dpkg-query -W -f='${Status}' amdrocm-blas-dev |
-    grep -q '^install ok installed$'
+# Matched by glob, not by exact name: the guest installs the component-line
+# package (amdrocm-runtime-dev10.1 and friends), because a bare name follows
+# whichever therock line is newest and can land outside the root /opt/rocm
+# resolves to. This file gets no build-side vars, so it cannot spell the line.
+dpkg-query -W -f='${Package} ${Status}\n' 'amdrocm-runtime-dev*' |
+    grep -q ' install ok installed$'
+dpkg-query -W -f='${Package} ${Status}\n' 'amdrocm-blas-dev*' |
+    grep -q ' install ok installed$'
 ldconfig -p | grep -q libamdhip64
 ldconfig -p | grep -q libhsa-runtime64
 

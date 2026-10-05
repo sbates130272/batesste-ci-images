@@ -18,8 +18,8 @@
 #     and must match the rocjitsu pin the *consumer* runs, not this image's.
 #   * gfx1250 firmware.  See the note above the module build below.
 #
-# RELEASE, AMDGPU_DRIVER_VERSION, ROCM_PATH and USERNAME come from the
-# preamble.
+# RELEASE, AMDGPU_DRIVER_VERSION, ROCM_PATH, ROCM_VERSION and USERNAME come
+# from the preamble.
 
 echo "=== rocjitsu guest provisioning ==="
 echo "release: ${RELEASE}  amdgpu driver: ${AMDGPU_DRIVER_VERSION}"
@@ -95,10 +95,18 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get update
 
 # The minimal ROCm set rocm-xio asks for: enough for rocminfo, the HIP runtime
 # and linking, without the full amdrocm meta and its multi-gigabyte tail.
+#
+# Named with the component line rather than bare.  The therock suite is
+# versionless but carries several lines at once, /opt/rocm is an alternatives
+# symlink resolving to exactly one of them, and a bare name follows whichever
+# is newest -- so a line appearing upstream installs packages the guest's own
+# ROCM_PATH cannot see.  That is not hypothetical: it is how a 10.1 hipFile
+# landed under core-10.1 on a 10.0 image and broke a build with the headers
+# present but unreachable.
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     libstdc++-14-dev \
-    amdrocm-runtime-dev \
-    amdrocm-blas-dev
+    "amdrocm-runtime-dev${ROCM_VERSION}" \
+    "amdrocm-blas-dev${ROCM_VERSION}"
 
 # Distro copies of the same runtime, if anything pulled them in before the pin
 # above was in place.  Harmless when absent.
@@ -379,14 +387,14 @@ if [ -n "${FIO_COMMIT:-}" ]; then
     # hipFile ships only in the therock stream, which is the stream this
     # flavour installs above -- so a failure here is a package set that moved,
     # not a configuration choice, and it should say so.
-    if ! apt-cache show amdrocm-hipfile-dev > /dev/null 2>&1; then
-        echo "Error: amdrocm-hipfile-dev is not available from the therock" \
-             "repository configured above; fio cannot be built with" \
-             "libhipfile support" >&2
+    if ! apt-cache show "amdrocm-hipfile-dev${ROCM_VERSION}" > /dev/null 2>&1; then
+        echo "Error: amdrocm-hipfile-dev${ROCM_VERSION} is not available from" \
+             "the therock repository configured above; fio cannot be built" \
+             "with libhipfile support" >&2
         exit 1
     fi
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        --no-install-recommends amdrocm-hipfile-dev
+        --no-install-recommends "amdrocm-hipfile-dev${ROCM_VERSION}"
     sudo ldconfig
 
     # The same ROCM_PATH the guest's own /etc/profile.d/rocm.sh exports, rather
@@ -439,7 +447,7 @@ fi
 # vm-info.json stays flavour-agnostic; this is the flavour's own record, and
 # the driver version is the thing a consumer most needs to compare against.
 AMDGPU_PKG=$(dpkg-query -W -f='${Version}' amdgpu-dkms)
-ROCM_PKG=$(dpkg-query -W -f='${Version}' amdrocm-runtime-dev)
+ROCM_PKG=$(dpkg-query -W -f='${Version}' "amdrocm-runtime-dev${ROCM_VERSION}")
 if [ "${RELEASE}" = noble ]; then
     RUNTIME_DRIVER="in-tree amdgpu from the booted HWE kernel; the DKMS module is for $(uname -r) and cannot load"
 else
