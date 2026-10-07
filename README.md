@@ -33,12 +33,12 @@ adding an image or a variant adds its row.
 **Pinned commits**
 
 [![libvfio-user 8039244](https://img.shields.io/badge/libvfio--user-8039244-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/803924493a7c787b2ba358751f55f07d5dba64b2)
-[![qemu-minimal 4bb8f75](https://img.shields.io/badge/qemu--minimal-4bb8f75-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/4bb8f75f090a22998e108f3b47a9ecb1a5dc2f45)
-[![rocm-ernic 76af59f](https://img.shields.io/badge/rocm--ernic-76af59f-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/76af59f34764bed0462d78b3866c76640bb70695)
-[![rocjitsu 8677978](https://img.shields.io/badge/rocjitsu-8677978-ED1C24)](https://github.com/ROCm/rocm-systems/commit/86779787fdda5aedb2aec240620bad87c5a43b56)
+[![qemu-minimal a76e881](https://img.shields.io/badge/qemu--minimal-a76e881-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/a76e881891d5993264e5f7f1ba24b6f424198719)
+[![rocm-ernic f7e3ecb](https://img.shields.io/badge/rocm--ernic-f7e3ecb-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/f7e3ecb18fca02fe9d1e6685952ee10d4a78efe3)
+[![rocjitsu 4c86d86](https://img.shields.io/badge/rocjitsu-4c86d86-ED1C24)](https://github.com/ROCm/rocm-systems/commit/4c86d867ed877a3c308d7bcdc084c4c4544e85fe)
 [![spdk 18d1d8d](https://img.shields.io/badge/spdk-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
 [![fio daf3f3b](https://img.shields.io/badge/fio-daf3f3b-4B8BBE)](https://github.com/axboe/fio/commit/daf3f3b837f81ac2464c6a67bba829c984d65a3f)
-[![ucx 16c3cc0](https://img.shields.io/badge/ucx-16c3cc0-4B8BBE)](https://github.com/openucx/ucx/commit/16c3cc06ced79f2159c8cbe0179bffd6236bddc5)
+[![ucx 54e081f](https://img.shields.io/badge/ucx-54e081f-4B8BBE)](https://github.com/openucx/ucx/commit/54e081fd8d4cd67e45213eab74049410df63b3bc)
 [![etcd-cpp-apiv3 7c6e714](https://img.shields.io/badge/etcd--cpp--apiv3-7c6e714-419EDA)](https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3/commit/7c6e714f188f9576e25e0350cac4181139eec23e)
 
 <!-- END PINNED BADGES -->

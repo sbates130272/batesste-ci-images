@@ -294,7 +294,7 @@ images:
       # whichever branch ucx_branch names.
       ucx_repo: https://github.com/openucx/ucx.git
       ucx_branch: v1.23.x
-      ucx_commit: 16c3cc06ced79f2159c8cbe0179bffd6236bddc5
+      ucx_commit: 54e081fd8d4cd67e45213eab74049410df63b3bc
       etcd_repo: https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git
       etcd_commit: 7c6e714f188f9576e25e0350cac4181139eec23e
       # Abseil and gRPC are built from source because Ubuntu's libgrpc++-dev
@@ -345,7 +345,7 @@ images:
     base: ubuntu-libvfio-user
     artifact: true
     vars:
-      rocm_ernic_commit: 76af59f34764bed0462d78b3866c76640bb70695
+      rocm_ernic_commit: f7e3ecb18fca02fe9d1e6685952ee10d4a78efe3
     build_args:
       ROCM_ERNIC_COMMIT: "{rocm_ernic_commit}"
     # This image links against libvfio-user, so that pin belongs in the tag:
@@ -382,7 +382,7 @@ images:
       # that exists -- no CI anywhere enables ROCJITSU_ENABLE_VFIO, so develop
       # can lose the vfio-user compute path with every upstream check green.
       rocjitsu_commit:
-        value: 86779787fdda5aedb2aec240620bad87c5a43b56
+        value: 4c86d867ed877a3c308d7bcdc084c4c4544e85fe
         env: ROCM_ROCJITSU_COMMIT
       # Compile-time log groups (emulation/rocjitsu/cmake/rj_log.cmake): OFF,
       # ALL, a comma-separated subset of VM, CP, DBT_HOOKS, PLUGINS, DRIVER, or
@@ -488,7 +488,7 @@ images:
       # ubuntu-qcow2-gen -- the ansible/ tree its guest builds are driven by, so
       # the CLI and the playbooks always come from one commit.
       qemu_minimal_repo: https://github.com/sbates130272/qemu-minimal.git
-      qemu_minimal_commit: 4bb8f75f090a22998e108f3b47a9ecb1a5dc2f45
+      qemu_minimal_commit: a76e881891d5993264e5f7f1ba24b6f424198719
       # Provenance only, and empty here: the default target builds a release
       # tag, which belongs to no branch. A fork variant fills it in and the
       # label appears only there.
@@ -515,12 +515,12 @@ images:
         # A SHA, not the branch name: the branch is rebased and force-pushed as
         # the series is reworked upstream, so a branch pin silently rebuilds a
         # different QEMU and the tag it publishes never changes. This commit is
-        # the head of dev/stephen/pci-mmio-bridge-submit as of 2026-09-22.
+        # the head of dev/stephen/pci-mmio-bridge-submit as of 2026-09-26.
         # version-scrub.sh must not touch it -- it tracks QEMU releases, and
         # this is not one.
         vars:
           qemu_repo: https://github.com/sbates130272/qemu.git
-          qemu_commit: d757fa6cb3072fe1f2fc5767e9a76a298d4c7635
+          qemu_commit: 31e3d06a4e3e1d610f00dc8045d2c3a0ea97fb00
           qemu_branch: dev/stephen/pci-mmio-bridge-submit
 
   # Guest qcow2 images. One parameterised Dockerfile, one repository per
