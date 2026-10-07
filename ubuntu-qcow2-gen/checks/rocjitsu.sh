@@ -162,31 +162,51 @@ command -v ibv_devinfo
 ldconfig -p | grep -q libibverbs
 ibv_devinfo -l || true
 
-# gfx1250 firmware is not this image's to carry, so this cannot assert files.
-#
-# It used to: amdgpu-dkms depends on amdgpu-dkms-firmware, and the 31.60 tree
-# shipped real gc_12_1_0 and sdma_7_1_0 blobs, so every name the module opened
-# bar three had to be on disk. 31.60 has been withdrawn from repo.radeon.com,
-# and 31.50 -- the newest tree still serving this release -- packages none of
-# them, so the whole set now comes from vfio_guest_firmware.py at the
-# consumer's own rocjitsu pin (--set full --generation gfx1250). Asserting
-# presence here would fail every build by design.
-#
-# What is still worth asserting is the half this image does own: that the
-# driver it built has gfx1250 support at all. A driver without it never names
-# gc_12_1_0 or sdma_7_1_0 in its MODULE_FIRMWARE declarations, and a guest
-# built that way rejects the emulated device long before firmware is opened.
-# Same assertion checks/ernic-rocjitsu.sh makes, for the same reason.
+# gfx1250 firmware, from amdgpu-dkms-firmware -- amdgpu-dkms depends on it, and
+# from 31.60 it ships real gc_12_1_0 and sdma_7_1_0 blobs. Which of those this
+# amdgpu.ko actually opens is asked of the module rather than listed here:
+# modinfo reports its MODULE_FIRMWARE declarations, so a driver bump that adds
+# a name shows up as a missing file instead of going unnoticed.
 #
 # Scoped to gc_12_1_0 and sdma_7_1_0 only. rocm-xio's own assert also greps
 # "mes", which matches the gc_11 and gc_12_0 blobs that every release ships --
-# so that pattern can pass on a guest carrying no gfx1250 support at all.
-modinfo -F firmware "${AMDGPU_KO}" | grep -q 'gc_12_1_0'
-modinfo -F firmware "${AMDGPU_KO}" | grep -q 'sdma_7_1_0'
-echo "note: amdgpu declares gfx1250 firmware; the set itself is the consumer's"
-echo "      to install -- see /etc/rocjitsu-guest.json"
-modinfo -F firmware "${AMDGPU_KO}" | grep -E 'gc_12_1_0|sdma_7_1_0' |
-    sed 's/^/  /'
+# so that pattern can pass on a guest carrying no gfx1250 firmware at all.
+#
+# Two names are expected to be absent and are not a failure:
+#
+#   gc_12_1_0_imu.bin -- no driver release ships it, and the guest needs it:
+#     it is AMDGPU_UCODE_REQUIRED under the amdgpu.fw_load_type=0 the vfio
+#     boot uses. It comes from vfio_guest_firmware.py at the consumer's own
+#     rocjitsu pin, which is why it is not baked in here.
+#   gc_12_1_0_mes.bin, gc_12_1_0_mes1.bin -- only opened when amdgpu_uni_mes=0,
+#     which is not the default; uni_mes.bin covers the default path.
+#
+# Anything else missing is fatal. It means the firmware package stopped
+# carrying a blob the driver still opens, and a guest built that way fails in
+# amdgpu's early init with a firmware load error that names the file but not
+# the reason.
+EXPECTED_ABSENT='amdgpu/gc_12_1_0_imu.bin
+amdgpu/gc_12_1_0_mes.bin
+amdgpu/gc_12_1_0_mes1.bin'
+MISSING=$(modinfo -F firmware "${AMDGPU_KO}" |
+    grep -E 'gc_12_1_0|sdma_7_1_0' |
+    while read -r fw; do
+        [ -n "${fw}" ] || continue
+        for dir in /lib/firmware/updates /lib/firmware; do
+            if [ -e "${dir}/${fw}" ] || [ -e "${dir}/${fw}.xz" ]; then
+                continue 2
+            fi
+        done
+        echo "${fw}"
+    done)
+UNEXPECTED=$(printf '%s\n' "${MISSING}" | grep -vxF "${EXPECTED_ABSENT}" || true)
+if [ -n "${UNEXPECTED}" ]; then
+    echo "Error: amdgpu opens firmware this image does not carry:" >&2
+    echo "${UNEXPECTED}" | sed 's/^/  /' >&2
+    exit 1
+fi
+echo "note: gfx1250 firmware present from amdgpu-dkms-firmware; absent by design:"
+echo "${MISSING:-none}" | sed 's/^/  /'
 
 # Headroom for a rocm-xio build tree and a module build.
 test "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 20

@@ -32,9 +32,8 @@ transport has to be the one upstream tested against.
   against the vfio-user socket
 - **`vfio_guest_firmware.py`** -- generates what the guest's own driver release
   does not ship: `gc_12_1_0_imu.bin`, `ip_discovery.bin`, and a manifest naming
-  every file. `--set full` emits the whole stub set instead, which is what any
-  guest on a currently published `amdgpu` tree needs -- none of them package
-  gfx1250 firmware since 31.60 was withdrawn. See [Firmware](#firmware) below.
+  every file. `--set full` emits the whole stub set instead, for a guest on an
+  `amdgpu` release older than 31.60. See [Firmware](#firmware) below.
 - the config profiles under `/usr/local/share/rocjitsu/configs`
 - **`/usr/local/share/rocjitsu/rocjitsu-scratch-repro.hip`** -- a standalone
   reproducer for the dynamic-scratch path. Staged, not built: there is no
@@ -104,22 +103,15 @@ probe short of booting a guest. None of the five exercise what they do. See
 
 Upstream removed the stub generator when `emulation/rocjitsu/docs/qemu-vfio.md`
 moved to "use firmware files from the same public driver/firmware release as
-the guest's `amdgpu.ko`". For a while `amdgpu` 31.60 was that release:
-`amdgpu-dkms-firmware` shipped real `gc_12_1_0_mec.bin`,
-`gc_12_1_0_mec_1.bin`, `gc_12_1_0_rlc.bin`, `gc_12_1_0_rlc_1.bin`,
-`gc_12_1_0_uni_mes.bin` and `sdma_7_1_0.bin` into
-`/lib/firmware/updates/amdgpu`, and `amdgpu-dkms` *depends* on it, so a guest
-with the driver already had them.
+the guest's `amdgpu.ko`", and from `amdgpu` 31.60 that release exists.
+`amdgpu-dkms-firmware` ships real `gc_12_1_0_mec.bin`, `gc_12_1_0_mec_1.bin`,
+`gc_12_1_0_rlc.bin`, `gc_12_1_0_rlc_1.bin`, `gc_12_1_0_uni_mes.bin` and
+`sdma_7_1_0.bin` into `/lib/firmware/updates/amdgpu`, and `amdgpu-dkms`
+*depends* on it -- so a guest that has the driver already has them, with no
+copying step and no version skew to manage. (31.50 shipped 683 files and not
+one of these, which is why this image used to synthesize everything.)
 
-**That tree has been withdrawn from `repo.radeon.com`.** It is gone entirely,
-not merely missing a suite, and of what remains only 31.30, 31.40, 31.40.1 and
-31.50 publish an Ubuntu `resolute` suite at all. None of them package any of
-the blobs above -- 31.50 ships 683 files and not one of these. So for any guest
-on a tree that still serves a current release, **[the full set](#the-full-set)
-is the one you want**, and the default `--set gap` described next applies only
-to a guest built against 31.60 while it existed.
-
-Two files the driver opens are in no package, under any tree:
+Two files the driver still opens are in no package:
 
 - **`gc_12_1_0_imu.bin`** -- `AMDGPU_UCODE_REQUIRED` whenever `fw_load_type` is
   not `AMDGPU_FW_LOAD_PSP`, which is exactly the `amdgpu.fw_load_type=0` that
@@ -157,26 +149,11 @@ overwriting real microcode with a sentinel stub.
 
 ### The full set
 
-`--set full` emits everything instead: the five upstream fixtures plus
-`gc_12_1_0_mec_1.bin`, `gc_12_1_0_rlc.bin` and the two MES aliases.
-`manifest.json` records which set was written, and `packaged_by_driver_release`
-lists what was deliberately left to the guest -- empty for the full set.
-
-This is the set to use for any guest on a driver tree that still serves a
-current Ubuntu release, since none of them package gfx1250 firmware. Pair it
-with `--generation gfx1250` when no rocjitsu config is available to read the
-target version out of -- which is the case inside a guest:
-
-```bash
-docker run --rm -v "$PWD/fw:/out" "$IMAGE" \
-    python3 /usr/local/bin/vfio_guest_firmware.py \
-        --set full --generation gfx1250 --output /out
-```
-
-`ubuntu-qcow2-gen`'s `ernic-rocjitsu` flavour bakes exactly this into the disk;
-its `rocjitsu` flavour carries none of it and leaves the same call to the
-consumer, so that the firmware matches the rocjitsu pin actually serving the
-socket.
+For a guest on an `amdgpu` release older than 31.60, `--set full` emits
+everything instead: the five upstream fixtures plus `gc_12_1_0_mec_1.bin`,
+`gc_12_1_0_rlc.bin` and the two MES aliases. `manifest.json` records which set
+was written, and `packaged_by_driver_release` lists what was deliberately left
+to the guest -- empty for the full set.
 
 The bare and `_1` spellings of `mec` and `rlc` are both emitted because which
 one the driver requests turns on `adev->rev_id`, which `soc_v1_0_set_rev_id`

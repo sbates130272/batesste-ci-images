@@ -583,9 +583,10 @@ images:
       # "latest" is the rolling symlink the rocm_setup role defaults to, and it
       # publishes jammy and noble only. A flavour on a release that tree has no
       # suite for must name a version directory that does -- see the rocjitsu
-      # variant, which pins 31.50 for resolute. Upstream withdraws these
-      # directories without notice (31.60 is gone), so scripts/version-scrub.sh
-      # checks the pinned one still serves the release rather than bumping it.
+      # variant, which pins 31.60 for resolute. A directory can stop serving
+      # without notice and come back days later (31.60 did, 2026-10-02 to
+      # -10-05), so scripts/version-scrub.sh checks the pinned one still serves
+      # the release and warns rather than bumping it.
       amdgpu_driver_version: "latest"
       # The TheRock ROCm component version the guest's userspace installs under
       # -- the packages land in /opt/rocm/core-<version>/, not /opt/rocm/, so
@@ -717,49 +718,48 @@ images:
       # installed ROCm and amdgpu-dkms over SSH at runtime, costing the better
       # part of an hour per run; this flavour bakes it in once.
       #
-      # release: resolute, and amdgpu_driver_version: 31.50, which are one
+      # release: resolute, and amdgpu_driver_version: 31.60, which are one
       # decision. 31.50 was the first amdgpu driver tree to publish a resolute
-      # suite and is now the newest that still does: 31.60, which this pin used
-      # to name, was withdrawn from repo.radeon.com entirely -- not merely
-      # missing a suite -- and a guest built against it fails at the suite
-      # guard in provision/rocjitsu.sh. Of everything the tree still publishes,
-      # only 31.30, 31.40, 31.40.1 and 31.50 serve resolute at all.
-      #
-      # 31.50's amdgpu-dkms is still a driver that builds against the 7.0
-      # kernel 26.04 boots, still carries GC 12.1.0 plus the UMSCH HW IP
-      # enumeration (4e07da515d1c) the emulated gfx1250 needs, and still
-      # carries the kfd_device.c line provision/rocjitsu.sh patches for
+      # suite; 31.60 is the first to ship gfx1250 firmware (see below), and its
+      # amdgpu-dkms is 1:7.1.9.31600000 -- still a driver that builds against
+      # the 7.0 kernel 26.04 boots, still carrying GC 12.1.0 plus the UMSCH HW
+      # IP enumeration (4e07da515d1c) the emulated gfx1250 needs, and still
+      # carrying the kfd_device.c line provision/rocjitsu.sh patches for
       # atomics. The noble build this replaces could install only a ~24.04
       # amdgpu-dkms whose kcl layer will not compile against 7.0 at all, so its
       # module had to be built against the cloud image's 6.8 and could never
       # load, leaving the in-tree 7.0 driver to reject the device with
       # "Failed to add vcn/jpeg ip block". Do not move this pin back to
-      # "latest": that symlink is still jammy/noble only. Do not move it
-      # *forward* on upstream's say-so either -- a newer tree is exactly what
-      # drops the resolute suite, which is how 31.60 broke.
+      # "latest": that symlink is still jammy/noble only.
       #
-      # No driver tree serving resolute ships gfx1250 firmware. 31.60 briefly
-      # did -- real gc_12_1_0_mec{,_1}.bin, gc_12_1_0_rlc{,_1}.bin,
-      # gc_12_1_0_uni_mes.bin and sdma_7_1_0.bin in amdgpu-dkms-firmware, the
-      # "same public driver release as the guest's amdgpu.ko" pairing
-      # upstream's qemu-vfio.md asks for -- but it is gone, and 31.50 ships 683
-      # files and not one of them. The gap is closed by generation instead:
-      # ubuntu-rocm-rocjitsu's vfio_guest_firmware.py emits the whole set under
-      # --set full, and --generation gfx1250 lets it do so without a rocjitsu
-      # config on disk. This flavour therefore carries no gfx1250 firmware and
-      # leaves the whole set to its consumer, which can generate it from the
-      # rocjitsu server image it already runs.
+      # This tree can vanish and come back. Between 2026-10-02 and 2026-10-05
+      # repo.radeon.com stopped serving 31.60 entirely -- the directory itself
+      # 404'd and it left the index listing, while 31.50 served normally -- and
+      # then it returned intact. The repin to 31.50 made in the meantime broke
+      # the ernic-rocjitsu flavour outright, because that tree's amdgpu-dkms is
+      # 7.1.3 and the patches below are written against 7.1.9. So do not chase
+      # availability: scripts/version-scrub.sh warns when this tree stops
+      # serving resolute, and a warning is a prompt to look, not to repin.
       #
-      # Things it does not carry, all of which stay in rocm-xio's runtime
-      # playbook because they belong to the consumer's rocjitsu pin rather than
-      # to the disk:
+      # Most gfx1250 firmware now comes with the driver. amdgpu-dkms depends on
+      # amdgpu-dkms-firmware, and from 31.60 that package ships real
+      # gc_12_1_0_mec{,_1}.bin, gc_12_1_0_rlc{,_1}.bin, gc_12_1_0_uni_mes.bin
+      # and sdma_7_1_0.bin into /lib/firmware/updates/amdgpu, which is exactly
+      # the "same public driver release as the guest's amdgpu.ko" pairing
+      # upstream's qemu-vfio.md asks for. 31.50 shipped 683 files and not one
+      # of them, which is why this flavour used to carry no firmware at all.
+      #
+      # Three things it still does not carry, all of which stay in rocm-xio's
+      # runtime playbook because they belong to the consumer's rocjitsu pin
+      # rather than to the disk:
       #
       #   * ip_discovery.bin -- generated per-config by "rj-ip-discovery
       #     gfx1250" from the rocjitsu image the consumer runs.
-      #   * The gfx1250 firmware set -- from vfio_guest_firmware.py
-      #     --set full --generation gfx1250, at the consumer's own rocjitsu
-      #     pin. Note --set full rather than the default --set gap: gap omits
-      #     the blobs 31.60 used to package, and nothing packages them now.
+      #   * gc_12_1_0_imu.bin -- the one blob no driver release ships, and
+      #     AMDGPU_UCODE_REQUIRED under the amdgpu.fw_load_type=0 the vfio
+      #     guest boots with. It comes from ubuntu-rocm-rocjitsu's
+      #     vfio_guest_firmware.py, whose default --set gap emits it and
+      #     nothing that would overwrite the packaged blobs.
       #   * The CI user's passwordless sudo.
       #
       # The amdgpu-probe helper was on that list and is now in, from
@@ -778,7 +778,7 @@ images:
           flavour: rocjitsu
           vm_packages: rocjitsu.txt
           release: resolute
-          amdgpu_driver_version: "31.50"
+          amdgpu_driver_version: "31.60"
           guest_rocm_version: "10.1"
           fio_commit: "6bc57a931f04fa3f50348d8c8f087187f050c6e1"
 
@@ -801,22 +801,24 @@ images:
       #     build rocm-ernic is passing on; the two pins move independently and
       #     nothing asserts they stay equal.
       #
-      #   amdgpu_driver_version: 31.50 for the rocjitsu flavour's reasons --
-      #     the newest driver tree still serving a resolute suite, 31.60 having
-      #     been withdrawn. But amdgpu-dkms does not build against 7.2.4 as
-      #     shipped: three patches in
+      #   amdgpu_driver_version: 31.60 for the rocjitsu flavour's reasons --
+      #     the first driver tree with both a resolute suite and real gfx1250
+      #     firmware. It is also the only one that still ships an amdgpu-dkms
+      #     the patches below apply to: they are written against 7.1.9, and
+      #     31.50 -- the next tree down -- carries 7.1.3, where the ptrace
+      #     patch fails both its hunks and the image build with it. But
+      #     amdgpu-dkms 7.1.9 does not build against 7.2.4 as shipped: three
+      #     patches in
       #     ubuntu-qcow2-gen/assets/ernic-rocjitsu/patches/amdgpu/ make it, and
       #     one of them changes a KFD security check and is carried unreviewed.
       #     Read that directory's README before moving either pin.
       #
       # Unlike the rocjitsu flavour, this one bakes in the generated firmware
-      # set. It used to bake only the gap -- gc_12_1_0_imu.bin and the two mes
-      # aliases -- on top of the real blobs 31.60 packaged; with those gone it
-      # generates the whole set under --set full. They are static fixtures from
-      # ubuntu-rocm-rocjitsu's vfio-guest-firmware.py and do not depend on
-      # which rocjitsu build serves the socket, so they can live on the disk.
-      # ip_discovery.bin still cannot: it comes from rj-ip-discovery at the
-      # consumer's own rocjitsu pin.
+      # gap set -- gc_12_1_0_imu.bin and the two mes aliases. They are static
+      # fixtures from ubuntu-rocm-rocjitsu's vfio-guest-firmware.py and do not
+      # depend on which rocjitsu build serves the socket, so they can live on
+      # the disk. ip_discovery.bin still cannot: it comes from rj-ip-discovery
+      # at the consumer's own rocjitsu pin.
       #
       # No fio: this flavour measures RDMA and HIP, not storage.
       ernic-rocjitsu:
@@ -829,7 +831,7 @@ images:
           vm_packages: ernic-rocjitsu.txt
           release: resolute
           kernel_ref: v7.2.4
-          amdgpu_driver_version: "31.50"
+          amdgpu_driver_version: "31.60"
           guest_rocm_version: "10.1"
           rdma_core_version: "61.0"
 

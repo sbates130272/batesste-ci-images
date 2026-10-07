@@ -278,24 +278,29 @@ sudo update-grub
 # initramfs, and the probe boot is where that has to be caught.
 sudo grep -q 'modprobe.blacklist=amdgpu' /boot/grub/grub.cfg
 
+# Most gfx1250 firmware arrives with the driver: amdgpu-dkms depends on
+# amdgpu-dkms-firmware, and from the 31.60 tree that package ships real
+# gc_12_1_0 and sdma_7_1_0 blobs into /lib/firmware/updates/amdgpu.  Asserted
+# rather than assumed -- a driver tree that stops shipping them takes the guest
+# back to needing a full stub set, and the place to find that out is here, not
+# in the emulated device's early init.
 FW_DIR=/lib/firmware/updates/amdgpu
+for fw in gc_12_1_0_mec.bin gc_12_1_0_mec_1.bin gc_12_1_0_rlc.bin \
+          gc_12_1_0_rlc_1.bin gc_12_1_0_uni_mes.bin sdma_7_1_0.bin; do
+    if [ ! -s "${FW_DIR}/${fw}" ] && [ ! -s "${FW_DIR}/${fw}.xz" ]; then
+        echo "Error: amdgpu-dkms-firmware ${AMDGPU_DRIVER_VERSION} did not" \
+             "install ${fw}; this flavour assumes it does" >&2
+        exit 1
+    fi
+done
 
-# The whole gfx1250 set, baked in -- unlike the rocjitsu flavour, which leaves
-# it to its consumer.
-#
-# This used to generate only the gap: the 31.60 driver tree packaged real
-# gc_12_1_0 and sdma_7_1_0 blobs in amdgpu-dkms-firmware, this script asserted
-# them, and --set gap filled in what no release shipped.  That tree has been
-# withdrawn from repo.radeon.com, and 31.50 -- the newest still serving
-# resolute -- packages none of them, so the gap is now everything and the
-# assertion could only fail.  --set full is the same generator covering the
-# whole set.
-#
-# They remain static fixtures: none of them depend on which rocjitsu build
-# serves the socket, which is why they can live in the image at all.
-# gc_12_1_0_imu.bin is AMDGPU_UCODE_REQUIRED under the amdgpu.fw_load_type=0
-# the vfio guest boots with, and mes/mes1 are the uni_mes builder's bytes under
-# the names amdgpu opens when amdgpu_uni_mes=0.
+# What no driver release ships, and what this flavour does bake in -- unlike
+# the rocjitsu flavour, which leaves the whole gap to its consumer.  These
+# three are static fixtures: gc_12_1_0_imu.bin is AMDGPU_UCODE_REQUIRED under
+# the amdgpu.fw_load_type=0 the vfio guest boots with, and mes/mes1 are the
+# uni_mes builder's bytes under the names amdgpu opens when amdgpu_uni_mes=0.
+# None of them depend on which rocjitsu build serves the socket, which is why
+# they can live in the image at all.
 #
 # ip_discovery.bin deliberately does not: it comes from "rj-ip-discovery
 # gfx1250" and must match the rocjitsu pin the *consumer* runs, not this
@@ -305,21 +310,18 @@ FW_DIR=/lib/firmware/updates/amdgpu
 # guest, and naming the generation keeps this independent of the rocjitsu
 # container's baked-in config path.
 sudo python3 /tmp/payload/vfio-guest-firmware.py \
-    --set full --generation gfx1250 --no-ip-discovery --output /tmp/fw-gap
+    --set gap --generation gfx1250 --no-ip-discovery --output /tmp/fw-gap
 GENERATED=$(python3 -c \
     'import json,sys;print(" ".join(json.load(open(sys.argv[1]))["files"]))' \
     /tmp/fw-gap/manifest.json)
 test -n "${GENERATED}"
 sudo install -d -m 0755 "${FW_DIR}"
 for fw in ${GENERATED}; do
-    # No tree serving this release packages any of the set, so under --set full
-    # this never fires.  It is kept because writing a sentinel stub over real
-    # microcode is strictly worse than not writing it: a future driver tree that
-    # starts shipping these again has to be noticed here, not debugged out of
-    # the emulated device's early init.
+    # The generator never names a packaged blob in the gap set, so this is an
+    # assertion about it rather than a guard: writing a sentinel stub over real
+    # microcode is strictly worse than not writing it.
     if [ -e "${FW_DIR}/${fw}" ] || [ -e "${FW_DIR}/${fw}.xz" ]; then
-        echo "Error: generated set names ${fw}, which the driver release" \
-             "ships -- drop it back to --set gap" >&2
+        echo "Error: gap set names ${fw}, which the driver release ships" >&2
         exit 1
     fi
     sudo install -m 0644 "/tmp/fw-gap/${fw}" "${FW_DIR}/${fw}"
@@ -332,8 +334,8 @@ sudo install -m 0644 /tmp/fw-gap/manifest.json \
 # of the provisioning boot, 40 minutes in, after the DKMS build.
 sudo rm -rf /tmp/fw-gap
 FW_PKG=$(dpkg-query -W -f='${Version}' amdgpu-dkms-firmware)
-echo "gfx1250 firmware: wholly generated (amdgpu-dkms-firmware ${FW_PKG}" \
-     "packages none of it): ${GENERATED}"
+echo "gfx1250 firmware: packaged from amdgpu-dkms-firmware ${FW_PKG}, plus" \
+     "generated ${GENERATED}"
 
 # /dev/kfd and /dev/dri/render* are root:render 0660.  A login user in neither
 # render nor video gets a HIP runtime that enumerates no agent at all and a
@@ -405,7 +407,7 @@ sudo tee /etc/ernic-rocjitsu-guest.json > /dev/null <<EOF
   "amdgpu_blacklisted_on_cmdline": true,
   "amdgpu_probe_helper": "/usr/local/bin/amdgpu-probe",
   "amdgpu_dkms_firmware_version": "${FW_PKG}",
-  "gfx1250_firmware": "wholly generated (--set full)",
+  "gfx1250_firmware": "packaged + generated gap set",
   "gfx1250_firmware_dir": "${FW_DIR}",
   "gfx1250_firmware_generated": "${GENERATED}",
   "ip_discovery_bin": false,

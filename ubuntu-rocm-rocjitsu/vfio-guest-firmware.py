@@ -250,16 +250,10 @@ ALIASES = {
     "gc_12_1_0_rlc_1.bin": ("gc_12_1_0_rlc.bin",),
 }
 
-# Shipped by amdgpu-dkms-firmware in the 31.60 tree, which amdgpu-dkms depends
-# on: a guest built against it has these already, under
-# /lib/firmware/updates/amdgpu. Overwriting real microcode with a sentinel stub
-# is strictly worse, so the default set omits them.
-#
-# 31.60 has since been withdrawn from repo.radeon.com, and no tree still
-# serving a current Ubuntu release packages any of these -- so for a guest
-# built today the default "gap" set is not enough and --set full is what is
-# wanted. This list is kept because it is what "gap" means, and because a
-# future tree may package them again.
+# Shipped by amdgpu-dkms-firmware from 31.60 on, which amdgpu-dkms depends on:
+# a guest with the driver has these already, under /lib/firmware/updates/amdgpu.
+# Overwriting real microcode with a sentinel stub is strictly worse, so the
+# default set omits them.
 PACKAGED = frozenset(
     (
         "gc_12_1_0_mec.bin",
