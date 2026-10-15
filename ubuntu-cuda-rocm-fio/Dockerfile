@@ -5,12 +5,24 @@ FROM ${BASE_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive
 
 ARG FIO_REPO=https://github.com/axboe/fio.git
-# libhipfile landed on fio master (67256d4e, 2026-05-08) and is not in any
-# release tag yet, so this must be a master commit rather than fio-3.x.
-# The asynchronous hipFile engine is not upstream at all: the
-# ubuntu-cuda-rocm-fio@async-hipfile variant overrides both args to build it
-# from a ROCm fork branch. Everything below is written to work either way.
-ARG FIO_COMMIT=270b6fb4e295ef1f24545b72eda33281088b46e0
+# The commit an upstream release is cut at -- fio-3.43 today. libhipfile
+# landed on fio master (67256d4e, 2026-05-08) and was in no tag for months,
+# which is why this used to have to be a master commit; 3.43 ships the engine,
+# so the pin follows releases now.
+#
+# The asynchronous hipFile engine is still not upstream at all, in a release
+# or on master: the ubuntu-cuda-rocm-fio@async-hipfile variant overrides both
+# args to build it from a ROCm fork branch. Everything below is written to
+# work either way.
+ARG FIO_COMMIT=d2dcd7e053d1902d2420f151c83990e6acdd9f8c
+# The therock component line the base image was built on. hipFile has to be
+# installed from that same line: therock serves several side by side out of one
+# versionless "stable" suite, /opt/rocm is an alternatives symlink pointing at
+# exactly one of them, and the bare package name follows whichever is newest.
+# When 10.1 appeared, bare amdrocm-hipfile-dev put its headers in
+# /opt/rocm/core-10.1 while /opt/rocm still resolved to core-10.0, and fio's
+# configure failed to find hipfile.h that was sitting on disk.
+ARG ROCM_VERSION=10.1
 ARG CACHE_BUST=
 
 RUN echo "Cache bust: ${CACHE_BUST:-none}" > /tmp/fio_cache_bust.txt
@@ -21,13 +33,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     set -eux; \
     apt-get update; \
-    if ! apt-cache show amdrocm-hipfile-dev > /dev/null 2>&1; then \
-        echo "ERROR: amdrocm-hipfile-dev is unavailable. This image requires a" \
-             "base built with ROCM_STREAM=therock." >&2; \
+    if ! apt-cache show "amdrocm-hipfile-dev${ROCM_VERSION}" > /dev/null 2>&1; then \
+        echo "ERROR: amdrocm-hipfile-dev${ROCM_VERSION} is unavailable. This" \
+             "image requires a base built with ROCM_STREAM=therock and a" \
+             "ROCM_VERSION the stable suite still carries." >&2; \
         exit 1; \
     fi; \
     apt-get install -y --no-install-recommends \
-        amdrocm-hipfile-dev \
+        "amdrocm-hipfile-dev${ROCM_VERSION}" \
         libaio-dev \
         libnuma-dev \
         pkg-config \
