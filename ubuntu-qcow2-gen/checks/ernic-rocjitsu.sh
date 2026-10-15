@@ -66,12 +66,33 @@ command -v ib_send_bw ib_write_bw ib_read_bw ib_send_lat
 # pinned out in provisioning.  Assert the libraries, not rocminfo: it is not in
 # the minimal set, the therock runtime package does not carry it, and the
 # distro copy is pinned to never-install.
-dpkg-query -W -f='${Status}' amdrocm-runtime-dev |
-    grep -q '^install ok installed$'
-dpkg-query -W -f='${Status}' amdrocm-blas-dev |
-    grep -q '^install ok installed$'
+# Matched by glob, not by exact name: the guest installs the component-line
+# package (amdrocm-runtime-dev10.1 and friends), because a bare name follows
+# whichever therock line is newest and can land outside the root /opt/rocm
+# resolves to. This file gets no build-side vars, so it cannot spell the line.
+dpkg-query -W -f='${Package} ${Status}\n' 'amdrocm-runtime-dev*' |
+    grep -q ' install ok installed$'
+dpkg-query -W -f='${Package} ${Status}\n' 'amdrocm-blas-dev*' |
+    grep -q ' install ok installed$'
 ldconfig -p | grep -q libamdhip64
 ldconfig -p | grep -q libhsa-runtime64
+
+# ROCM_PATH and PATH, from /etc/profile.d/rocm.sh. ld.so.conf above covers the
+# linker; this covers the shell, which is a different failure and the one
+# consumers actually hit -- the therock component directory is versioned, so a
+# login session finds no ROCm tooling and no ROCM_PATH without being told.
+#
+# Asserted through an actual login shell rather than by reading the file: that
+# the file exists proves nothing about whether anything sources it.
+test -s /etc/profile.d/rocm.sh
+LOGIN_ROCM_PATH=$(bash -lc 'echo "${ROCM_PATH}"')
+test -n "${LOGIN_ROCM_PATH}"
+test -d "${LOGIN_ROCM_PATH}"
+# By the PATH entry itself, not by resolving a tool through it: rocminfo and
+# friends are not in this guest's minimal set, for the reasons above.
+bash -lc 'case ":${PATH}:" in *":${ROCM_PATH}/bin:"*) ;; *) exit 1 ;; esac'
+echo "note: login-shell ROCM_PATH=${LOGIN_ROCM_PATH}"
+
 # BLAS is asserted by its headers, not by a library: amdrocm-blas-dev is
 # headers-only in the therock stream and does not depend on the runtime
 # amdrocm-blas, so there is no librocblas.so here.
@@ -132,6 +153,15 @@ grep -q 'adev->mode_info.atom_context' "${AMDGPU_SRC}/amd/amdgpu/amdgpu_ras.c"
 grep -qx 'blacklist amdgpu' /etc/modprobe.d/amdgpu-blacklist.conf
 grep -q 'modprobe.blacklist=amdgpu' /proc/cmdline
 ! lsmod | grep -q '^amdgpu '
+
+# And absent from the initramfs, not merely blacklisted inside it. The hook in
+# provisioning drops it from the staging tree; this is what proves the hook
+# ran and kept running across the DKMS rebuilds. Every initramfs on the disk,
+# not just the booted one -- a consumer can select any of them from grub.
+for img in /boot/initrd.img-*; do
+    [ -e "${img}" ] || continue
+    ! lsinitramfs "${img}" | grep -q 'amdgpu\.ko'
+done
 
 # The probe helper is offered, not run: the blacklist above still stands.  The
 # same file the rocjitsu flavour installs, from assets/shared -- asserted in

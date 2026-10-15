@@ -50,6 +50,14 @@ FINAL_KERNEL_REF="${KERNEL_REF:-}"
 # Only read by a provision script that installs the AMD kernel driver; inert
 # for every other flavour.
 FINAL_AMDGPU_DRIVER_VERSION="${AMDGPU_DRIVER_VERSION:-latest}"
+# Where the guest's ROCm userspace lands. Composed in images.yml from
+# guest_rocm_version, so a flavour that pins none hands us the bare
+# "/opt/rocm/core-"; only a provision script that installs ROCm reads it, and
+# that script asserts the directory exists.
+FINAL_ROCM_PATH="${ROCM_PATH:-}"
+# The same component line, for the therock package names. Empty for a flavour
+# that installs no ROCm.
+FINAL_ROCM_VERSION="${ROCM_VERSION:-}"
 # Likewise read only by a provision script that stamps the guest's rdma-core.
 FINAL_RDMA_CORE_VERSION="${RDMA_CORE_VERSION:-}"
 # Empty means the flavour installs no fio; see the var's note in images.yml.
@@ -72,6 +80,8 @@ echo "VM_PACKAGES: ${FINAL_PACKAGES}"
 echo "VM_PLAYBOOK: ${FINAL_PLAYBOOK:-none}"
 echo "KERNEL_REF: ${FINAL_KERNEL_REF:-none (release kernel)}"
 echo "AMDGPU_DRIVER_VERSION: ${FINAL_AMDGPU_DRIVER_VERSION}"
+echo "ROCM_PATH: ${FINAL_ROCM_PATH:-none (no ROCm in the guest)}"
+echo "ROCM_VERSION: ${FINAL_ROCM_VERSION:-none}"
 echo "RDMA_CORE_VERSION: ${FINAL_RDMA_CORE_VERSION:-none}"
 echo "FIO_COMMIT: ${FINAL_FIO_COMMIT:-none (no fio in the guest)}"
 
@@ -285,7 +295,8 @@ if [ -n "${FINAL_KERNEL_REF}" ]; then
     KERNEL_DEBS=$(echo "${NAMES}" | tr '\n' ' ' | sed 's/ $//')
 
     KINSTALL=/tmp/install-kernel.sh
-    cat > "${KINSTALL}" <<'KERNEL_EOF'
+    printf 'KPIN=%s\n' "${FINAL_KERNEL_REF#v}" > "${KINSTALL}"
+    cat >> "${KINSTALL}" <<'KERNEL_EOF'
 set -eu
 # apt rather than dpkg -i so the base dependencies (linux-base, kmod,
 # wireless-regdb, an initramfs tool) are resolved from the archive instead of
@@ -293,8 +304,75 @@ set -eu
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/payload/*.deb
 sudo update-grub
 rm -rf /tmp/payload
-# Nothing here has run on the new kernel yet: grub picks the highest version at
-# the next boot, and the verification boot is what confirms it did.
+
+# Which kernel the pin actually resolved to.  The .deb names carry the ABI
+# (7.2.4-070204-generic) and the pin does not, so this is read back rather
+# than reconstructed.
+KREL=$(ls -1 /boot/vmlinuz-"${KPIN}"-* 2>/dev/null | sed 's|.*/vmlinuz-||' |
+    sort -V | tail -1)
+[ -n "${KREL}" ] || {
+    echo "Error: no /boot/vmlinuz-${KPIN}-* after installing the .debs" >&2
+    exit 1
+}
+
+# Pin grub's default to that kernel by menuentry id.
+#
+# Not left to "grub picks the highest version", which is what this used to
+# rely on: GRUB_DEFAULT=0 selects whatever 10_linux emitted first, and the
+# release's own HWE kernel keeps being installed alongside this one.  A guest
+# that silently boots 7.0.x instead of the pinned mainline is the failure the
+# whole kernel layer exists to prevent, and it is invisible from the host.
+#
+# By id rather than by menuentry title: the title is generated text that
+# changes with the kernel version and with Ubuntu's grub templates, so a
+# hardcoded title is a string that rots.  The ids are read out of the grub.cfg
+# that update-grub just produced, and the submenu>entry form is what grub wants
+# for an entry nested under "Advanced options".
+#
+# A grub.d snippet rather than an edit to /etc/default/grub, for the reason
+# the amdgpu blacklist uses one: 50-cloudimg-settings.cfg is sourced after the
+# main file and would overwrite it.  99- sorts last.
+# sudo throughout: grub.cfg is mode 600 and these run as the guest user, so
+# an unprivileged read returns nothing and the ids come back empty -- which
+# looks exactly like "no such entry" and is not.
+SUBMENU_ID=$(sudo sed -n "s/^submenu .*\$menuentry_id_option '\([^']*\)'.*/\1/p" \
+    /boot/grub/grub.cfg | head -1)
+ENTRY_ID=$(sudo sed -n "s/^[[:space:]]*menuentry .*\$menuentry_id_option '\([^']*\)'.*/\1/p" \
+    /boot/grub/grub.cfg | grep -- "-${KREL}-advanced-" | head -1)
+if [ -z "${SUBMENU_ID}" ] || [ -z "${ENTRY_ID}" ]; then
+    echo "Error: no grub menuentry id for ${KREL}" >&2
+    sudo grep -nE '^(submenu|[[:space:]]*menuentry)' /boot/grub/grub.cfg >&2
+    exit 1
+fi
+sudo install -d -m 0755 /etc/default/grub.d
+printf 'GRUB_DEFAULT="%s>%s"\n' "${SUBMENU_ID}" "${ENTRY_ID}" |
+    sudo tee /etc/default/grub.d/99-pinned-kernel.cfg > /dev/null
+sudo update-grub
+
+# Asserted here as well as in the verification boot: this is where the cause
+# is still on screen if the id did not survive into the generated config.
+#
+# Parsed rather than grepped for a literal, because 00_header does not write
+# the line the obvious way. It emits
+#
+#   if [ "${next_entry}" ] ; then
+#      set default="${next_entry}"
+#   else
+#      set default="<GRUB_DEFAULT>"
+#   fi
+#
+# so the line is indented inside an if/else -- an anchored "^set default"
+# never matches it -- and the *first* occurrence is grub's own next_entry
+# variable rather than our value. Take the first one that is not a ${...}
+# reference.
+GRUB_SET=$(sudo sed -n 's/^[[:space:]]*set default="\(.*\)"$/\1/p' \
+    /boot/grub/grub.cfg | grep -v '\${' | head -1)
+if [ "${GRUB_SET}" != "${SUBMENU_ID}>${ENTRY_ID}" ]; then
+    echo "Error: grub default is '${GRUB_SET}', not the pinned ${KREL}" >&2
+    sudo grep -n 'set default=' /boot/grub/grub.cfg >&2
+    exit 1
+fi
+echo "grub default pinned to ${KREL}"
 dpkg-query -W -f='${Package}\n' 'linux-image-*' | sed 's/^/installed: /'
 KERNEL_EOF
 
@@ -332,6 +410,8 @@ FLAVOUR='${FLAVOUR}'
 RELEASE='${FINAL_RELEASE}'
 USERNAME='${FINAL_USERNAME}'
 AMDGPU_DRIVER_VERSION='${FINAL_AMDGPU_DRIVER_VERSION}'
+ROCM_PATH='${FINAL_ROCM_PATH}'
+ROCM_VERSION='${FINAL_ROCM_VERSION}'
 RDMA_CORE_VERSION='${FINAL_RDMA_CORE_VERSION}'
 FIO_COMMIT='${FINAL_FIO_COMMIT}'
 EOF
@@ -362,6 +442,81 @@ PROBE=/tmp/probe.sh
 cat > "${PROBE}" <<'PROBE_EOF'
 set -eu
 printf 'PROBE_KERNEL=%s\n' "$(uname -r)"
+
+# Everything below is read out of the guest and ends up in vm-info.json, so a
+# consumer can ask the manifest instead of booting the image to find out.
+#
+# The running kernel above is not the whole story: the release keeps its own
+# HWE kernel installed alongside a pinned mainline one, so "which kernels are
+# here" and "which one boots next" are separate questions and both belong in
+# the manifest.
+printf 'PROBE_KERNELS=%s\n' \
+    "$(ls -1 /boot/vmlinuz-* 2>/dev/null | sed 's|.*/vmlinuz-||' |
+        sort -V | tr '\n' ',' | sed 's/,$//')"
+# sudo: grub.cfg is mode 600. Without it this reads nothing and the manifest
+# records a default nobody checked.
+# Named for the key it is emitted as, because the pinned-kernel assertion
+# appended to this script later reads the variable by that name -- under
+# `set -u` a second spelling is not a typo that lingers, it is an unbound
+# variable that fails the probe.
+PROBE_GRUB_DEFAULT_ID=$(sudo sed -n 's/^[[:space:]]*set default="\(.*\)"$/\1/p' \
+    /boot/grub/grub.cfg | grep -v '\${' | head -1)
+printf 'PROBE_GRUB_DEFAULT_ID=%s\n' "${PROBE_GRUB_DEFAULT_ID}"
+# Which kernel that selects, which is the question a consumer actually has.
+#
+# Two shapes.  A flavour that pins a kernel gets an explicit id from the
+# kernel layer, and Ubuntu's generated ids carry the release
+# (gnulinux-<rel>-advanced-<uuid>), so it resolves by inspection.  A flavour
+# that pins none leaves GRUB_DEFAULT at 0, so the index is resolved by
+# reading the first menuentry's linux line -- leaving this empty would mean
+# the manifest cannot answer the one question it exists to answer.
+PROBE_GRUB_DEFAULT_KERNEL=$(printf '%s' "${PROBE_GRUB_DEFAULT_ID##*>}" |
+    sed -n 's/^gnulinux-\(.*\)-advanced-.*/\1/p')
+if [ -z "${PROBE_GRUB_DEFAULT_KERNEL}" ]; then
+    PROBE_GRUB_DEFAULT_KERNEL=$(sudo awk '
+        /^menuentry/ { n++ }
+        n == 1 && $1 == "linux" {
+            sub(/.*vmlinuz-/, "", $2); print $2; exit
+        }' /boot/grub/grub.cfg)
+fi
+printf 'PROBE_GRUB_DEFAULT_KERNEL=%s\n' "${PROBE_GRUB_DEFAULT_KERNEL}"
+
+. /etc/os-release
+printf 'PROBE_UBUNTU_VERSION=%s\n' "${VERSION_ID:-unknown}"
+printf 'PROBE_UBUNTU_CODENAME=%s\n' "${VERSION_CODENAME:-unknown}"
+
+# DKMS state, not just the source tree: a module built for a kernel that is
+# not the one booting is exactly the skew this manifest should expose.
+if command -v dkms > /dev/null; then
+    printf 'PROBE_DKMS=%s\n' \
+        "$(dkms status 2>/dev/null | tr '\n' ';' | sed 's/;$//')"
+else
+    printf 'PROBE_DKMS=\n'
+fi
+
+# ROCm, when the flavour installed any.  The therock packages live under a
+# versioned component directory, so the path is as much a fact as the version.
+if [ -e /etc/profile.d/rocm.sh ]; then
+    # shellcheck disable=SC1091
+    . /etc/profile.d/rocm.sh
+    printf 'PROBE_ROCM_PATH=%s\n' "${ROCM_PATH:-}"
+    printf 'PROBE_ROCM_VERSION=%s\n' \
+        "$(dpkg-query -W -f='${Version}' 'amdrocm-runtime-dev*' 2>/dev/null |
+            head -1)"
+else
+    printf 'PROBE_ROCM_PATH=\n'
+    printf 'PROBE_ROCM_VERSION=\n'
+fi
+
+# The host keys the guest will present, so a consumer can pin them instead of
+# meeting a new fingerprint on first contact.  The keypair in /output is the
+# login key and is recorded separately by the host side.
+printf 'PROBE_SSH_HOST_KEYS=%s\n' \
+    "$(for f in /etc/ssh/ssh_host_*_key.pub; do
+        [ -e "${f}" ] || continue
+        ssh-keygen -l -f "${f}" 2>/dev/null | awk '{print $4" "$2}'
+    done | tr '\n' ';' | sed 's/;$//')"
+
 # Passwordless sudo and sshd on 22 are the contract for every flavour, so they
 # are asserted here rather than repeated in each checks file.  So is the
 # absence of unattended upgrades: a later apt step pulling the package back in
@@ -381,6 +536,21 @@ if [ -n "${FINAL_KERNEL_REF}" ]; then
     printf 'case "$(uname -r)" in %s-*) ;; *)\n' \
         "${FINAL_KERNEL_REF#v}" >> "${PROBE}"
     printf '  echo "Error: pinned kernel %s but booted $(uname -r)" >&2\n' \
+        "${FINAL_KERNEL_REF}" >> "${PROBE}"
+    printf '  exit 1 ;;\nesac\n' >> "${PROBE}"
+    # And what the *next* boot will take, which is a different question. This
+    # boot inherits whatever grub chose when the kernel layer ran; a consumer
+    # launching the published image gets whatever the default entry says now.
+    # A guest reported against 20261007.g677e113 booted the release's HWE
+    # kernel rather than the pinned mainline, which is the shape of failure
+    # this closes -- the running kernel was right and the default entry was
+    # not, so nothing in the build noticed.
+    printf 'case "${PROBE_GRUB_DEFAULT_KERNEL}" in %s-*) ;; *)\n' \
+        "${FINAL_KERNEL_REF#v}" >> "${PROBE}"
+    printf '  echo "Error: grub default resolves to' \
+        >> "${PROBE}"
+    printf ' ${PROBE_GRUB_DEFAULT_KERNEL:-<unset>} (id' >> "${PROBE}"
+    printf ' ${PROBE_GRUB_DEFAULT_ID}), not the pinned %s" >&2\n' \
         "${FINAL_KERNEL_REF}" >> "${PROBE}"
     printf '  exit 1 ;;\nesac\n' >> "${PROBE}"
 fi
@@ -431,6 +601,31 @@ echo "${PROBE_OUT}" | grep -qx 'PROBE_OK' || {
 GUEST_KERNEL=$(echo "${PROBE_OUT}" | sed -n 's/^PROBE_KERNEL=//p')
 echo "Guest kernel: ${GUEST_KERNEL}"
 
+# The rest of what the guest said about itself, for the manifest.  Read with
+# the same sed as above rather than eval'd: these are values from inside the
+# guest and they land in JSON, so they are data here and nothing else.
+probe_val() { echo "${PROBE_OUT}" | sed -n "s/^$1=//p" | head -1; }
+GUEST_KERNELS=$(probe_val PROBE_KERNELS)
+GUEST_GRUB_DEFAULT_ID=$(probe_val PROBE_GRUB_DEFAULT_ID)
+GUEST_GRUB_DEFAULT_KERNEL=$(probe_val PROBE_GRUB_DEFAULT_KERNEL)
+GUEST_UBUNTU_VERSION=$(probe_val PROBE_UBUNTU_VERSION)
+GUEST_UBUNTU_CODENAME=$(probe_val PROBE_UBUNTU_CODENAME)
+GUEST_DKMS=$(probe_val PROBE_DKMS)
+GUEST_ROCM_PATH=$(probe_val PROBE_ROCM_PATH)
+GUEST_ROCM_VERSION=$(probe_val PROBE_ROCM_VERSION)
+GUEST_SSH_HOST_KEYS=$(probe_val PROBE_SSH_HOST_KEYS)
+echo "Guest kernels: ${GUEST_KERNELS}"
+echo "Grub default: ${GUEST_GRUB_DEFAULT_KERNEL:-<index>} (${GUEST_GRUB_DEFAULT_ID})"
+
+# ";"-and-","-separated on the wire because the probe emits one line per fact;
+# split back into JSON arrays so consumers do not have to know that.
+json_array() {
+    printf '%s' "$1" | tr "$2" '\n' | jq -R . | jq -s -c .
+}
+JSON_KERNELS=$(json_array "${GUEST_KERNELS}" ',')
+JSON_DKMS=$(json_array "${GUEST_DKMS}" ';')
+JSON_SSH_HOST_KEYS=$(json_array "${GUEST_SSH_HOST_KEYS}" ';')
+
 QEMU_COMMIT_INFO=$(cat /build/qemu-commit.txt 2>/dev/null || echo "unknown")
 # Written by the ubuntu-libvfio-user image under /usr/local/share, not
 # /build like the two pins above -- reading the wrong path here is why this
@@ -462,9 +657,16 @@ BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # the kernel pin on top of the v1 keys; 3 adds the virtual size, the qemu
 # version, the SSH key fingerprint, the checks script and the build-time boot
 # shape; 4 adds the provision script; 5 adds the assets directory that
-# provision script was given; 6 adds the unattended-upgrades state.  Every
-# earlier key is kept, so a v1 through v5 consumer is unaffected -- read
+# provision script was given; 6 adds the unattended-upgrades state; 7 adds the
+# kernels block, dkms, rocm, os and the guest's SSH host keys.  Every earlier
+# key is kept, so a v1 through v6 consumer is unaffected -- read
 # schema_version before reaching for anything newer.
+#
+# v7 exists because kernel_release alone was not enough to describe a guest.
+# It is the kernel the verification boot happened to be running, and a release
+# keeps its own HWE kernel installed beside a pinned mainline one, so it said
+# nothing about which kernel a consumer's launch would take.  kernels.default
+# is that answer, read from the grub config rather than from uname.
 #
 # What a provision script installed is deliberately not hoisted here: this file
 # is flavour-agnostic, and a flavour with its own versions to report writes its
@@ -477,7 +679,7 @@ BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # so "oras manifest fetch" answers the common questions without the referrer.
 cat > /output/vm-info.json <<EOF
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "vm_name": "${FINAL_VM_NAME}",
   "flavour": "${FLAVOUR}",
   "username": "${FINAL_USERNAME}",
@@ -490,13 +692,30 @@ cat > /output/vm-info.json <<EOF
   "release": "${FINAL_RELEASE}",
   "architecture": "${FINAL_ARCH}",
   "kernel_release": "${GUEST_KERNEL}",
+  "kernels": {
+    "booted": "${GUEST_KERNEL}",
+    "default": "${GUEST_GRUB_DEFAULT_KERNEL}",
+    "default_grub_id": "${GUEST_GRUB_DEFAULT_ID}",
+    "installed": ${JSON_KERNELS}
+  },
+  "os": {
+    "distribution": "ubuntu",
+    "version": "${GUEST_UBUNTU_VERSION}",
+    "codename": "${GUEST_UBUNTU_CODENAME}"
+  },
+  "dkms": ${JSON_DKMS},
+  "rocm": {
+    "path": "${GUEST_ROCM_PATH}",
+    "version": "${GUEST_ROCM_VERSION}"
+  },
   "qemu_path": "/opt/qemu/bin/",
   "kvm_enabled": true,
   "backing_file": false,
   "ssh_keys": {
     "private_key_path": "/output/id_rsa",
     "public_key_path": "/output/id_rsa.pub",
-    "fingerprint": "${SSH_FINGERPRINT}"
+    "fingerprint": "${SSH_FINGERPRINT}",
+    "host_key_fingerprints": ${JSON_SSH_HOST_KEYS}
   },
   "provisioning": {
     "vm_packages": "${FINAL_PACKAGES}",

@@ -18,10 +18,12 @@
 #     and must match the rocjitsu pin the *consumer* runs, not this image's.
 #   * gfx1250 firmware.  See the note above the module build below.
 #
-# RELEASE, AMDGPU_DRIVER_VERSION and USERNAME come from the preamble.
+# RELEASE, AMDGPU_DRIVER_VERSION, ROCM_PATH, ROCM_VERSION and USERNAME come
+# from the preamble.
 
 echo "=== rocjitsu guest provisioning ==="
 echo "release: ${RELEASE}  amdgpu driver: ${AMDGPU_DRIVER_VERSION}"
+echo "rocm path: ${ROCM_PATH}"
 
 # TheRock publishes one package set per Ubuntu release; repo.radeon.com's
 # amdgpu driver repo uses the release codename as the apt suite.  Both are
@@ -93,10 +95,18 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get update
 
 # The minimal ROCm set rocm-xio asks for: enough for rocminfo, the HIP runtime
 # and linking, without the full amdrocm meta and its multi-gigabyte tail.
+#
+# Named with the component line rather than bare.  The therock suite is
+# versionless but carries several lines at once, /opt/rocm is an alternatives
+# symlink resolving to exactly one of them, and a bare name follows whichever
+# is newest -- so a line appearing upstream installs packages the guest's own
+# ROCM_PATH cannot see.  That is not hypothetical: it is how a 10.1 hipFile
+# landed under core-10.1 on a 10.0 image and broke a build with the headers
+# present but unreachable.
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     libstdc++-14-dev \
-    amdrocm-runtime-dev \
-    amdrocm-blas-dev
+    "amdrocm-runtime-dev${ROCM_VERSION}" \
+    "amdrocm-blas-dev${ROCM_VERSION}"
 
 # Distro copies of the same runtime, if anything pulled them in before the pin
 # above was in place.  Harmless when absent.
@@ -111,7 +121,39 @@ for d in /opt/rocm/lib /opt/rocm/lib64 /opt/rocm/*/lib /opt/rocm/*/lib64; do
 done | sudo tee /etc/ld.so.conf.d/rocm.conf > /dev/null
 test -s /etc/ld.so.conf.d/rocm.conf
 sudo ldconfig
-sudo update-pciids || true
+# The PCI ID database, refreshed rather than taken from the archive.
+#
+# Not guarded.  rocm-ernic's guest verification asserts from 9e4cb55 that the
+# emulated NIC resolves to the official ionic ID and that its subsystem names
+# match pci.ids, and the archive's stock database predates that entry -- so a
+# swallowed failure here does not cost a cosmetic lspci label, it hands the
+# consumer a guest that fails those checks with nothing in this build saying
+# why.  update-pciids exits non-zero if it cannot fetch, and under "set -e"
+# that is the image build failing where the cause is still visible.
+sudo update-pciids
+
+# The linker now resolves ROCm, but a login shell still does not: the therock
+# component directory is versioned, so neither rocminfo nor hipcc is on PATH
+# and nothing exports ROCM_PATH.  That is reliably the first thing a consumer
+# trips over in this guest, and it costs one file to prevent.
+#
+# Pinned from images.yml (guest_rocm_version) rather than discovered, and
+# asserted rather than assumed: the therock stable stream it names moves, and a
+# stale pin has to fail the build here rather than bake a dead PATH entry into
+# an image that then looks fine until someone logs in.
+test -n "${ROCM_PATH}"
+if [ ! -d "${ROCM_PATH}" ]; then
+    echo "Error: ${ROCM_PATH} does not exist; guest_rocm_version in images.yml" \
+         "names a therock component directory this stream no longer ships." >&2
+    echo "Present instead:" >&2
+    ls -1d /opt/rocm/*/ >&2 2>/dev/null || true
+    exit 1
+fi
+sudo tee /etc/profile.d/rocm.sh > /dev/null <<EOF
+export ROCM_PATH=${ROCM_PATH}
+export PATH=${ROCM_PATH}/bin:\$PATH
+EOF
+sudo chmod 0644 /etc/profile.d/rocm.sh
 
 # amdgpu must not autoload.  It has to be modprobed by hand with the emulation
 # parameters once the vfio-user server is serving, and an autoloaded copy that
@@ -130,6 +172,26 @@ printf 'blacklist amdgpu\n' |
 sudo install -d -m 0755 /etc/default/grub.d
 printf 'GRUB_CMDLINE_LINUX_DEFAULT="${GRUB_CMDLINE_LINUX_DEFAULT} modprobe.blacklist=amdgpu"\n' |
     sudo tee /etc/default/grub.d/99-amdgpu-blacklist.cfg > /dev/null
+
+# And kept out of the initramfs entirely, not merely blacklisted in it.
+#
+# The two guards above stop amdgpu loading; neither removes it. A module that
+# is still in the initramfs is one udev rule or one edited cmdline away from
+# binding the device before the vfio-user server is serving, which is the
+# failure the blacklist exists to prevent rather than a milder version of it.
+# initramfs-tools has no exclude list, so the module is dropped from the
+# staging tree by a hook -- that runs on every later update-initramfs too,
+# including the ones the DKMS build triggers.
+sudo install -d -m 0755 /etc/initramfs-tools/hooks
+sudo tee /etc/initramfs-tools/hooks/amdgpu-exclude > /dev/null <<'HOOK'
+#!/bin/sh
+PREREQ=""
+prereqs() { echo "${PREREQ}"; }
+case "${1}" in prereqs) prereqs; exit 0 ;; esac
+[ -n "${DESTDIR}" ] || exit 0
+find "${DESTDIR}" -name 'amdgpu.ko*' -delete
+HOOK
+sudo chmod 0755 /etc/initramfs-tools/hooks/amdgpu-exclude
 
 # The kernel, and the ordering the whole flavour turns on.  It differs by
 # release because the driver does:
@@ -279,6 +341,10 @@ if [ "${RELEASE}" = noble ]; then
     install_hwe_kernel
 fi
 
+# Regenerated so the exclude hook above applies to every initramfs on the
+# disk, not only to the ones the DKMS build happened to rebuild.
+sudo update-initramfs -u -k all
+
 sudo update-grub
 # The grub.d snippet is only worth anything if it reached the generated config:
 # a menuentry without it means the next boot autoloads amdgpu from the
@@ -357,28 +423,28 @@ if [ -n "${FIO_COMMIT:-}" ]; then
     # hipFile ships only in the therock stream, which is the stream this
     # flavour installs above -- so a failure here is a package set that moved,
     # not a configuration choice, and it should say so.
-    if ! apt-cache show amdrocm-hipfile-dev > /dev/null 2>&1; then
-        echo "Error: amdrocm-hipfile-dev is not available from the therock" \
-             "repository configured above; fio cannot be built with" \
-             "libhipfile support" >&2
+    if ! apt-cache show "amdrocm-hipfile-dev${ROCM_VERSION}" > /dev/null 2>&1; then
+        echo "Error: amdrocm-hipfile-dev${ROCM_VERSION} is not available from" \
+             "the therock repository configured above; fio cannot be built" \
+             "with libhipfile support" >&2
         exit 1
     fi
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        --no-install-recommends amdrocm-hipfile-dev
+        --no-install-recommends "amdrocm-hipfile-dev${ROCM_VERSION}"
     sudo ldconfig
 
-    # The therock layout again: hipcc and the hipFile headers are under a
-    # versioned component directory, so ROCM_PATH is found rather than assumed.
-    ROCM_PATH=""
-    for d in /opt/rocm /opt/rocm/*; do
-        [ -e "${d}/include/hipfile/hipfile.h" ] && ROCM_PATH="${d}"
-    done
-    if [ -z "${ROCM_PATH}" ]; then
-        for d in /opt/rocm /opt/rocm/*; do
-            [ -d "${d}/lib" ] && ROCM_PATH="${d}"
-        done
-    fi
+    # The same ROCM_PATH the guest's own /etc/profile.d/rocm.sh exports, rather
+    # than a second search that could disagree with it: a fio linked against one
+    # component directory while the guest's PATH points at another is a bug
+    # nobody would think to look for.  Asserted where it is set, above.
     export ROCM_PATH
+    # include/hipfile.h, not include/hipfile/hipfile.h: amdrocm-hipfile-dev
+    # ships the header flat beside hipfile-api-trace.h, and no hipfile/
+    # directory exists. The nested spelling is what the search this replaced
+    # looked for first -- it never matched, so that search always fell through
+    # to its "any directory with a lib/" arm and landed on the right answer by
+    # luck. An assertion cannot afford the same mistake.
+    test -e "${ROCM_PATH}/include/hipfile.h"
     echo "ROCM_PATH for the fio build: ${ROCM_PATH}"
 
     rm -rf /tmp/fio
@@ -423,7 +489,7 @@ fi
 # vm-info.json stays flavour-agnostic; this is the flavour's own record, and
 # the driver version is the thing a consumer most needs to compare against.
 AMDGPU_PKG=$(dpkg-query -W -f='${Version}' amdgpu-dkms)
-ROCM_PKG=$(dpkg-query -W -f='${Version}' amdrocm-runtime-dev)
+ROCM_PKG=$(dpkg-query -W -f='${Version}' "amdrocm-runtime-dev${ROCM_VERSION}")
 if [ "${RELEASE}" = noble ]; then
     RUNTIME_DRIVER="in-tree amdgpu from the booted HWE kernel; the DKMS module is for $(uname -r) and cannot load"
 else

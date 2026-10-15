@@ -1573,6 +1573,248 @@ def vm_info_key_names(info: dict) -> list[str]:
     ]
 
 
+# ── manifest verification ──────────────────────────────
+#
+# vm-info.json is written by the guest build from what the guest said about
+# itself over SSH.  That is the right source -- nothing else knows which
+# kernel grub resolved to -- but it means the manifest and the disk are two
+# artefacts that can disagree, and until now nothing checked that they did
+# not.  A guest reported against 20261007.g677e113 booted the release's HWE
+# kernel while its manifest named the pinned mainline one; whichever of the
+# two was wrong, the disagreement itself was invisible.
+#
+# So the claims are read back out of the qcow2 and compared.  libguestfs does
+# that without booting the image and without root: its appliance runs against
+# /dev/kvm, so this is seconds rather than the minutes a boot costs.
+
+GUESTFS_TOOLS = ("virt-cat", "virt-ls")
+GUESTFS_IMAGE = "batesste-ci-images-guestfs:local"
+GUESTFS_DOCKERFILE = "scripts/guestfs-verify.Dockerfile"
+GUESTFS_HINT = (
+    "verification needs libguestfs: either install libguestfs-tools, or make "
+    "docker and /dev/kvm available so the local helper image can be built"
+)
+
+
+def guestfs_on_host() -> bool:
+    return all(shutil.which(t) is not None for t in GUESTFS_TOOLS)
+
+
+@functools.cache
+def guestfs_container() -> bool:
+    """Build the local libguestfs helper image; False if that is not possible.
+
+    Cached because the answer cannot change within a run and the build is the
+    expensive part. Docker's own layer cache makes every run after the first
+    a no-op, so this is not rebuilt per target.
+    """
+
+    if shutil.which("docker") is None or not Path("/dev/kvm").exists():
+        return False
+    console.print(f"[dim]Preparing {GUESTFS_IMAGE} (first use builds it)[/]")
+    proc = subprocess.run(
+        ["docker", "build", "-q", "-t", GUESTFS_IMAGE, "-f", GUESTFS_DOCKERFILE, "."],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        console.print(f"[yellow]Warning:[/] could not build {GUESTFS_IMAGE}")
+        console.print(f"[dim]{proc.stderr.strip()[-400:]}[/]")
+        return False
+    return True
+
+
+def guestfs_available() -> bool:
+    return guestfs_on_host() or guestfs_container()
+
+
+def _virt(tool: str, qcow2: Path, *args: str) -> str | None:
+    """Run a libguestfs tool read-only against *qcow2*; None on failure.
+
+    --format is pinned rather than probed: guessing is a known footgun when
+    the file is attacker-influenced, and ours is always qcow2. There is no
+    --ro to pass: virt-cat and virt-ls open read-only already, and reject the
+    flag.
+
+    Host tools win when they exist; otherwise the same command runs in the
+    helper image, with the payload directory bind-mounted read-only and
+    /dev/kvm passed through for the appliance. Nothing has to be installed on
+    a runner for this to work.
+    """
+
+    if guestfs_on_host():
+        cmd = [tool, "--format=qcow2", "-a", str(qcow2), *args]
+    else:
+        qcow2 = qcow2.resolve()
+        cmd = [
+            "docker",
+            "run",
+            "--rm",
+            "--device",
+            "/dev/kvm",
+            "-v",
+            f"{qcow2.parent}:/payload:ro",
+            GUESTFS_IMAGE,
+            tool,
+            "--format=qcow2",
+            "-a",
+            f"/payload/{qcow2.name}",
+            *args,
+        ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def grub_default_kernel(grub: str, entry_id: str) -> str:
+    """Which kernel *entry_id* boots, resolved from a grub.cfg; "" if unknown.
+
+    Two shapes, the same two the guest probe handles. A generated id carries
+    the release (gnulinux-<rel>-advanced-<uuid>), optionally behind a
+    "submenu>entry" path. An index -- what a flavour that pins no kernel
+    gets, since GRUB_DEFAULT stays 0 -- has to be resolved by walking to that
+    top-level menuentry and reading its linux line, because the index says
+    nothing about which kernel it selects.
+    """
+
+    tail = entry_id.rsplit(">", 1)[-1]
+    named = re.match(r"gnulinux-(.*)-advanced-", tail)
+    if named:
+        return named.group(1)
+    if not tail.isdigit():
+        return ""
+    want, seen = int(tail), -1
+    for line in grub.splitlines():
+        # Top-level entries only: submenu children are indented, and an index
+        # default never selects one of those.
+        if line.startswith("menuentry"):
+            seen += 1
+        elif seen == want:
+            linux = re.match(r"\s*linux\s+\S*vmlinuz-(\S+)", line)
+            if linux:
+                return linux.group(1)
+    return ""
+
+
+def verify_payload(src: Path, info: dict) -> list[str]:
+    """Discrepancies between *info* and the qcow2 in *src*; empty when sound."""
+
+    qcow2 = src / Path(info["image_path"]).name
+    if not qcow2.exists():
+        return [f"{qcow2.name} is missing from the payload"]
+
+    problems: list[str] = []
+    kernels = info.get("kernels") or {}
+
+    listing = _virt("virt-ls", qcow2, "/boot")
+    if listing is None:
+        return ["could not read /boot from the image (is it a guest disk?)"]
+    found = sorted(
+        n[len("vmlinuz-") :] for n in listing.split() if n.startswith("vmlinuz-")
+    )
+    claimed = sorted(kernels.get("installed") or [])
+    if claimed and found != claimed:
+        problems.append(f"kernels.installed says {claimed}, /boot has {found}")
+
+    booted = info.get("kernel_release", "")
+    if booted and booted not in found:
+        problems.append(f"kernel_release is {booted}, which /boot does not carry")
+
+    grub = _virt("virt-cat", qcow2, "/boot/grub/grub.cfg")
+    if grub is None:
+        problems.append("no /boot/grub/grub.cfg in the image")
+    else:
+        # 00_header writes the line indented inside an if/else, and emits
+        # grub's own ${next_entry} ahead of the real value:
+        #
+        #   if [ "${next_entry}" ] ; then
+        #      set default="${next_entry}"
+        #   else
+        #      set default="<GRUB_DEFAULT>"
+        #   fi
+        #
+        # So it cannot be matched anchored, and the first hit is not the
+        # value. Take the first that is not a ${...} reference.
+        found = [
+            v
+            for v in re.findall(r'^\s*set default="(.*)"$', grub, re.MULTILINE)
+            if "${" not in v
+        ]
+        actual_id = found[0] if found else ""
+        claimed_id = kernels.get("default_grub_id") or ""
+        if claimed_id and actual_id != claimed_id:
+            problems.append(
+                f"kernels.default_grub_id is {claimed_id!r}, "
+                f"grub.cfg selects {actual_id!r}"
+            )
+        # The claim that matters to a consumer: which kernel comes up next.
+        default = kernels.get("default") or ""
+        actual_kernel = grub_default_kernel(grub, actual_id)
+        if default and actual_kernel and default != actual_kernel:
+            problems.append(
+                f"kernels.default is {default}, but the grub default entry "
+                f"({actual_id!r}) boots {actual_kernel}"
+            )
+
+    os_info = info.get("os") or {}
+    release = _virt("virt-cat", qcow2, "/etc/os-release") or ""
+    for key, name in (("VERSION_ID", "version"), ("VERSION_CODENAME", "codename")):
+        want = os_info.get(name)
+        match = re.search(rf'^{key}="?([^"\n]+)"?$', release, re.MULTILINE)
+        if want and match and match.group(1) != want:
+            problems.append(f"os.{name} is {want}, image has {match.group(1)}")
+
+    rocm = (info.get("rocm") or {}).get("path") or ""
+    if rocm and _virt("virt-ls", qcow2, rocm) is None:
+        problems.append(f"rocm.path {rocm} does not exist in the image")
+
+    # amdgpu must not be able to autoload itself out from under a consumer
+    # that has not yet attached a vfio-user device. Checked for any image
+    # whose manifest shows a DKMS amdgpu. The initramfs is not re-checked
+    # here -- the guest asserts that during the build, and unpacking an
+    # initramfs from outside the image buys little for the cost.
+    if any("amdgpu" in entry for entry in info.get("dkms") or []):
+        blacklist = _virt("virt-cat", qcow2, "/etc/modprobe.d/amdgpu-blacklist.conf")
+        if not blacklist or "blacklist amdgpu" not in blacklist:
+            problems.append("amdgpu is in dkms but not blacklisted in the image")
+
+    return problems
+
+
+def verify_or_exit(src: Path, info: dict, what: str) -> None:
+    """Verify, print the outcome, and stop the caller on a discrepancy."""
+
+    if not guestfs_available():
+        console.print(f"[yellow]Warning:[/] skipping verification -- {GUESTFS_HINT}")
+        return
+    problems = verify_payload(src, info)
+    if problems:
+        console.print(f"[red]Error:[/] {what} does not match its vm-info.json:")
+        for p in problems:
+            console.print(f"  [red]-[/] {p}")
+        sys.exit(1)
+    console.print(f"[green]OK[/] {what} matches its vm-info.json")
+
+
+def cmd_verify(args: argparse.Namespace) -> None:
+    """Check a guest payload's manifest against the qcow2 it describes."""
+
+    cfg = load_config(env_file=args.env_file)
+    target = parse_target(cfg, args.image)
+    src = Path(args.from_dir) if args.from_dir else payload_dir(cfg, target)
+    if not src.exists():
+        console.print(
+            f"[red]Error:[/] no payload at {src}; build the target or pass --from-dir"
+        )
+        sys.exit(1)
+    if not guestfs_available():
+        console.print(f"[red]Error:[/] {GUESTFS_HINT}")
+        sys.exit(1)
+    info = load_vm_info(src)
+    console.rule(f"[bold]Verifying {target.key}[/]")
+    verify_or_exit(src, info, str(src))
+
+
 def cmd_push_artifact(args: argparse.Namespace) -> None:
     """Publish a guest qcow2 as a bare ORAS artifact.
 
@@ -1612,6 +1854,7 @@ def cmd_push_artifact(args: argparse.Namespace) -> None:
         from_image=args.from_image,
         zstd_level=args.zstd_level,
         dry_run=args.dry_run,
+        verify=not args.no_verify,
     )
 
 
@@ -1681,6 +1924,7 @@ def push_artifact(
     from_image: str | None = None,
     zstd_level: int = 12,
     dry_run: bool = False,
+    verify: bool = True,
 ) -> None:
     """Compress a guest payload and push it to *cfg.registry* under *tags*.
 
@@ -1730,6 +1974,15 @@ def push_artifact(
         if not qcow2.exists():
             console.print(f"[red]Error:[/] {qcow2.name} is missing from the payload")
             sys.exit(1)
+
+        # Before compression, because this is the last moment the disk is
+        # readable: zstd --rm below replaces it. Publishing a disk whose
+        # manifest misdescribes it is worse than not publishing, since the
+        # manifest is what consumers read instead of booting the image.
+        if not verify:
+            console.print("[yellow]Skipping manifest verification (--no-verify)[/]")
+        else:
+            verify_or_exit(work, info, f"{target.key} payload")
 
         console.print(f"Compressing {qcow2.name} ({qcow2.stat().st_size} bytes)")
         # --long=27 (128 MiB window) is what pays on a disk image: the same
@@ -3699,6 +3952,27 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_artifact.add_argument(
+        "--no-verify",
+        action="store_true",
+        help=(
+            "Skip checking vm-info.json against the qcow2 before pushing "
+            "(needs libguestfs-tools; skipped with a warning when absent)"
+        ),
+    )
+
+    # ── verify ──
+    p_verify = sub.add_parser(
+        "verify",
+        help="Check a guest payload's vm-info.json against its qcow2",
+    )
+    p_verify.add_argument("image", metavar="TARGET", help=TARGET_HELP)
+    p_verify.add_argument(
+        "--from-dir",
+        metavar="DIR",
+        help="Payload directory to check (defaults to output/<scope>/)",
+    )
+    _add_common_args(p_verify)
+    p_artifact.add_argument(
         "--password-file",
         metavar="FILE",
         help="File containing registry password",
@@ -4007,6 +4281,7 @@ DISPATCH = {
     "build": cmd_build,
     "push": cmd_push,
     "push-artifact": cmd_push_artifact,
+    "verify": cmd_verify,
     "list": cmd_list,
     "targets": cmd_targets,
     "validate": cmd_validate,
