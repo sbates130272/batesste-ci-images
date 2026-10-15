@@ -106,7 +106,16 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     if [ "${ROCM_STREAM}" = "therock" ]; then \
         # The therock 'amdrocm' meta ships hipcc and the HIP runtime but not
         # the HIP headers, so pull the runtime dev package explicitly.
-        set -- amdrocm amdrocm-runtime-dev; \
+        #
+        # Both are named with the component line, not bare. therock publishes
+        # several lines side by side in one versionless "stable" suite, and a
+        # bare name resolves to whichever is newest -- so a line appearing
+        # upstream silently re-points the build. That is not hypothetical: when
+        # 10.1 appeared, bare 'amdrocm-hipfile-dev' installed into
+        # /opt/rocm/core-10.1 while the rest of the stack was 10.0 and
+        # /opt/rocm (an alternatives symlink) still resolved to core-10.0, so
+        # the headers were on disk but not where anything looked for them.
+        set -- "amdrocm${ROCM_VERSION}" "amdrocm-runtime-dev${ROCM_VERSION}"; \
     else \
         set -- rocm; \
     fi; \
@@ -124,6 +133,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # under /opt/rocm/core-<ver> rather than /opt/rocm, so the root must be probed
 # rather than assumed. Recorded for downstream images to consume.
 RUN set -eux; \
+    ROCM_STREAM=$(cat /etc/rocm-stream); \
     if [ -f /opt/rocm/include/hip/hip_runtime.h ]; then \
         ROCM_ROOT=/opt/rocm; \
     else \
@@ -131,6 +141,26 @@ RUN set -eux; \
             | sort -V | tail -n 1); \
     fi; \
     test -n "${ROCM_ROOT}"; \
+    # Whatever the probe picked has to be the line we asked for. /opt/rocm is
+    # an alternatives symlink chosen by priority across every installed
+    # core-<line>, so a second line arriving as a dependency can win it; and a
+    # root that disagrees with ROCM_VERSION means the tag, the labels and the
+    # headers downstream images compile against are three different answers.
+    # Resolve the symlink and say so here rather than let it diverge quietly.
+    if [ "${ROCM_STREAM}" = "therock" ]; then \
+        # Resolve include/, not the root. /opt/rocm is an ordinary directory; \
+        # it is the include/ and lib/ entries inside it that are the \
+        # alternatives symlinks, so readlink on the root just returns the root \
+        # and would compare against itself forever. \
+        ROCM_REAL=$(readlink -f "${ROCM_ROOT}/include"); \
+        case "${ROCM_REAL}" in \
+            */core-"${ROCM_VERSION}"/include) ;; \
+            *) echo "ERROR: ROCM_VERSION=${ROCM_VERSION} but" \
+                    "${ROCM_ROOT}/include resolves to ${ROCM_REAL}." >&2; \
+               update-alternatives --display rocm-include >&2 || true; \
+               exit 1 ;; \
+        esac; \
+    fi; \
     echo "${ROCM_ROOT}" > /etc/rocm-path; \
     if [ -d /usr/local/cuda ]; then \
         CUDA_ROOT=/usr/local/cuda; \

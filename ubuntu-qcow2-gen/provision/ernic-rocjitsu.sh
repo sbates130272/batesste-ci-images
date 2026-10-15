@@ -29,11 +29,13 @@
 #   * Three more patches, from assets/ernic-rocjitsu/patches/amdgpu/.  DKMS
 #     7.1.9 does not build on 7.2.4 as shipped.
 #
-# RELEASE, AMDGPU_DRIVER_VERSION, RDMA_CORE_VERSION and USERNAME come from the
-# preamble; the patches and the firmware generator arrive at /tmp/payload.
+# RELEASE, AMDGPU_DRIVER_VERSION, ROCM_PATH, ROCM_VERSION, RDMA_CORE_VERSION
+# and USERNAME come from the preamble; the patches and the firmware generator arrive at
+# /tmp/payload.
 
 echo "=== ernic-rocjitsu guest provisioning ==="
 echo "release: ${RELEASE}  amdgpu driver: ${AMDGPU_DRIVER_VERSION}"
+echo "rocm path: ${ROCM_PATH}"
 echo "rdma-core: ${RDMA_CORE_VERSION}  kernel: $(uname -r)"
 
 # 7.2 is a hard floor and not a preference: ionic_rdma calls ib_umem_get_va, a
@@ -115,10 +117,16 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get update
 
 # The minimal ROCm set: enough for the HIP runtime and linking, without the
 # full amdrocm meta and its multi-gigabyte tail.
+#
+# Named with the component line rather than bare.  The therock suite is
+# versionless but carries several lines at once, /opt/rocm is an alternatives
+# symlink resolving to exactly one of them, and a bare name follows whichever
+# is newest -- so a line appearing upstream installs packages the guest's own
+# ROCM_PATH cannot see.
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     libstdc++-14-dev \
-    amdrocm-runtime-dev \
-    amdrocm-blas-dev
+    "amdrocm-runtime-dev${ROCM_VERSION}" \
+    "amdrocm-blas-dev${ROCM_VERSION}"
 
 # Distro copies of the same runtime, if anything pulled them in before the pin
 # above was in place.  Harmless when absent.
@@ -133,7 +141,39 @@ for d in /opt/rocm/lib /opt/rocm/lib64 /opt/rocm/*/lib /opt/rocm/*/lib64; do
 done | sudo tee /etc/ld.so.conf.d/rocm.conf > /dev/null
 test -s /etc/ld.so.conf.d/rocm.conf
 sudo ldconfig
-sudo update-pciids || true
+
+# The linker now resolves ROCm, but a login shell still does not: the therock
+# component directory is versioned, so neither rocminfo nor hipcc is on PATH
+# and nothing exports ROCM_PATH.  That is reliably the first thing a consumer
+# trips over in this guest, and it costs one file to prevent.
+#
+# Pinned from images.yml (guest_rocm_version) rather than discovered, and
+# asserted rather than assumed: the therock stable stream it names moves, and a
+# stale pin has to fail the build here rather than bake a dead PATH entry into
+# an image that then looks fine until someone logs in.
+test -n "${ROCM_PATH}"
+if [ ! -d "${ROCM_PATH}" ]; then
+    echo "Error: ${ROCM_PATH} does not exist; guest_rocm_version in images.yml" \
+         "names a therock component directory this stream no longer ships." >&2
+    echo "Present instead:" >&2
+    ls -1d /opt/rocm/*/ >&2 2>/dev/null || true
+    exit 1
+fi
+sudo tee /etc/profile.d/rocm.sh > /dev/null <<EOF
+export ROCM_PATH=${ROCM_PATH}
+export PATH=${ROCM_PATH}/bin:\$PATH
+EOF
+sudo chmod 0644 /etc/profile.d/rocm.sh
+# The PCI ID database, refreshed rather than taken from the archive.
+#
+# Not guarded.  rocm-ernic's guest verification asserts from 9e4cb55 that the
+# emulated NIC resolves to the official ionic ID and that its subsystem names
+# match pci.ids, and the archive's stock database predates that entry -- so a
+# swallowed failure here does not cost a cosmetic lspci label, it hands the
+# consumer a guest that fails those checks with nothing in this build saying
+# why.  update-pciids exits non-zero if it cannot fetch, and under "set -e"
+# that is the image build failing where the cause is still visible.
+sudo update-pciids
 
 # amdgpu must not autoload.  It has to be modprobed by hand with the emulation
 # parameters once the vfio-user server is serving, and an autoloaded copy that
@@ -150,6 +190,26 @@ printf 'blacklist amdgpu\n' |
 sudo install -d -m 0755 /etc/default/grub.d
 printf 'GRUB_CMDLINE_LINUX_DEFAULT="${GRUB_CMDLINE_LINUX_DEFAULT} modprobe.blacklist=amdgpu"\n' |
     sudo tee /etc/default/grub.d/99-amdgpu-blacklist.cfg > /dev/null
+
+# And kept out of the initramfs entirely, not merely blacklisted in it.
+#
+# The two guards above stop amdgpu loading; neither removes it. A module that
+# is still in the initramfs is one udev rule or one edited cmdline away from
+# binding the device before the vfio-user server is serving, which is the
+# failure the blacklist exists to prevent rather than a milder version of it.
+# initramfs-tools has no exclude list, so the module is dropped from the
+# staging tree by a hook -- that runs on every later update-initramfs too,
+# including the ones the DKMS build triggers.
+sudo install -d -m 0755 /etc/initramfs-tools/hooks
+sudo tee /etc/initramfs-tools/hooks/amdgpu-exclude > /dev/null <<'HOOK'
+#!/bin/sh
+PREREQ=""
+prereqs() { echo "${PREREQ}"; }
+case "${1}" in prereqs) prereqs; exit 0 ;; esac
+[ -n "${DESTDIR}" ] || exit 0
+find "${DESTDIR}" -name 'amdgpu.ko*' -delete
+HOOK
+sudo chmod 0755 /etc/initramfs-tools/hooks/amdgpu-exclude
 
 # amdgpu-dkms, installed for its *source* -- the postinst's own build cannot
 # succeed here.  It builds the unpatched tree against the 7.2.4 headers, that
@@ -241,6 +301,10 @@ case "${AMDGPU_KO}" in
 esac
 echo "amdgpu.ko: ${AMDGPU_KO}"
 
+# Regenerated so the exclude hook above applies to every initramfs on the
+# disk, not only to the ones the DKMS build happened to rebuild.
+sudo update-initramfs -u -k all
+
 sudo update-grub
 # The grub.d snippet is only worth anything if it reached the generated config:
 # a menuentry without it means the next boot autoloads amdgpu from the
@@ -274,6 +338,10 @@ done
 # ip_discovery.bin deliberately does not: it comes from "rj-ip-discovery
 # gfx1250" and must match the rocjitsu pin the *consumer* runs, not this
 # image's.  --no-ip-discovery is what says so.
+#
+# --generation gfx1250 rather than --config: no rocjitsu config exists in a
+# guest, and naming the generation keeps this independent of the rocjitsu
+# container's baked-in config path.
 sudo python3 /tmp/payload/vfio-guest-firmware.py \
     --set gap --generation gfx1250 --no-ip-discovery --output /tmp/fw-gap
 GENERATED=$(python3 -c \
@@ -354,7 +422,7 @@ sudo chmod 0644 /usr/local/share/rocm-ernic/provider.stamp
 # What this image is, recorded where a consumer inside the guest can read it.
 # vm-info.json stays flavour-agnostic; this is the flavour's own record.
 AMDGPU_PKG=$(dpkg-query -W -f='${Version}' amdgpu-dkms)
-ROCM_PKG=$(dpkg-query -W -f='${Version}' amdrocm-runtime-dev)
+ROCM_PKG=$(dpkg-query -W -f='${Version}' "amdrocm-runtime-dev${ROCM_VERSION}")
 sudo tee /etc/ernic-rocjitsu-guest.json > /dev/null <<EOF
 {
   "booted_kernel": "${KVER}",

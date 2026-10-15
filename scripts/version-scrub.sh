@@ -232,6 +232,20 @@ if [[ -d "$REPO_ROOT/ubuntu-rocm-rocjitsu/patches" ]]; then
 else
     ROCJITSU_PATCHES=0
 fi
+# Reported, never rewritten -- as with the amdgpu trees and the therock
+# lines below.
+#
+# This used to take develop's head on every run. develop moves several times a
+# day, so the pin moved six times in the life of a single branch, and each
+# move re-fingerprinted this image and everything layered on it. Worse, it was
+# an unreviewed roll of the dice every time: the Dockerfile's asserts are the
+# only test anywhere of the three upstream behaviours the vfio-user compute
+# path needs, because no CI enables ROCJITSU_ENABLE_VFIO. Moving rocjitsu is a
+# decision, so it is made by a person.
+#
+# The patches/ case still reports differently, because then the pin is not
+# merely deliberate but load-bearing: a series is applied with `git apply
+# --3way` against exactly this commit.
 if [[ "$ROCJITSU_PATCHES" -gt 0 ]]; then
     echo "    pinned: $ROCJITSU_PATCHES local patches carried, not bumping"
     if [[ "$ROCJITSU_CURRENT" != "$ROCJITSU_LATEST" ]]; then
@@ -240,9 +254,9 @@ if [[ "$ROCJITSU_PATCHES" -gt 0 ]]; then
     fi
 elif check_nonempty "$ROCJITSU_LATEST" "ROCJITSU HEAD" \
     && [[ "$ROCJITSU_CURRENT" != "$ROCJITSU_LATEST" ]]; then
-    replace_in_yaml "$ROCJITSU_CURRENT" "$ROCJITSU_LATEST"
-    replace_in_files "$ROCJITSU_CURRENT" "$ROCJITSU_LATEST" \
-        "$REPO_ROOT/ubuntu-rocm-rocjitsu/Dockerfile"
+    echo "    note: ${ROCJITSU_BRANCH} has moved to ${ROCJITSU_LATEST:0:7}." \
+         "Pinned deliberately -- bump it by hand, and rebuild" \
+         "ubuntu-rocm-rocjitsu so the Dockerfile's vfio asserts run."
 fi
 
 echo "==> Fetching latest SPDK HEAD..."
@@ -267,17 +281,61 @@ if check_nonempty "$SPDK_LATEST" "SPDK HEAD" \
         "$REPO_ROOT/ubuntu-spdk-libvfio-user/Dockerfile"
 fi
 
-echo "==> Fetching latest fio HEAD..."
-# fio must track master: the libhipfile engine is not in any release tag yet.
-FIO_LATEST=$(gh_curl \
-    "https://api.github.com/repos/axboe/fio/commits/HEAD" \
-    | jq -r '.sha')
+echo "==> Fetching latest fio release..."
+# Releases, not master.
+#
+# This tracked master HEAD because the libhipfile engine landed there
+# (67256d4e) and was in no tag for months, so a release build had no such
+# ioengine. fio-3.43 ships it, so the reason is gone and the pin stops taking
+# unreleased churn -- the engine source is the same blob in the tag as on
+# master. releases/latest already excludes drafts and pre-releases.
+#
+# The tag is resolved to its commit: that is what the Dockerfile fetches, what
+# the image tag abbreviates with |short, and what the badge links. fio_branch
+# records which tag the commit was cut at, so a reader does not have to map a
+# SHA back to a release by hand.
+FIO_TAG=$(gh_curl \
+    "https://api.github.com/repos/axboe/fio/releases/latest" \
+    | jq -r '.tag_name')
+FIO_TAG_CURRENT=$(current_pin ubuntu-cuda-rocm-fio fio_branch)
+FIO_LATEST=""
+if check_nonempty "$FIO_TAG" "fio release tag"; then
+    FIO_LATEST=$(gh_curl \
+        "https://api.github.com/repos/axboe/fio/commits/${FIO_TAG}" \
+        | jq -r '.sha')
+fi
 FIO_CURRENT=$(current_pin ubuntu-cuda-rocm-fio fio_commit)
-echo "    current: $FIO_CURRENT  latest: $FIO_LATEST"
-if check_nonempty "$FIO_LATEST" "fio HEAD" && [[ "$FIO_CURRENT" != "$FIO_LATEST" ]]; then
+echo "    current: ${FIO_CURRENT:0:7} (${FIO_TAG_CURRENT:-no tag recorded})" \
+     " latest: ${FIO_LATEST:0:7} (${FIO_TAG})"
+if check_nonempty "$FIO_LATEST" "fio release commit" \
+    && [[ "$FIO_CURRENT" != "$FIO_LATEST" ]]; then
     replace_in_yaml "$FIO_CURRENT" "$FIO_LATEST"
     replace_in_files "$FIO_CURRENT" "$FIO_LATEST" \
         "$REPO_ROOT/ubuntu-cuda-rocm-fio/Dockerfile"
+    # An `if` rather than `[[ ... ]] &&`: as the last statement in this block
+    # a false test would be the block's exit status, and `set -e` would end
+    # the scrub here with every pin below unscrubbed.
+    if [[ "$FIO_TAG_CURRENT" != "$FIO_TAG" ]]; then
+        replace_yaml_var fio_branch "$FIO_TAG" "$FIO_TAG_CURRENT"
+    fi
+fi
+
+# The rocjitsu guest builds fio too, and images.yml says its pin must equal
+# the container's: the point of measuring hipFile in the guest is to compare
+# against the container's numbers, and two different fios make that
+# comparison meaningless.
+#
+# Warned about rather than rewritten. The guest pin lives inside a variants:
+# block, which replace_in_yaml skips on purpose -- a variant exists to sit at
+# a ref of its own -- so this is the one pin the scrub can see diverging and
+# must not fix. It diverged for a month without anyone noticing, which is why
+# it is now said out loud on every run.
+GUEST_FIO=$(current_pin ubuntu-qcow2-gen@rocjitsu fio_commit)
+if [[ -n "$GUEST_FIO" && "$GUEST_FIO" != "$(current_pin ubuntu-cuda-rocm-fio fio_commit)" ]]; then
+    echo "  WARNING: ubuntu-qcow2-gen@rocjitsu pins fio ${GUEST_FIO:0:7} but" \
+         "ubuntu-cuda-rocm-fio pins $(current_pin ubuntu-cuda-rocm-fio fio_commit | cut -c1-7)." \
+         "images.yml asks for these to be equal; the guest pin is a variant," \
+         "so align it by hand."
 fi
 
 echo "==> Fetching latest NIXL release tag..."
@@ -441,29 +499,98 @@ if check_nonempty "$CUDA_LATEST" "CUDA toolkit version" \
         "$REPO_ROOT/ubuntu-cuda-rocm/Dockerfile"
 fi
 
-echo "==> Fetching ROCm version on the therock stable stream..."
-# The therock apt source is versionless, so rocm_version only *describes* what
-# stable currently ships -- read it back out of the repo index rather than
-# trusting the checked-in value, which is how it drifted to 7.14 while stable
-# had moved to 10.0. Skipped on the legacy stream, where it is a real pin that
-# selects a repo URL and so must not be auto-bumped.
+echo "==> Checking the therock component lines the pins name..."
+# Deliberately a check and not a bump, as with the amdgpu trees below.
+#
+# rocm_version and guest_rocm_version used to be descriptive: the therock apt
+# source is versionless, the Dockerfiles installed bare package names, and this
+# block read the amdrocm metapackage version back out of the index to keep the
+# label honest.
+#
+# They are selective now. therock serves several component lines out of that
+# one "stable" suite, and /opt/rocm is a Debian alternatives symlink resolving
+# to exactly one of them, so a bare package name follows whichever line is
+# newest and can install outside the root everything else reads through. That
+# is how a 10.1 hipFile landed under core-10.1 on a 10.0 image and failed the
+# fio build with the headers present but unreachable. The pins are appended to
+# the package names now, which makes them real.
+#
+# So: warn, do not rewrite. An auto-bump here would move the whole ROCm stack
+# unreviewed, which is the failure this replaced -- and it would also fight the
+# checked-in value every run. The metapackage is reported alongside because it
+# is a different question: it names the line therock calls default, which is
+# not necessarily the newest one published.
+rocm_line_report() {
+    local label="$1" index="$2" pinned="$3"
+    local pkgs newest meta
+    pkgs=$(curl -fsSL "$index" || true)
+    if [[ -z "$pkgs" ]]; then
+        echo "  WARNING: could not fetch the $label package index, skipping."
+        return
+    fi
+    # Every core metapackage is amdrocm-core<line>-gfx<arch>; the line is what
+    # /opt/rocm can resolve to, so that is what the pin has to name.
+    # Here-strings rather than pipes throughout. Under `set -o pipefail` a
+    # reader that exits early -- grep -q on its first match, awk on its first
+    # Version: -- SIGPIPEs the writer and the pipeline reports 141, so a
+    # *successful* match reads as a failure. That is not theoretical: it made
+    # this function warn that the line it had just found was missing.
+    newest=$(sed -n -E 's/^Package: amdrocm-core([0-9]+\.[0-9]+)-gfx.*/\1/p' \
+        <<< "$pkgs" | sort -V | tail -1)
+    meta=$(awk '/^Package: amdrocm$/{f=1} f&&/^Version:/{print $2; exit}' \
+        <<< "$pkgs" | cut -d- -f1 | cut -d. -f1,2)
+    echo "    $label: pinned $pinned, newest line ${newest:-unknown}," \
+         "amdrocm meta ${meta:-unknown}"
+    if [[ -n "$newest" ]] \
+        && ! grep -q "^Package: amdrocm-core${pinned}-gfx" <<< "$pkgs"; then
+        echo "  WARNING: $label pins ROCm $pinned, which this index no longer" \
+             "publishes a core line for. The build will fail at the root" \
+             "assertion. Move it deliberately."
+    elif [[ -n "$newest" && "$newest" != "$pinned" ]]; then
+        echo "  note: $label could move to $newest -- a deliberate bump," \
+             "not an automatic one."
+    fi
+}
+
 ROCM_STREAM_CURRENT=$(current_pin ubuntu-cuda-rocm rocm_stream)
 if [[ "$ROCM_STREAM_CURRENT" == "therock" ]]; then
-    ROCM_LATEST=$(curl -fsSL \
+    rocm_line_report "ubuntu-cuda-rocm" \
         "https://stable.repo.amd.com/rocm/core/packages/ubuntu2404/dists/stable/main/binary-amd64/Packages" \
-        | awk '/^Package: amdrocm$/{f=1} f&&/^Version:/{print $2; exit}' \
-        | cut -d- -f1 | cut -d. -f1,2)
-    ROCM_CURRENT=$(current_pin ubuntu-cuda-rocm rocm_version)
-    echo "    current: $ROCM_CURRENT  latest: $ROCM_LATEST"
-    if check_nonempty "$ROCM_LATEST" "ROCm stable version" \
-        && [[ "$ROCM_CURRENT" != "$ROCM_LATEST" ]]; then
-        replace_yaml_var rocm_version "$ROCM_LATEST" "$ROCM_CURRENT"
-        replace_arg_default ROCM_VERSION "$ROCM_LATEST" \
-            "$REPO_ROOT/ubuntu-cuda-rocm/Dockerfile"
-    fi
+        "$(current_pin ubuntu-cuda-rocm rocm_version)"
 else
-    echo "    stream is '$ROCM_STREAM_CURRENT', not therock — rocm_version is a real pin, skipping."
+    echo "    stream is '$ROCM_STREAM_CURRENT', not therock — rocm_version selects a repo URL, skipping."
 fi
+
+# The guests are resolute and read ubuntu2604, where the container above reads
+# ubuntu2404; the two lines can legitimately differ.
+rocm_line_report "ubuntu-qcow2-gen guests" \
+    "https://stable.repo.amd.com/rocm/core/packages/ubuntu2604/dists/stable/main/binary-amd64/Packages" \
+    "$(current_pin ubuntu-qcow2-gen@rocjitsu guest_rocm_version)"
+
+echo "==> Checking the pinned amdgpu driver trees still serve their release..."
+# Deliberately a check and not a bump.
+#
+# repo.radeon.com withdraws these directories without notice -- 31.60 was
+# removed outright, taking the resolute suite with it, and the first anyone
+# knew was a consumer's apt-get update failing in a published guest. But
+# bumping to the newest tree is precisely the wrong reflex: the newer trees are
+# the ones that dropped resolute, so an auto-bump would walk the pin straight
+# off a cliff. Warn, and let a human choose the replacement.
+for t in ubuntu-qcow2-gen@rocjitsu ubuntu-qcow2-gen@ernic-rocjitsu; do
+    drv=$(current_pin "$t" amdgpu_driver_version)
+    rel=$(current_pin "$t" release)
+    [[ -z "$drv" || "$drv" == "none" ]] && continue
+    if curl -fsS --max-time 30 -o /dev/null \
+        "https://repo.radeon.com/amdgpu/${drv}/ubuntu/dists/${rel}/Release" 2>/dev/null
+    then
+        echo "    $t: amdgpu/$drv serves $rel"
+    else
+        echo "  WARNING: $t pins amdgpu_driver_version $drv, which no longer" \
+             "serves '$rel'. The guest build will fail at the suite guard in" \
+             "provision/. Pick another tree that does -- do not simply take" \
+             "the newest."
+    fi
+done
 
 if [[ "$changed" -eq 0 ]]; then
     echo "==> All versions are current, no changes needed."

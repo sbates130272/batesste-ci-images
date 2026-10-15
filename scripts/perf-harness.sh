@@ -96,8 +96,16 @@ S3_OBJECT_BYTES="${S3_OBJECT_BYTES:-1048576}"
 # The ionic emulated NIC's PCI identity. Matched on rather than any device
 # name: the name is rewritten twice on the way up by udev, and any list of
 # name patterns is a snapshot of one moment in that sequence.
+#
+# 1002 is the official ionic ethernet PF -- PCI_DEVICE_ID_PENSANDO_IONIC_ETH_PF
+# in drivers/net/ethernet/pensando -- which rocm-ernic moved the emulator onto
+# in 9e4cb55. It replaces 1dd8:100a, an ID the upstream driver never claimed
+# and which pci.ids calls a "DSC Serial Port Controller". The emulated
+# function also carries subsystem 1dd8:5400, which is what rocm-ernic's udev
+# rule matches to tell it apart from a real card; the bus here has only the
+# one vfio-user function, so vendor:device is enough to find it.
 ERNIC_PCI_VENDOR=1dd8
-ERNIC_PCI_DEVICE=100a
+ERNIC_PCI_DEVICE=1002
 
 usage() {
     cat <<'EOF'
@@ -615,7 +623,13 @@ hipcc=$(command -v hipcc || ls /opt/rocm*/bin/hipcc /opt/rocm/*/bin/hipcc 2>/dev
 # plugin expects, so offer both and let the source's __has_include choose.
 rocm=""
 for d in /opt/rocm /opt/rocm-* /opt/rocm/*; do
-    [ -e "${d}/include/hipfile/hipfile.h" ] && rocm="${d}"
+    # Both spellings. amdrocm-hipfile-dev ships the header flat today
+    # (include/hipfile.h, beside hipfile-api-trace.h); the nested one this
+    # used to look for exclusively does not exist, so the search could only
+    # ever fall through to the exit below.
+    for h in "${d}/include/hipfile.h" "${d}/include/hipfile/hipfile.h"; do
+        [ -e "${h}" ] && rocm="${d}"
+    done
 done
 [ -n "${rocm}" ] || { echo "no hipfile.h under /opt/rocm*; is amdrocm-hipfile-dev installed?"; exit 2; }
 echo "hipcc: ${hipcc}"
@@ -730,12 +744,12 @@ bdf=$(lspci -Dn -d "${ERNIC_PCI_VENDOR}:${ERNIC_PCI_DEVICE}" | cut -d' ' -f1 | h
 [ -n "${bdf}" ] || { echo "no ionic function on the bus"; exit 1; }
 echo "ionic bdf=${bdf}"
 
-# The emulator uses 1dd8:100a, which is not in the upstream ionic PCI ID
-# table. Register it for this guest rather than changing the host's driver or
-# the image's kernel.
+# No new_id registration any more. That existed because the emulator used
+# 1dd8:100a, which the upstream ionic driver has no entry for, so the ID had
+# to be injected by hand. The emulator now presents the official ethernet PF
+# ID, which is in the driver's own id_table, so modprobe binds it -- and
+# writing an ID the driver already claims would only add a redundant dynid.
 sudo -n modprobe ionic
-printf '%s %s\n' "${ERNIC_PCI_VENDOR}" "${ERNIC_PCI_DEVICE}" \
-    | sudo -n tee /sys/bus/pci/drivers/ionic/new_id > /dev/null
 sudo -n modprobe ionic_rdma
 
 # Wait for ionic to claim the function and register a netdev.

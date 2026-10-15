@@ -52,6 +52,17 @@ fi
 # the prefix.
 ls /usr/lib/*/libibverbs/libionic*.so
 
+# The PCI ID database, refreshed rather than taken from the archive.
+#
+# Not guarded.  rocm-ernic's guest verification asserts from 9e4cb55 that the
+# emulated NIC resolves to the official ionic ID and that its subsystem names
+# match pci.ids, and the archive's stock database predates that entry -- so a
+# swallowed failure here does not cost a cosmetic lspci label, it hands the
+# consumer a guest that fails those checks with nothing in this build saying
+# why.  update-pciids exits non-zero if it cannot fetch, and under "set -e"
+# that is the image build failing where the cause is still visible.
+sudo update-pciids
+
 # Format is <version>:<gda-patch-hash>, with the literal string "none" when no
 # GDA patches were applied.  The role applies its ionic GDA direct-verbs series
 # only for GPU-passthrough guests and folds a hash of it in here in place of

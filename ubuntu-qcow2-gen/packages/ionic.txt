@@ -54,5 +54,13 @@ libibverbs-dev
 # perftest compiled against a ROCm the guest does not carry.
 perftest
 
+# lspci and update-pciids, for the PCI identity checks rocm-ernic's guest
+# verification makes: from 9e4cb55 it asserts the emulated NIC resolves to the
+# official ionic ID and that its subsystem names match pci.ids.  curl is what
+# update-pciids fetches with -- without it the refresh has no transport and
+# the guest is left on the archive's stock database, which predates that ID.
+curl
+pciutils
+
 pipx
 python3-venv

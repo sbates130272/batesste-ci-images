@@ -19,10 +19,10 @@ adding an image or a variant adds its row.
 **Pinned versions**
 
 [![ubuntu 24.04](https://img.shields.io/badge/ubuntu-24.04-E95420)](https://hub.docker.com/_/ubuntu)
-[![rocm 10.0](https://img.shields.io/badge/rocm-10.0-ED1C24)](https://rocm.docs.amd.com/)
+[![rocm 10.1](https://img.shields.io/badge/rocm-10.1-ED1C24)](https://rocm.docs.amd.com/)
 [![cuda 13.4](https://img.shields.io/badge/cuda-13.4-76B900)](https://developer.nvidia.com/cuda-toolkit)
 [![qemu v11.1.2](https://img.shields.io/badge/qemu-v11.1.2-FF6600)](https://gitlab.com/qemu-project/qemu/-/tags/v11.1.2)
-[![nixl v1.4.1](https://img.shields.io/badge/nixl-v1.4.1-76B900)](https://github.com/ai-dynamo/nixl/releases/tag/v1.4.1)
+[![nixl v1.5.0](https://img.shields.io/badge/nixl-v1.5.0-76B900)](https://github.com/ai-dynamo/nixl/releases/tag/v1.5.0)
 [![abseil 20250814.2](https://img.shields.io/badge/abseil-20250814.2-4285F4)](https://github.com/abseil/abseil-cpp/releases/tag/20250814.2)
 [![grpc v1.73.0](https://img.shields.io/badge/grpc-v1.73.0-244C5A)](https://github.com/grpc/grpc/releases/tag/v1.73.0)
 [![libfabric v1.21.0](https://img.shields.io/badge/libfabric-v1.21.0-0F4C81)](https://github.com/ofiwg/libfabric/releases/tag/v1.21.0)
@@ -33,12 +33,12 @@ adding an image or a variant adds its row.
 **Pinned commits**
 
 [![libvfio-user 8039244](https://img.shields.io/badge/libvfio--user-8039244-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/803924493a7c787b2ba358751f55f07d5dba64b2)
-[![qemu-minimal 54cc234](https://img.shields.io/badge/qemu--minimal-54cc234-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/54cc234d0668a6c3d34140fcc24cff20c32e5724)
-[![rocm-ernic 1484557](https://img.shields.io/badge/rocm--ernic-1484557-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/1484557971b038f655da85b0d77ef0ba88308c22)
-[![rocjitsu f2d13fb](https://img.shields.io/badge/rocjitsu-f2d13fb-ED1C24)](https://github.com/ROCm/rocm-systems/commit/f2d13fb5cf3e3bf05b09c0fca64c60debe8e578b)
+[![qemu-minimal c5d51ce](https://img.shields.io/badge/qemu--minimal-c5d51ce-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/c5d51ce8d7e9d4b258235cf3ed934591951c7a67)
+[![rocm-ernic cbc1e72](https://img.shields.io/badge/rocm--ernic-cbc1e72-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/cbc1e72baa0af381ea0bbb8b7b6221319ef355b1)
+[![rocjitsu 84fb06b](https://img.shields.io/badge/rocjitsu-84fb06b-ED1C24)](https://github.com/ROCm/rocm-systems/commit/84fb06bc970a0049091a0fa7a7dbf2b925e488ee)
 [![spdk 18d1d8d](https://img.shields.io/badge/spdk-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
-[![fio 270b6fb](https://img.shields.io/badge/fio-270b6fb-4B8BBE)](https://github.com/axboe/fio/commit/270b6fb4e295ef1f24545b72eda33281088b46e0)
-[![ucx 49c5d7f](https://img.shields.io/badge/ucx-49c5d7f-4B8BBE)](https://github.com/openucx/ucx/commit/49c5d7f5fbc9342cbf437729e009f5abe12912b2)
+[![fio d2dcd7e](https://img.shields.io/badge/fio-d2dcd7e-4B8BBE)](https://github.com/axboe/fio/commit/d2dcd7e053d1902d2420f151c83990e6acdd9f8c)
+[![ucx 8094f69](https://img.shields.io/badge/ucx-8094f69-4B8BBE)](https://github.com/openucx/ucx/commit/8094f699daa0d53ea84d11b6cefd7dffa9c9eb46)
 [![etcd-cpp-apiv3 7c6e714](https://img.shields.io/badge/etcd--cpp--apiv3-7c6e714-419EDA)](https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3/commit/7c6e714f188f9576e25e0350cac4181139eec23e)
 
 <!-- END PINNED BADGES -->

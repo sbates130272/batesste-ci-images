@@ -223,6 +223,26 @@ Provisioning probes `dists/<codename>/Release` before writing the apt source, so
 a version without the guest's suite fails with both names in the message rather
 than as a 404 several steps later.
 
+That probe earns its keep: between 2026-10-02 and 2026-10-05 `repo.radeon.com`
+stopped serving `31.60` altogether — the directory itself 404'd and it left the
+index listing, while `31.50` served normally — and then it came back intact.
+`scripts/version-scrub.sh` now warns daily when the pinned tree stops serving
+its suite, deliberately without repinning: the trees that outlive `31.60` carry
+older drivers (`31.50` is `amdgpu-dkms` 7.1.3, `31.40` and below are 6.19.x),
+and the `ernic-rocjitsu` patches are written against 7.1.9.
+
+**`guest_rocm_version: 10.1`.** The therock packages install under a versioned
+component directory (`/opt/rocm/core-10.1`, not `/opt/rocm`), so `ROCM_PATH`
+has to be named rather than assumed. It is composed into `ROCM_PATH` in
+`images.yml` and written to `/etc/profile.d/rocm.sh` in the guest, so a login
+shell gets `ROCM_PATH` and `$ROCM_PATH/bin` on `PATH` — previously neither was
+set and nothing in ROCm was on `PATH`. Provisioning asserts the directory
+exists, so a stale pin fails the build rather than shipping a dead `PATH`
+entry. The package names carry the line too (`amdrocm-runtime-dev10.1` and
+friends): therock serves several lines from one versionless suite, and a bare
+name follows whichever is newest, which can install outside the root
+`/opt/rocm` resolves to.
+
 ## What the guest records about itself
 
 `/etc/rocjitsu-guest.json`, written during provisioning:
