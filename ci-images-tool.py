@@ -24,7 +24,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -129,7 +129,7 @@ def resolve_image_tag(raw: str | None = None) -> str:
         raw = os.environ.get("IMAGE_TAG", "")
     tag = (raw or "").strip()
     if not tag or tag.lower() in {"auto", "date"}:
-        return datetime.now(tz=timezone.utc).strftime("%Y%m%d")
+        return datetime.now(tz=UTC).strftime("%Y%m%d")
     return tag
 
 
@@ -1100,9 +1100,9 @@ def _build_stamp() -> dict[str, str]:
 
     epoch = os.environ.get("SOURCE_DATE_EPOCH", "")
     if epoch.isdigit():
-        created = datetime.fromtimestamp(int(epoch), tz=timezone.utc)
+        created = datetime.fromtimestamp(int(epoch), tz=UTC)
     else:
-        created = datetime.now(tz=timezone.utc)
+        created = datetime.now(tz=UTC)
     return {"revision": revision, "created": created.strftime("%Y-%m-%dT%H:%M:%SZ")}
 
 
@@ -3243,10 +3243,10 @@ def _hub_when(stamp: str) -> str:
     if not stamp:
         return "unknown"
     try:
-        when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        when = datetime.fromisoformat(stamp)
     except ValueError:
         return stamp[:19]
-    return when.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return when.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
 
 def _hub_size(full_size: object) -> str:
@@ -3388,11 +3388,11 @@ def _tag_age_days(pushed: str, now: datetime) -> float | None:
     if not pushed:
         return None
     try:
-        when = datetime.fromisoformat(pushed.replace("Z", "+00:00"))
+        when = datetime.fromisoformat(pushed)
     except ValueError:
         return None
     if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
+        when = when.replace(tzinfo=UTC)
     return (now - when).total_seconds() / 86400
 
 
@@ -3416,7 +3416,7 @@ def prune_candidates(
     * Anything hand-made. A tag somebody typed is a tag somebody wanted.
     """
 
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
 
     dated = [t for t in tags if _DATED_TAG_RE.match(t.name)]
     recent = {t.name for t in dated[: policy.keep_count]}

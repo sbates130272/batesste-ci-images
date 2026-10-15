@@ -26,7 +26,7 @@ import html
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # The series to chart, in the order they appear on the page. A metric that
@@ -414,7 +414,7 @@ def render(runs: list[dict], site: Path) -> None:
         if v
     )
 
-    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    generated = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     page = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -476,7 +476,7 @@ def main() -> int:
         except (OSError, json.JSONDecodeError) as exc:
             print(f"error: cannot read {args.summary}: {exc}", file=sys.stderr)
             return 1
-        summary.setdefault("generated", datetime.now(timezone.utc).isoformat())
+        summary.setdefault("generated", datetime.now(UTC).isoformat())
         # A leading newline when the file does not already end in one. The
         # docstring on load_history names the case that produces a truncated
         # final line; appending blindly would concatenate this run onto it and
