@@ -83,7 +83,23 @@ HUB_API = "https://hub.docker.com/v2"
 HUB_SHORT_DESCRIPTION_MAX_BYTES = 100
 HUB_ELLIPSIS = "…"
 
-BUILDER_NAME = "builder"
+# Repo-specific rather than the bare "builder": these builds also run on shared
+# Slurm compute nodes, where a builder of that name already exists and belongs
+# to somebody else. ensure_builder() *recreates* a builder whose flags are
+# wrong, so a generic name means discarding a stranger's cache.
+BUILDER_NAME = "batesste-bake"
+
+# The two halves of the bake definition. The HCL file is hand-written and holds
+# conventions only -- context, groups, cache refs, the output policy. Every
+# value that depends on a pin is generated into the JSON file beside it, because
+# bake HCL cannot compute a variant filter, a source fingerprint or a tag set,
+# and a pin written by hand in HCL is a pin that can disagree with images.yml.
+#
+# They are merged on the command line (`-f <json> -f <hcl>`): bake HCL has no
+# file() function, so a generated JSON file declaring a variable is the
+# supported way to feed data in.
+BAKE_SPEC_FILE = "bake-targets.json"
+BAKE_HCL_FILE = "docker-bake.hcl"
 
 # `prune` retention, when images.yml says nothing. A tag has to fall outside
 # *both* before it is a candidate: the day count alone would empty a repository
@@ -824,11 +840,21 @@ def parse_target(cfg: Config, name: str) -> Target:
     return target
 
 
-def resolve_targets(cfg: Config, arg: str | None) -> list[Target]:
-    """The named target, or every target in dependency order."""
-    if arg:
-        return [parse_target(cfg, arg)]
-    return discover_targets(cfg)
+def resolve_targets(cfg: Config, arg: str | list[str] | None) -> list[Target]:
+    """The named target(s), or every target, in dependency order.
+
+    A list is accepted so one bake invocation can be handed several targets --
+    which is the case the Slurm wrapper and any "build these four" run need,
+    and which the old one-buildx-call-per-target loop had no use for.  The
+    result is ordered by ``discover_targets`` regardless of the order asked
+    for, so a base is never scheduled after the image that layers on it.
+    """
+
+    if not arg:
+        return discover_targets(cfg)
+    names = [arg] if isinstance(arg, str) else list(arg)
+    chosen = {parse_target(cfg, n) for n in names}
+    return [t for t in discover_targets(cfg) if t in chosen]
 
 
 # ── image naming ───────────────────────────────────────
@@ -1152,6 +1178,164 @@ def image_labels(cfg: Config, target: Target) -> dict[str, str]:
     return {k: v for k, v in labels.items() if v}
 
 
+# ── bake ───────────────────────────────────────────────
+
+
+def bake_name(cfg: Config, target: Target) -> str:
+    """The bake target name for *target*.
+
+    ``target.key`` cannot be used: bake names may not contain ``@``, which
+    every variant key has.  ``scope`` is the flat name this repo already uses
+    for the cache ref, the artifact and the CI ``:test`` tag, so the bake
+    targets and the CI matrix end up with one naming scheme rather than two.
+    """
+    return target_scope(cfg, target)
+
+
+def familiar_ref(ref: str) -> str:
+    """``docker.io/user/img:tag`` -> ``user/img:tag``.
+
+    The form a named build context has to be keyed by.  BuildKit looks a named
+    context up under the *familiar* name of the reference the FROM resolved
+    to, not under the string as written, so a key carrying the default
+    registry never matches and the build silently pulls the published base
+    instead of using the one this run just built -- silently because it is a
+    perfectly good image, just not the right one.
+    """
+
+    for prefix in ("docker.io/library/", "docker.io/"):
+        if ref.startswith(prefix):
+            return ref[len(prefix) :]
+    return ref
+
+
+def bake_target(
+    cfg: Config,
+    target: Target,
+    selected: set[Target],
+    base_from_registry: bool = False,
+    include_secrets: bool = False,
+) -> dict:
+    """One entry of the generated bake spec.
+
+    Every value here comes from the same functions the old per-target
+    ``docker buildx build`` invocation used, so the two cannot disagree about
+    what a target is.
+
+    ``include_secrets`` defaults to False because the usual caller writes this
+    to a file: the guest PASSWORD must not land in ``bake-targets.json``.  The
+    build passes it separately -- see ``bake_secret_overrides``.
+    """
+
+    args = dict(
+        kv.split("=", 1)
+        for kv in build_args_for(cfg, target, include_secrets=include_secrets)
+    )
+
+    # Hand one target's output straight to the next instead of going through a
+    # registry or the local daemon. The key is the exact ref BASE_IMAGE
+    # resolved to, which is what the Dockerfile's `FROM ${BASE_IMAGE}` expands
+    # to, so BuildKit substitutes the in-run build for the pull.
+    #
+    # Nothing is emitted when the base is not part of this run -- then the
+    # rolling registry tag is the honest answer. A BASE_IMAGE_* env override
+    # wins by construction: it changes the arg, so no context key matches it.
+    contexts: dict[str, str] = {}
+    base = base_target(cfg, target)
+    # Both ends have to be in this run. The base being selected is what makes
+    # the wiring possible; the target being selected is what makes it true --
+    # the spec describes every target whatever is being built, and an entry
+    # nobody asked for should not claim it is layering on a fresh base.
+    if base and base in selected and target in selected and not base_from_registry:
+        base_ref = args.get("BASE_IMAGE", "")
+        if base_ref and base_ref == rolling_ref(cfg, base):
+            contexts[familiar_ref(base_ref)] = f"target:{bake_name(cfg, base)}"
+
+    # Guest targets export /output to the host as well as loading an image, so
+    # a local build leaves a usable qcow2 behind rather than one buried in
+    # layers. Staged and renamed into place afterwards by export_payload().
+    outputs: list[str] = []
+    if publishes_artifact(cfg, target):
+        dest = payload_dir(cfg, target)
+        outputs.append(f"type=local,dest={dest.with_name(dest.name + '.export')}")
+
+    entitlement = needs_entitlement(cfg, target)
+
+    return {
+        "bake_name": bake_name(cfg, target),
+        "key": target.key,
+        "image": target.image,
+        "scope": target_scope(cfg, target),
+        "job": str(target_attr(cfg, target, "job", "matrix")),
+        "dockerfile": f"{target.image}/Dockerfile",
+        "tags": [tagged_ref(cfg, target, tag=t) for t in tag_set(cfg, target)],
+        "args": args,
+        "labels": image_labels(cfg, target),
+        "entitlements": [entitlement] if entitlement else [],
+        "outputs": outputs,
+        "contexts": contexts,
+    }
+
+
+def bake_spec(
+    cfg: Config,
+    targets: list[Target],
+    selected: list[Target] | None = None,
+    base_from_registry: bool = False,
+) -> dict:
+    """The generated half of the bake definition, as a bake JSON file.
+
+    A bake file declaring one variable, which ``docker-bake.hcl`` forks into
+    one target per entry with a ``matrix``.  Every target is emitted every
+    time, whatever is being built: selection happens by naming bake targets or
+    groups on the command line, so the file does not change shape with the
+    argument and ``--print`` always shows the whole repo.
+
+    *selected* is the subset this run will actually build, which decides only
+    where ``contexts`` wiring is emitted, plus the ``selected`` group.
+    """
+
+    chosen = set(selected if selected is not None else targets)
+    entries = [
+        bake_target(cfg, t, chosen, base_from_registry=base_from_registry)
+        for t in targets
+    ]
+    return {
+        "variable": {
+            "TARGETS": {"default": entries},
+            "SELECTED": {
+                "default": [bake_name(cfg, t) for t in targets if t in chosen]
+            },
+        }
+    }
+
+
+def bake_secret_overrides(cfg: Config, targets: list[Target]) -> list[str]:
+    """``--set`` overrides carrying the build args kept out of the spec file.
+
+    The guest PASSWORD is the only one today.  Passed on the command line so
+    that ``bake-targets.json`` stays safe to read, print and leave lying in a
+    working tree.
+    """
+
+    overrides: list[str] = []
+    for target in targets:
+        plain = set(build_args_for(cfg, target, include_secrets=False))
+        for kv in build_args_for(cfg, target, include_secrets=True):
+            if kv in plain:
+                continue
+            key, value = kv.split("=", 1)
+            overrides.append(f"{bake_name(cfg, target)}.args.{key}={value}")
+    return overrides
+
+
+def write_bake_spec(cfg: Config, spec: dict) -> Path:
+    """Write the generated bake spec and return its path."""
+    path = cfg.workdir / BAKE_SPEC_FILE
+    path.write_text(json.dumps(spec, indent=2, sort_keys=True) + "\n")
+    return path
+
+
 # ── docker helpers ─────────────────────────────────────
 
 
@@ -1329,88 +1513,51 @@ def cmd_build(args: argparse.Namespace) -> None:
     if not dry_run and any(needs_entitlement(cfg, t) for t in targets):
         require_kvm(insecure_ok)
 
-    # A base built earlier in this same run only exists in the local daemon,
-    # which the docker-container builder cannot see.
-    selected = set(targets)
-    local_bases = {
-        t
-        for t in targets
-        if base_target(cfg, t) in selected and not args.base_from_registry
-    }
-
-    # Entitlement-needing images are the only ones for which being pushed off
-    # the buildx builder actually costs anything -- the 'default' builder cannot
-    # grant security.insecure at all. Targets are built in dependency order and
-    # each is pushed as soon as it is built, so when we have credentials the base
-    # is already published by the time we get here: point at that and keep the
-    # builder, rather than trading KVM for a local image reference. Only worth it
-    # for entitlement-needing images -- routing ubuntu-cuda-rocm-fio the same way
-    # would re-pull a 28 GB base for no gain.
+    # One bake invocation for the whole run, rather than one `docker buildx
+    # build` per target. Bake schedules the independent targets in parallel and
+    # -- through the `contexts` wiring the spec carries -- hands a base built
+    # here straight to whatever layers on it, inside a single solve.
     #
-    # --no-push takes that away again: nothing this run builds reaches the
-    # registry, so the published base is whatever was there beforehand. The
-    # target stays in local_bases and the check below makes the choice explicit
-    # rather than silently building a guest on a stale base.
-    if pushing:
-        local_bases -= {t for t in local_bases if needs_entitlement(cfg, t)}
+    # That wiring is what replaced the old local-base handling: a base built in
+    # this run used to exist only in the local daemon, which the
+    # docker-container builder cannot see, so such targets were pushed onto the
+    # 'default' builder -- which cannot grant security.insecure, which meant a
+    # guest build in that position was a hard error telling the user to pass
+    # --base-from-registry or drop --no-push. None of that applies now: nothing
+    # round-trips through a daemon or a registry, so every target stays on the
+    # one builder and keeps KVM.
+    spec = bake_spec(
+        cfg,
+        discover_targets(cfg),
+        selected=targets,
+        base_from_registry=args.base_from_registry,
+    )
+    spec_path = write_bake_spec(cfg, spec)
 
-    for t in sorted(local_bases, key=lambda x: x.key):
-        if needs_entitlement(cfg, t):
-            console.print(
-                f"[red]Error:[/] {base_target(cfg, t)} is being built in this "
-                f"run and is not being published, so {t.key} would have "
-                "to build on the 'default' builder, which cannot grant "
-                "security.insecure -- and its VM build needs /dev/kvm.\n"
-                "Pass --base-from-registry to build against the published base "
-                "and keep KVM, or drop --no-push / set registry credentials."
-            )
-            sys.exit(1)
+    cmd: list[str] = [
+        "docker",
+        "buildx",
+        "bake",
+        "-f",
+        str(spec_path),
+        "-f",
+        str(cfg.workdir / BAKE_HCL_FILE),
+    ]
+    # Requesting security.insecure in the bake file is not the same as being
+    # granted it: the invocation has to allow it too.
+    if any(needs_entitlement(cfg, t) for t in targets):
+        cmd += ["--allow", "security.insecure"]
+    if args.no_cache:
+        cmd.append("--no-cache")
+    # Kept out of the spec file so a password cannot be left behind in a
+    # working tree; see bake_secret_overrides.
+    for override in bake_secret_overrides(cfg, targets):
+        cmd += ["--set", override]
+    if args.cache_bust:
+        cmd += ["--set", f"*.args.CACHE_BUST={args.cache_bust}"]
+    cmd += [bake_name(cfg, t) for t in targets]
 
     for target in targets:
-        refs = [tagged_ref(cfg, target, tag=x) for x in tag_set(cfg, target)]
-        local_base = target in local_bases
-        entitlement = needs_entitlement(cfg, target)
-
-        build_args = build_args_for(cfg, target)
-        if args.cache_bust:
-            build_args.append(f"CACHE_BUST={args.cache_bust}")
-
-        cmd: list[str] = ["docker", "buildx", "build"]
-        # The named builder uses the docker-container driver, which has its
-        # own image store and cannot resolve a base image that only exists
-        # in the local daemon.  Such images build on the 'default' (docker
-        # driver) builder instead, which still has a full local layer cache.
-        if local_base:
-            cmd += ["--builder", "default"]
-        # The VM build stage runs QEMU against /dev/kvm, which only
-        # an insecure-entitlement RUN can reach.
-        if entitlement:
-            cmd += ["--allow", entitlement]
-        for ba in build_args:
-            cmd += ["--build-arg", ba]
-        if args.no_cache:
-            cmd.append("--no-cache")
-        for ref in refs:
-            cmd += ["--tag", ref]
-        for key, value in image_labels(cfg, target).items():
-            cmd += ["--label", f"{key}={value}"]
-        cmd += ["--load"]
-        # Guest targets also export /output onto the host, so a local build
-        # leaves a usable qcow2 behind rather than one buried in image layers,
-        # and so the artifact push has something to read without re-pulling a
-        # multi-GB image it just built.
-        dest = payload_dir(cfg, target) if publishes_artifact(cfg, target) else None
-        # Exported to a staging directory and renamed into place afterwards,
-        # so the payload stage's /output nesting never reaches the host.
-        staging = dest.with_name(dest.name + ".export") if dest else None
-        if staging is not None:
-            cmd += ["--output", f"type=local,dest={staging}"]
-        cmd += [
-            "-f",
-            str(cfg.workdir / target.image / "Dockerfile"),
-        ]
-        cmd.append(str(cfg.workdir))
-
         console.rule(f"[bold]Building {target.key}[/]")
         _print_build_summary(cfg, target, args)
 
@@ -1419,25 +1566,31 @@ def cmd_build(args: argparse.Namespace) -> None:
         for rel in target_attr(cfg, target, "context_dirs", []) or []:
             (cfg.workdir / str(rel)).mkdir(parents=True, exist_ok=True)
 
-        if dry_run:
-            console.print("[yellow]dry-run:[/] " + " ".join(cmd))
-            continue
-
         # The local exporter merges into whatever is already there, so a stale
         # qcow2 from an earlier build under a different vm_name would survive
         # and confuse every consumer that globs for *.qcow2.
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
+        if not dry_run and publishes_artifact(cfg, target):
+            dest = payload_dir(cfg, target)
+            staging = dest.with_name(dest.name + ".export")
+            if staging.exists():
+                shutil.rmtree(staging)
 
-        subprocess.run(cmd, check=True)
+    if dry_run:
+        console.print("[yellow]dry-run:[/] " + " ".join(cmd))
+        subprocess.run(cmd + ["--print"], check=False)
+        return
 
-        if dest is not None and staging is not None:
-            export_payload(dest, staging)
+    subprocess.run(cmd, check=True)
+
+    for target in targets:
+        if publishes_artifact(cfg, target):
+            dest = payload_dir(cfg, target)
+            export_payload(dest, dest.with_name(dest.name + ".export"))
             console.print(f"[green]Payload[/] {dest}")
 
         if pushing:
             console.rule("[bold]Pushing to registry[/]")
-            for ref in refs:
+            for ref in [tagged_ref(cfg, target, tag=x) for x in tag_set(cfg, target)]:
                 subprocess.run(["docker", "push", ref], check=True)
                 console.print(f"[green]Pushed[/] {ref}")
             if publishes_artifact(cfg, target):
@@ -2203,6 +2356,18 @@ def cmd_validate(args: argparse.Namespace) -> None:
         except ValueError as exc:
             errors.append(str(exc))
 
+    # The bake spec is generated from the same values checked above, so this
+    # cannot fail on a template -- what it catches is the hand-written half
+    # going missing or being renamed, which would otherwise surface as an
+    # empty plan at build time rather than an error.
+    #
+    # Bake target names must be unique across the whole file. They are the
+    # scope strings, whose uniqueness the loop above already enforces, so
+    # there is nothing further to check here.
+    if not (cfg.workdir / BAKE_HCL_FILE).is_file():
+        errors.append(f"{BAKE_HCL_FILE} is missing; `build` cannot bake without it")
+    bake_spec(cfg, targets)
+
     if errors:
         for e in errors:
             console.print(f"[red]Error:[/] {e}")
@@ -2447,6 +2612,42 @@ def cmd_tags(args: argparse.Namespace) -> None:
     name = full_image_ref(cfg, target) + args.suffix
     seen = dict.fromkeys(f"{cfg.registry}/{name}:{t}" for t in tags)
     print("\n".join(seen))
+
+
+def cmd_bake(args: argparse.Namespace) -> None:
+    """Generate the bake spec docker-bake.hcl reads.
+
+    Writes bake-targets.json beside docker-bake.hcl, or prints it with
+    --stdout.  Useful on its own for inspecting a plan::
+
+        ./ci-images-tool.py bake
+        docker buildx bake -f bake-targets.json -f docker-bake.hcl --print
+
+    `build` calls this for you; this command is for looking.
+    """
+
+    cfg = load_config(env_file=args.env_file)
+    if args.tag:
+        cfg.image_tag = resolve_image_tag(args.tag)
+
+    targets = discover_targets(cfg)
+    selected = resolve_targets(cfg, args.image)
+    spec = bake_spec(
+        cfg,
+        targets,
+        selected=selected,
+        base_from_registry=args.base_from_registry,
+    )
+
+    if args.stdout:
+        print(json.dumps(spec, indent=2, sort_keys=True))
+        return
+
+    path = write_bake_spec(cfg, spec)
+    console.print(
+        f"[green]Wrote[/] {path.name} "
+        f"({len(targets)} target(s), {len(selected)} selected)"
+    )
 
 
 def cmd_build_args(args: argparse.Namespace) -> None:
@@ -3829,7 +4030,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_build.add_argument(
         "image",
-        nargs="?",
+        nargs="*",
         default=None,
         metavar="TARGET",
         help=f"{TARGET_HELP} (builds all if omitted)",
@@ -3872,6 +4073,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print commands without executing",
     )
     _add_common_args(p_build)
+
+    # ── bake ──
+    p_bake = sub.add_parser(
+        "bake",
+        help=f"Generate {BAKE_SPEC_FILE}, the data half of the bake definition",
+    )
+    p_bake.add_argument(
+        "image",
+        nargs="*",
+        default=None,
+        metavar="TARGET",
+        help=f"{TARGET_HELP} (marks it selected; all if omitted)",
+    )
+    p_bake.add_argument(
+        "--stdout",
+        action="store_true",
+        help="Print the spec instead of writing it",
+    )
+    p_bake.add_argument(
+        "--tag",
+        metavar="TAG",
+        help="Base image tag to resolve the tag set against",
+    )
+    p_bake.add_argument(
+        "--base-from-registry",
+        action="store_true",
+        help=(
+            "Do not wire a base built in this run into its dependants; "
+            "layer on the published base images instead"
+        ),
+    )
+    _add_common_args(p_bake)
 
     # ── push ──
     p_push = sub.add_parser(
@@ -4279,6 +4512,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 DISPATCH = {
     "build": cmd_build,
+    "bake": cmd_bake,
     "push": cmd_push,
     "push-artifact": cmd_push_artifact,
     "verify": cmd_verify,
