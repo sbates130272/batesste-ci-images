@@ -248,3 +248,12 @@ scp'd
 hipObject
 hipObject's
 hipobject
+HCL
+Slurm
+GRES
+CPUs
+overridable
+buildkitd
+libguestfs
+Ctrl
+NFS

@@ -481,6 +481,142 @@ Specify a password file for registry authentication:
   --password-file /path/to/password.txt
 ```
 
+Several targets can be named at once; they are reordered so a base is never
+scheduled after something that layers on it:
+
+```bash
+./ci-images-tool.py build --no-push ubuntu-base ubuntu-libvfio-user
+```
+
+#### How a build runs: docker buildx bake
+
+`build` does not call `docker buildx build` per image. It generates
+`bake-targets.json` and hands it, with the committed `docker-bake.hcl`, to a
+single `docker buildx bake` invocation, which schedules the independent targets
+in parallel.
+
+The definition is deliberately split in two:
+
+- **`docker-bake.hcl`** — hand-written, committed, and holds conventions only:
+  the build context, the output policy, the cache refs, and the `bases`,
+  `matrix` and `derived` groups (which mirror `job:` in `images.yml`). It
+  declares no pins and names no image; a `matrix` block forks it over whatever
+  the generated file contains, so adding an image is still a Dockerfile plus an
+  `images.yml` entry.
+- **`bake-targets.json`** — generated, gitignored, and holds every value that
+  depends on a pin: tags, build args, labels, entitlements, outputs and the
+  base wiring. Bake HCL cannot compute a variant filter, `source_fingerprint()`
+  or the semver alias ladder, and a pin written by hand in HCL would be a pin
+  that can disagree with `images.yml`.
+
+Generate and inspect a plan without building anything:
+
+```bash
+./ci-images-tool.py bake
+docker buildx bake -f bake-targets.json -f docker-bake.hcl --print
+```
+
+Note that the two files are merged on the command line rather than the HCL
+reading the JSON: bake HCL has no `file()` function, so a generated file
+declaring a variable is the supported way to feed data in. `docker-bake.hcl`
+therefore cannot be used on its own.
+
+#### Building on the Slurm cluster
+
+`build --slurm` runs the build on a CPU-only compute node instead of this
+workstation:
+
+```bash
+./ci-images-tool.py build --slurm --no-push ubuntu-base ubuntu-libvfio-user
+./ci-images-tool.py build --slurm --slurm-cpus 192 --slurm-mem 512G
+./ci-images-tool.py build --slurm --slurm-time 12:00:00 ubuntu-qcow2-gen@rocjitsu
+```
+
+The job re-invokes this same command without `--slurm`, so every other flag
+means what it means locally and there is one build path rather than a cluster
+one and a local one. A cluster run therefore does what a local run does: bake
+the images, export each guest payload to `output/`, push every tag, and push
+the qcow2 ORAS artifact. `oras` and `zstd` come from the shared home, like
+buildx. The spec is generated before submitting, so an `images.yml` that
+cannot render fails before a job is ever queued.
+
+`--slurm` stays attached and streams the job's log, so it reads like an
+ordinary build: the output of the thing you asked for, on your terminal,
+ending when it ends, and exiting with the job's exit code. Ctrl-C detaches
+without cancelling — the job is a real batch job either way, so a dropped
+connection costs the log, not the build. `--slurm-detach` submits and returns
+the job id instead. `--slurm-partition`, `--slurm-constraint`, `--slurm-cpus`,
+`--slurm-mem`, `--slurm-time`, `--slurm-exclude` and `--slurm-job-name` size
+the request, defaulting to `defq`, `CPUONLY`, 32 CPUs, 64 GB and eight hours.
+Logs land in `output/slurm/<job-name>-<jobid>.log`.
+
+##### Caches that survive between runs
+
+Two separate caches, because they live in different places and only one of
+them can leave the node.
+
+- **The builder's own state**, which holds the layer cache *and* every
+  `--mount=type=cache` ccache directory. BuildKit never exports a cache mount,
+  so this is the only thing that carries ccache — no registry or directory
+  can. The job keeps it by recycling one named builder with
+  `docker buildx rm --keep-state`: the container is dropped, which is what
+  stops a stale CPU affinity outliving its allocation, while the state volume
+  is reattached by the next job that lands on that node. Node-local, since a
+  Docker volume lives on the node's own disk. Bounded by `--slurm-cache-max`
+  (default 100 GB), trimmed after each run so a recycled builder cannot grow
+  without limit on a shared machine. Two jobs on one node take a lock; the
+  loser builds on a throwaway builder with a cold cache rather than tearing
+  down the daemon the other is using.
+- **A shared directory**, via `--slurm-cache-dir ~/.local/cache/...` (or
+  `--slurm-cache-dir default`). Home is shared, so this is the cache that
+  survives landing on a *different* node — layers only. Written per target, as
+  one directory would have each image overwrite the last one's manifest. Not
+  free: `mode=max` over these images is a lot of NFS traffic, and for layers
+  that rebuild quickly it can cost more than it saves.
+
+`CACHE_REGISTRY` in the environment adds the GHCR layer cache that CI already
+writes, which is usually faster than NFS where credentials are available. All
+three can be combined; without any of them a node you have not used before
+starts completely cold.
+
+Only `build` takes these flags. Nothing else here wants a big machine: `verify`
+runs libguestfs in a container, and `describe`, `status`, `prune` and
+`push-artifact` are API or network calls a compute node would not speed up.
+
+Descriptions are likewise not pushed by the build, on the cluster or off it.
+Run them after it, from wherever you are:
+
+```bash
+./ci-images-tool.py describe --dry-run    # check what would change
+./ci-images-tool.py describe
+./ci-images-tool.py status                # confirm what is published
+```
+
+Three cluster facts the script encodes:
+
+- A `docker-container` builder inherits the CPU affinity of the Slurm step that
+  created it, and keeps it for the rest of its life. A builder created once by
+  a 16-CPU job silently caps every later build at those same 16 CPUs however
+  large the allocation is — nothing fails, the build is just capped, while
+  `sacct` reports the cores you asked for. The job therefore creates a builder
+  named for its own `$SLURM_JOB_ID`, removes it on exit, and prints both the
+  allocation and what buildkitd actually sees so a mismatch is visible. The
+  cost is a cold local cache per job, which is what `CACHE_REGISTRY` covers.
+- The compute nodes ship buildx 0.12.1, which has no bake `entitlements` field
+  (added in v0.17.0) and so cannot express `security.insecure` at all. A newer
+  buildx under `~/.local/lib/docker/cli-plugins`, linked into
+  `~/.docker/cli-plugins`, is picked up on every node because home is shared
+  and the user plugin directory outranks `/usr/libexec`. The job asserts the
+  version rather than assuming it.
+- `CPUONLY` is applied inconsistently — `ctr-cx66-mi300x-01` and `hpe-rack-13`
+  advertise it while reporting MI300X and MI210X GRES — so the constraint
+  narrows the pool without guaranteeing a GPU-free node. Harmless for a
+  container build; use `EXCLUDE` if it ever matters.
+
+Setting `CACHE_REGISTRY` is worth it: a compute node's Docker daemon is
+per-node, so a build on a node you have not used before otherwise starts
+completely cold.
+
 #### Image Layering and Build Caches
 
 The images form a chain rather than a set of independent builds:
@@ -499,16 +635,15 @@ ubuntu-base ─┬─ ubuntu-cuda-rocm ─┬─ ubuntu-cuda-rocm-fio
 dependants. Each Dockerfile takes a `BASE_IMAGE` build arg that defaults to the
 *published* base on Docker Hub, so building one leaf image on its own never
 rebuilds the chain above it. That default only resolves for someone who has not
-run `docker login` if the base repositories are public, so all of them are. When a base *is* built in the same run, the
-dependant falls back to the `default` builder, which cannot grant
-`security.insecure` — so `ubuntu-qcow2-gen`, whose guest build needs
-`/dev/kvm`, errors out rather than building without it. Pass
-`--base-from-registry` to keep every image on the buildx builder and retain
-KVM, or set registry credentials so the base is published before its dependant
-is built. `--no-push` publishes nothing, so it puts a credentialed run back in
-exactly that position and `--base-from-registry` becomes the only way through —
-note that it then layers on whatever base is *already* on Docker Hub, not the
-one this run just built.
+run `docker login` if the base repositories are public, so all of them are.
+
+When a base *is* selected in the same run, bake links the two targets and hands
+the base's result straight to its dependants inside a single BuildKit solve —
+nothing round-trips through a registry or the local daemon, every target stays
+on the one builder, and `ubuntu-qcow2-gen` keeps the `security.insecure`
+entitlement its `/dev/kvm` guest build needs. Pass `--base-from-registry` to
+suppress the linking and layer on the published base instead; note that it then
+uses whatever is *already* on Docker Hub, not the one this run just built.
 
 Two caches are in play:
 

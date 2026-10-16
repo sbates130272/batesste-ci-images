@@ -1,4 +1,4 @@
-Teach the fork's KV host to run without hugepages.
+Teach the fork's KV host to run without hugepages, and on a CPU it has.
 
 test/nvmf/kv/kv_host.c is driven upstream by kv_vfio_user.sh, which runs inside
 SPDK's own test environment where scripts/setup.sh has already reserved
@@ -7,7 +7,13 @@ mounted with pages reserved -- the same case entrypoint.sh's --no-huge fallback
 exists for -- and kv_host takes no EAL arguments, so it dies at DPDK init
 before it ever reaches the vfio-user socket.
 
-Driven by an environment variable rather than a new argv option: argv is
+The core mask is the same shape of problem as the hugepages: kv_host takes no
+EAL arguments, so it uses SPDK's default mask of 0x1 and dies at DPDK init
+wherever CPU 0 is outside the process's affinity. That is every Slurm
+allocation that was not given core 0, and it is why this image was the one
+target in the repo that could not build on a compute node.
+
+Driven by environment variables rather than new argv options: argv is
 positional in kv_host (<socket-dir> [reject|allow|rados-exec]) and adding a
 flag there would diverge from the fork's own driver scripts. With the variable
 unset the binary behaves exactly as it does upstream, so this cannot change
@@ -18,7 +24,7 @@ loudly if the context moves, which is the signal to come back here.
 
 --- a/test/nvmf/kv/kv_host.c
 +++ b/test/nvmf/kv/kv_host.c
-@@ -193,6 +193,15 @@
+@@ -193,6 +193,23 @@
  	opts.opts_size = sizeof(opts);
  	spdk_env_opts_init(&opts);
  	opts.name = "kv_host";
@@ -29,6 +35,14 @@ loudly if the context moves, which is the signal to come back here.
 +
 +		opts.no_huge = true;
 +		opts.mem_size = mem_mib > 0 ? mem_mib : 256;
++	}
++
++	/* batesste-ci-images: the default core mask is 0x1, and CPU 0 is not
++	 * ours to use under a constrained cpuset -- DPDK then fails startup
++	 * with "Cannot set affinity" rather than falling back to a CPU it has.
++	 */
++	if (getenv("KV_HOST_CPUMASK") != NULL) {
++		opts.core_mask = getenv("KV_HOST_CPUMASK");
 +	}
 +
  	if (spdk_env_init(&opts) < 0) {
