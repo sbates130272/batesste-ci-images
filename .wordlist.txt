@@ -254,3 +254,6 @@ GRES
 CPUs
 overridable
 buildkitd
+libguestfs
+Ctrl
+NFS

@@ -51,6 +51,27 @@ variable "CACHE_TO" {
   default = false
 }
 
+# A directory to keep the layer cache in, e.g. ~/.local/cache/batesste-ci-images.
+# Empty disables it.
+#
+# This is the cache that crosses machines without a registry: on the cluster,
+# home is shared, so a build on one node can reuse what a build on another one
+# left behind. The per-node BuildKit state volume cannot do that -- it lives on
+# the node's own disk -- and it is the only thing that carries the ccache, so
+# the two are complementary rather than alternatives.
+#
+# Per target, not one shared directory: every target would otherwise write its
+# manifest over the last one's and the cache would describe whichever image
+# finished most recently.
+#
+# Worth knowing before turning it on: mode=max over these images is a lot of
+# data to push down an NFS mount, and for layers that rebuild quickly it can
+# cost more than it saves. The registry cache is usually the faster answer
+# where credentials are available.
+variable "CACHE_LOCAL" {
+  default = ""
+}
+
 # Load the built image into the local daemon. On by default because that is
 # what the local build path has always done, and because the per-image checks
 # and the artifact push both expect to find the image there. A builder that is
@@ -104,16 +125,20 @@ target "image" {
     t.outputs,
   )
 
-  cache-from = CACHE_REGISTRY == "" ? [] : [
-    "type=registry,ref=${CACHE_REGISTRY}:${t.scope}"
-  ]
+  cache-from = concat(
+    CACHE_REGISTRY == "" ? [] : ["type=registry,ref=${CACHE_REGISTRY}:${t.scope}"],
+    CACHE_LOCAL == "" ? [] : ["type=local,src=${CACHE_LOCAL}/${t.scope}"],
+  )
 
   # mode=max so the intermediate build stages are cached too, which is most of
   # the win on the multi-stage source builds. image-manifest+oci-mediatypes for
   # GHCR, which rejects the default cache manifest type.
-  cache-to = (CACHE_REGISTRY == "" || !CACHE_TO) ? [] : [
-    "type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${CACHE_REGISTRY}:${t.scope}"
-  ]
+  cache-to = concat(
+    (CACHE_REGISTRY == "" || !CACHE_TO) ? [] : [
+      "type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref=${CACHE_REGISTRY}:${t.scope}"
+    ],
+    CACHE_LOCAL == "" ? [] : ["type=local,mode=max,dest=${CACHE_LOCAL}/${t.scope}"],
+  )
 }
 
 # The `job:` field in images.yml, as bake groups: `bake bases` builds what

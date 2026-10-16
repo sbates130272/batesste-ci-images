@@ -523,31 +523,68 @@ therefore cannot be used on its own.
 
 #### Building on the Slurm cluster
 
-`scripts/bake-slurm.sh` runs the build on a CPU-only compute node instead of
-this workstation:
+`build --slurm` runs the build on a CPU-only compute node instead of this
+workstation:
 
 ```bash
-scripts/bake-slurm.sh ubuntu-base ubuntu-libvfio-user
-scripts/bake-slurm.sh bases
-PUSH=1 TIME=12:00:00 scripts/bake-slurm.sh ubuntu-qcow2-gen@rocjitsu
+./ci-images-tool.py build --slurm --no-push ubuntu-base ubuntu-libvfio-user
+./ci-images-tool.py build --slurm --slurm-cpus 192 --slurm-mem 512G
+./ci-images-tool.py build --slurm --slurm-time 12:00:00 ubuntu-qcow2-gen@rocjitsu
 ```
 
-Arguments are target keys, or the `job:` names from `images.yml` used as groups
-(`bases`, `matrix`, `derived`, `all`). The job runs `ci-images-tool.py build`,
-not bake directly, so a cluster run does what a local run does: bake the
-images, export each guest payload to `output/`, push every tag, and push the
-qcow2 ORAS artifact. `oras` and `zstd` come from the shared home, like buildx.
+The job re-invokes this same command without `--slurm`, so every other flag
+means what it means locally and there is one build path rather than a cluster
+one and a local one. A cluster run therefore does what a local run does: bake
+the images, export each guest payload to `output/`, push every tag, and push
+the qcow2 ORAS artifact. `oras` and `zstd` come from the shared home, like
+buildx. The spec is generated before submitting, so an `images.yml` that
+cannot render fails before a job is ever queued.
 
-`PUSH` is off by default — nothing reaches a registry unless you ask, because
-a build moves rolling aliases that consumers resolve through. With `PUSH=1` the
-job reads credentials from `.env`, the same way a local build does.
-`PARTITION`, `CONSTRAINT`, `CPUS`, `MEM`, `TIME`, `EXCLUDE` and
-`CACHE_REGISTRY` are overridable by environment variable; the defaults are
-`defq`, `CPUONLY`, 32 CPUs, 64 GB and eight hours.
+`--slurm` stays attached and streams the job's log, so it reads like an
+ordinary build: the output of the thing you asked for, on your terminal,
+ending when it ends, and exiting with the job's exit code. Ctrl-C detaches
+without cancelling — the job is a real batch job either way, so a dropped
+connection costs the log, not the build. `--slurm-detach` submits and returns
+the job id instead. `--slurm-partition`, `--slurm-constraint`, `--slurm-cpus`,
+`--slurm-mem`, `--slurm-time`, `--slurm-exclude` and `--slurm-job-name` size
+the request, defaulting to `defq`, `CPUONLY`, 32 CPUs, 64 GB and eight hours.
+Logs land in `output/slurm/<job-name>-<jobid>.log`.
 
-Docker Hub descriptions are not pushed by the job. `describe` is a pure Hub API
-call needing no builder, daemon or node, so run it from the login node after
-the build:
+##### Caches that survive between runs
+
+Two separate caches, because they live in different places and only one of
+them can leave the node.
+
+- **The builder's own state**, which holds the layer cache *and* every
+  `--mount=type=cache` ccache directory. BuildKit never exports a cache mount,
+  so this is the only thing that carries ccache — no registry or directory
+  can. The job keeps it by recycling one named builder with
+  `docker buildx rm --keep-state`: the container is dropped, which is what
+  stops a stale CPU affinity outliving its allocation, while the state volume
+  is reattached by the next job that lands on that node. Node-local, since a
+  Docker volume lives on the node's own disk. Bounded by `--slurm-cache-max`
+  (default 100 GB), trimmed after each run so a recycled builder cannot grow
+  without limit on a shared machine. Two jobs on one node take a lock; the
+  loser builds on a throwaway builder with a cold cache rather than tearing
+  down the daemon the other is using.
+- **A shared directory**, via `--slurm-cache-dir ~/.local/cache/...` (or
+  `--slurm-cache-dir default`). Home is shared, so this is the cache that
+  survives landing on a *different* node — layers only. Written per target, as
+  one directory would have each image overwrite the last one's manifest. Not
+  free: `mode=max` over these images is a lot of NFS traffic, and for layers
+  that rebuild quickly it can cost more than it saves.
+
+`CACHE_REGISTRY` in the environment adds the GHCR layer cache that CI already
+writes, which is usually faster than NFS where credentials are available. All
+three can be combined; without any of them a node you have not used before
+starts completely cold.
+
+Only `build` takes these flags. Nothing else here wants a big machine: `verify`
+runs libguestfs in a container, and `describe`, `status`, `prune` and
+`push-artifact` are API or network calls a compute node would not speed up.
+
+Descriptions are likewise not pushed by the build, on the cluster or off it.
+Run them after it, from wherever you are:
 
 ```bash
 ./ci-images-tool.py describe --dry-run    # check what would change
