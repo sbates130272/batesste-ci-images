@@ -146,6 +146,15 @@ ARG ROCM_VERSION=
 ARG RDMA_CORE_VERSION=
 ARG FIO_COMMIT=
 ARG CACHE_BUST=
+# The host port probe-guest forwards the guest's SSH to, and the one thing in
+# this build that is not private to it: a --security=insecure step shares the
+# host network namespace, so two flavours building at once both try to bind it
+# and the second dies with "Could not set up host forwarding rule". That never
+# happened while the flavours were built one per CI job or one per `docker
+# buildx build`; bake builds all four at once on one machine, which is the
+# point of it. Each flavour therefore pins its own port in images.yml.
+ARG PROBE_SSH_PORT=2222
+ENV PROBE_SSH_PORT=${PROBE_SSH_PORT}
 # hadolint ignore=DL3059
 RUN --security=insecure \
     --mount=type=bind,source=common,target=/ctx/common \

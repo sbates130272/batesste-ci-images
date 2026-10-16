@@ -555,8 +555,16 @@ the build:
 ./ci-images-tool.py status                # confirm what is published
 ```
 
-Two cluster facts the script encodes:
+Three cluster facts the script encodes:
 
+- A `docker-container` builder inherits the CPU affinity of the Slurm step that
+  created it, and keeps it for the rest of its life. A builder created once by
+  a 16-CPU job silently caps every later build at those same 16 CPUs however
+  large the allocation is — nothing fails, the build is just capped, while
+  `sacct` reports the cores you asked for. The job therefore creates a builder
+  named for its own `$SLURM_JOB_ID`, removes it on exit, and prints both the
+  allocation and what buildkitd actually sees so a mismatch is visible. The
+  cost is a cold local cache per job, which is what `CACHE_REGISTRY` covers.
 - The compute nodes ship buildx 0.12.1, which has no bake `entitlements` field
   (added in v0.17.0) and so cannot express `security.insecure` at all. A newer
   buildx under `~/.local/lib/docker/cli-plugins`, linked into

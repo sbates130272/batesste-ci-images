@@ -87,7 +87,12 @@ HUB_ELLIPSIS = "…"
 # Slurm compute nodes, where a builder of that name already exists and belongs
 # to somebody else. ensure_builder() *recreates* a builder whose flags are
 # wrong, so a generic name means discarding a stranger's cache.
-BUILDER_NAME = "batesste-bake"
+#
+# Overridable because a Slurm job needs a builder of its own: the buildkitd
+# container inherits the CPU affinity of the step that created it and keeps it
+# for life, so a shared one silently caps every later build at the core count
+# of whichever job created it. See scripts/bake-slurm.sh.
+BUILDER_NAME = os.environ.get("CI_IMAGES_BUILDER", "") or "batesste-bake"
 
 # The two halves of the bake definition. The HCL file is hand-written and holds
 # conventions only -- context, groups, cache refs, the output policy. Every

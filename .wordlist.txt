@@ -253,3 +253,4 @@ Slurm
 GRES
 CPUs
 overridable
+buildkitd

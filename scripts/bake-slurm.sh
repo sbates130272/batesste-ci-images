@@ -129,7 +129,10 @@ if [[ -n $EXCLUDE ]]; then
 fi
 
 echo "Submitting: partition=$PARTITION constraint=$CONSTRAINT cpus=$CPUS mem=$MEM time=$TIME"
-echo "Targets:    ${TARGETS[*]}"
+# An empty list is not "nothing": `build` with no target argument builds every
+# target, so say that rather than printing a blank line.
+echo "Targets:    ${TARGETS[*]:-<all>}"
+echo "Push:       ${PUSH:-0}"
 echo "Log:        $LOG_DIR/$JOB_NAME-<jobid>.log"
 
 sbatch "${SBATCH_ARGS[@]}" \
@@ -142,7 +145,7 @@ cd "$REPO_DIR"
 
 echo "node:    $(hostname -f)"
 echo "cpus:    $(nproc)"
-echo "targets: $*"
+echo "targets: ${*:-<all>}"
 
 # The distro buildx on these nodes is too old to express a bake entitlement,
 # so a build that silently used it would fail confusingly much later -- in the
@@ -160,16 +163,46 @@ if [[ $BUILDX_MINOR -lt $MIN_BUILDX_MINOR ]]; then
     exit 1
 fi
 
-# A builder of our own, with the insecure entitlement the guest builds need.
-# Named for this repo rather than the bare "builder", which already exists on
-# these shared nodes and belongs to somebody else -- recreating that one to fix
-# its flags would throw away a stranger's cache.
-BUILDER=batesste-bake
-if ! docker buildx inspect "$BUILDER" >/dev/null 2>&1; then
-    docker buildx create --name "$BUILDER" \
-        --driver docker-container \
-        --buildkitd-flags '--allow-insecure-entitlement=security.insecure --allow-insecure-entitlement=network.host' \
-        >/dev/null
+# A builder of our own, with the insecure entitlement the guest builds need,
+# created fresh for this job and removed at the end.
+#
+# Per-job rather than persistent, and this is not a detail. The buildkitd
+# container inherits the CPU affinity of the Slurm step that creates it, and
+# keeps it for the rest of its life. A builder created once by a 16-CPU job
+# pins every later build to those same 16 CPUs however large the allocation
+# is -- silently, because nothing fails, the build is just capped. One full
+# build was run with --cpus-per-task=192 on a builder created by an earlier
+# 16-CPU job and got 16 CPUs; `docker exec <builder> nproc` said 16 while
+# sacct said 192.
+#
+# The cost is a cold local layer cache per job, which is what CACHE_REGISTRY
+# is for -- set it and the registry carries what the local cache no longer
+# does. The job id in the name keeps two concurrent jobs off each other, and
+# off the bare "builder" that already exists on these shared nodes and belongs
+# to somebody else.
+BUILDER="batesste-bake-${SLURM_JOB_ID}"
+export CI_IMAGES_BUILDER="$BUILDER"
+cleanup() {
+    docker buildx rm "$BUILDER" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+docker buildx create --name "$BUILDER" \
+    --driver docker-container \
+    --buildkitd-flags '--allow-insecure-entitlement=security.insecure --allow-insecure-entitlement=network.host' \
+    >/dev/null
+docker buildx use "$BUILDER"
+# Force the container up now, so the check below has something to ask.
+docker buildx inspect --bootstrap "$BUILDER" >/dev/null
+
+# Report what buildkitd actually got rather than what was asked for. The two
+# disagreeing is the failure mode described above, and it is invisible unless
+# something prints it.
+BK_CPUS=$(docker exec "buildx_buildkit_${BUILDER}0" nproc 2>/dev/null || echo '?')
+echo "builder: $BUILDER"
+echo "cpus:    $BK_CPUS visible to buildkitd, $(nproc) in the allocation"
+if [[ $BK_CPUS != '?' && $BK_CPUS -lt $(nproc) ]]; then
+    echo "Warning: buildkitd sees fewer CPUs than this job was given." >&2
 fi
 
 # The guest targets boot QEMU against /dev/kvm. The device is root:kvm on the
@@ -189,6 +222,26 @@ fi
 #
 # Credentials come from the repo's .env, which build reads itself. Without
 # PUSH=1 this is --no-push and nothing leaves the node.
+# Timing, so a run can be compared against CI or against another node without
+# having to go back to sacct. sacct is still the authority on elapsed, CPU
+# time and peak RSS -- this is here so the number is in the same log as the
+# build it describes.
+BUILD_START=$(date +%s)
+echo "started: $(date -Is)"
+
+# `|| BUILD_RC=$?` rather than a bare call: set -e would otherwise take a
+# failed build straight out of the script, and the timing below -- which is
+# most interesting precisely when something went wrong -- would never print.
+BUILD_RC=0
 set -x
-"$PYTHON" ci-images-tool.py build ${PUSH_FLAG:+"$PUSH_FLAG"} "$@"
+"$PYTHON" ci-images-tool.py build ${PUSH_FLAG:+"$PUSH_FLAG"} "$@" || BUILD_RC=$?
+set +x
+
+BUILD_END=$(date +%s)
+echo "finished: $(date -Is)"
+printf 'elapsed: %s (%ds) on %s, %s cpus\n' \
+    "$(date -u -d "@$((BUILD_END - BUILD_START))" +%H:%M:%S)" \
+    "$((BUILD_END - BUILD_START))" "$(hostname -s)" "$(nproc)"
+echo "sacct:   sacct -j \$SLURM_JOB_ID --format=JobID,Elapsed,TotalCPU,MaxRSS,NodeList"
+exit $BUILD_RC
 SBATCH_SCRIPT

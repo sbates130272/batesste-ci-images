@@ -644,6 +644,15 @@ images:
       fio_commit: ""
       username: batesste
       vm_name: ""
+      # The host port probe-guest forwards the guest's SSH to during the
+      # verification boot. Per-flavour because a --security=insecure build step
+      # shares the host network namespace, so two flavours building
+      # concurrently -- which is what bake does, and what one job per CI runner
+      # never did -- collide on it and the second fails to boot at all.
+      #
+      # Only ever bound on 127.0.0.1 inside the build, and only while the
+      # verification boot runs. A flavour added below needs its own number.
+      probe_ssh_port: 2222
       password:
         value: changeme
         secret: true
@@ -674,6 +683,7 @@ images:
       ROCM_VERSION: "{guest_rocm_version}"
       RDMA_CORE_VERSION: "{rdma_core_version}"
       FIO_COMMIT: "{fio_commit}"
+      PROBE_SSH_PORT: "{probe_ssh_port}"
     # kernel_ref is deliberately not in the tag: the flavour name already
     # distinguishes the images, and the resolved kernel goes in vm-info.json
     # and the label below, where it can carry the full build stamp.
@@ -728,6 +738,7 @@ images:
         vars:
           flavour: ionic
           vm_packages: ionic.txt
+          probe_ssh_port: 2223
           kernel_ref: v7.2.3
           rdma_core_version: "61.0"
         # rocm-ernic's two-VM job still copies the scratch payload image with
@@ -806,6 +817,7 @@ images:
         vars:
           flavour: rocjitsu
           vm_packages: rocjitsu.txt
+          probe_ssh_port: 2224
           release: resolute
           amdgpu_driver_version: "31.60"
           guest_rocm_version: "10.1"
@@ -859,6 +871,7 @@ images:
         vars:
           flavour: ernic-rocjitsu
           vm_packages: ernic-rocjitsu.txt
+          probe_ssh_port: 2225
           release: resolute
           kernel_ref: v7.2.4
           amdgpu_driver_version: "31.60"

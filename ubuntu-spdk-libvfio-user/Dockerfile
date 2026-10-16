@@ -184,13 +184,27 @@ ENV PATH=/usr/local/bin:${PATH} \
 # fallback path specifically; SPDK_HUGE=auto would pick it anyway. The rpc.py
 # --help first is not redundant with the entrypoint's own RPC calls: it is the
 # only thing that exercises the symlinked spelling callers use.
+#
+# SPDK_CPUMASK names a CPU this build actually has, rather than taking the
+# entrypoint's 0x1 default. DPDK pins its reactor to the core it is given and
+# fails startup outright if that core is not in the process's affinity mask --
+# "EAL: Cannot set affinity", then "Failed to initialize DPDK" -- so the
+# default only works where CPU 0 happens to be available. A workstation and a
+# GitHub runner both have it; a Slurm allocation generally does not, and this
+# check was the one step of the whole repo that could not build on a compute
+# node. The bracketed form is SPDK's core-list syntax, which avoids computing
+# a shifted hex mask in sh for a CPU id that can exceed 63 on these machines.
 # hadolint ignore=DL3001
 RUN set -eux; \
     rpc.py --help > /dev/null; \
+    cpu="$(awk '/Cpus_allowed_list/ {split($2, r, ","); split(r[1], c, "-"); print c[1]}' /proc/self/status)"; \
+    : "${cpu:=0}"; \
+    echo "smoke check using CPU ${cpu}"; \
     NVME_NAMESPACES='lba:malloc:64M,lba:aio:/tmp/probe-ns.img,kv:mem' \
     VFIO_USER_SOCKET_DIR=/tmp/probe-sockets \
     SPDK_HUGE=off \
     SPDK_MEM_SIZE=512 \
+    SPDK_CPUMASK="[${cpu}]" \
     /build/entrypoint.sh --kv-check; \
     rm -rf /tmp/probe-ns.img /tmp/probe-sockets
 
