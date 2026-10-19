@@ -1,11 +1,34 @@
 name: batesste-ci-images - Version Scrub
 
+# The daily schedule is deliberately gone, and this is the record of why.
+#
+# Since #95 this workflow could not finish its own job: it scrubbed the pins,
+# pushed a branch, and then died on `gh pr create`, because the repository
+# forbids Actions from opening pull requests. So every run failed, every day,
+# leaving behind a branch nobody had asked for and a red run nobody could act
+# on -- and a daily red run is worse than no run at all, because it trains you
+# to ignore the one that matters.
+#
+# The branches accumulated rather than superseding each other, since each is
+# named for its date. Four had piled up before they were cleaned out, each
+# carrying the same two pins at slightly different commits.
+#
+# Nothing is lost by stopping. scripts/version-scrub.sh is the actual
+# implementation and is unchanged -- run it by hand, on a branch you own,
+# where you can open the PR yourself and give it real CI. The branches this
+# workflow pushed never had any: a GITHUB_TOKEN push cannot trigger a
+# workflow, so they could not be judged on check status anyway.
+#
+# To put it back: restore the schedule below and either grant Actions
+# permission to open PRs, or drop the `gh pr create` step and let it push a
+# branch on purpose rather than as a side effect of failing.
+#
+#  schedule:
+#    # Daily 08:17 UTC. Off the hour on purpose: GitHub queues scheduled runs
+#    # globally and the :00 slot is the most contended, so a run asked for at
+#    # 08:00 is the one most likely to start late or be dropped under load.
+#    - cron: '17 8 * * *'
 on:
-  schedule:
-    # Daily 08:17 UTC. Off the hour on purpose: GitHub queues scheduled runs
-    # globally and the :00 slot is the most contended, so a run asked for at
-    # 08:00 is the one most likely to start late or be dropped under load.
-    - cron: '17 8 * * *'
   workflow_dispatch:
 
 permissions:
