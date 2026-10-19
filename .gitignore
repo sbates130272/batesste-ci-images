@@ -24,3 +24,10 @@ wordlist.dic
 # Guest payloads exported by `ci-images-tool.py build` (qcow2, SSH keys,
 # vm-info.json). Multi-GB; published as ORAS artifacts, never committed.
 output/
+
+# The generated half of the bake definition, written by `ci-images-tool.py
+# bake`. Derived from images.yml and the git revision, so committing it would
+# create a second copy of every pin that can go stale -- and it carries this
+# build's tags, which are dated. docker-bake.hcl, the hand-written half, is
+# committed.
+bake-targets.json

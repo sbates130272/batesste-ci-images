@@ -1,4 +1,5 @@
 output/
+bake-targets.json
 .env
 *.md
 .git/

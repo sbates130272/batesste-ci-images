@@ -19,10 +19,12 @@ import functools
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -83,7 +85,28 @@ HUB_API = "https://hub.docker.com/v2"
 HUB_SHORT_DESCRIPTION_MAX_BYTES = 100
 HUB_ELLIPSIS = "…"
 
-BUILDER_NAME = "builder"
+# Repo-specific rather than the bare "builder": these builds also run on shared
+# Slurm compute nodes, where a builder of that name already exists and belongs
+# to somebody else. ensure_builder() *recreates* a builder whose flags are
+# wrong, so a generic name means discarding a stranger's cache.
+#
+# Overridable because a Slurm job needs a builder of its own: the buildkitd
+# container inherits the CPU affinity of the step that created it and keeps it
+# for life, so a shared one silently caps every later build at the core count
+# of whichever job created it. See scripts/bake-slurm.sh.
+BUILDER_NAME = os.environ.get("CI_IMAGES_BUILDER", "") or "batesste-bake"
+
+# The two halves of the bake definition. The HCL file is hand-written and holds
+# conventions only -- context, groups, cache refs, the output policy. Every
+# value that depends on a pin is generated into the JSON file beside it, because
+# bake HCL cannot compute a variant filter, a source fingerprint or a tag set,
+# and a pin written by hand in HCL is a pin that can disagree with images.yml.
+#
+# They are merged on the command line (`-f <json> -f <hcl>`): bake HCL has no
+# file() function, so a generated JSON file declaring a variable is the
+# supported way to feed data in.
+BAKE_SPEC_FILE = "bake-targets.json"
+BAKE_HCL_FILE = "docker-bake.hcl"
 
 # `prune` retention, when images.yml says nothing. A tag has to fall outside
 # *both* before it is a candidate: the day count alone would empty a repository
@@ -824,11 +847,21 @@ def parse_target(cfg: Config, name: str) -> Target:
     return target
 
 
-def resolve_targets(cfg: Config, arg: str | None) -> list[Target]:
-    """The named target, or every target in dependency order."""
-    if arg:
-        return [parse_target(cfg, arg)]
-    return discover_targets(cfg)
+def resolve_targets(cfg: Config, arg: str | list[str] | None) -> list[Target]:
+    """The named target(s), or every target, in dependency order.
+
+    A list is accepted so one bake invocation can be handed several targets --
+    which is the case the Slurm wrapper and any "build these four" run need,
+    and which the old one-buildx-call-per-target loop had no use for.  The
+    result is ordered by ``discover_targets`` regardless of the order asked
+    for, so a base is never scheduled after the image that layers on it.
+    """
+
+    if not arg:
+        return discover_targets(cfg)
+    names = [arg] if isinstance(arg, str) else list(arg)
+    chosen = {parse_target(cfg, n) for n in names}
+    return [t for t in discover_targets(cfg) if t in chosen]
 
 
 # ── image naming ───────────────────────────────────────
@@ -1152,6 +1185,561 @@ def image_labels(cfg: Config, target: Target) -> dict[str, str]:
     return {k: v for k, v in labels.items() if v}
 
 
+# ── bake ───────────────────────────────────────────────
+
+
+def bake_name(cfg: Config, target: Target) -> str:
+    """The bake target name for *target*.
+
+    ``target.key`` cannot be used: bake names may not contain ``@``, which
+    every variant key has.  ``scope`` is the flat name this repo already uses
+    for the cache ref, the artifact and the CI ``:test`` tag, so the bake
+    targets and the CI matrix end up with one naming scheme rather than two.
+    """
+    return target_scope(cfg, target)
+
+
+def familiar_ref(ref: str) -> str:
+    """``docker.io/user/img:tag`` -> ``user/img:tag``.
+
+    The form a named build context has to be keyed by.  BuildKit looks a named
+    context up under the *familiar* name of the reference the FROM resolved
+    to, not under the string as written, so a key carrying the default
+    registry never matches and the build silently pulls the published base
+    instead of using the one this run just built -- silently because it is a
+    perfectly good image, just not the right one.
+    """
+
+    for prefix in ("docker.io/library/", "docker.io/"):
+        if ref.startswith(prefix):
+            return ref[len(prefix) :]
+    return ref
+
+
+def bake_target(
+    cfg: Config,
+    target: Target,
+    selected: set[Target],
+    base_from_registry: bool = False,
+    include_secrets: bool = False,
+) -> dict:
+    """One entry of the generated bake spec.
+
+    Every value here comes from the same functions the old per-target
+    ``docker buildx build`` invocation used, so the two cannot disagree about
+    what a target is.
+
+    ``include_secrets`` defaults to False because the usual caller writes this
+    to a file: the guest PASSWORD must not land in ``bake-targets.json``.  The
+    build passes it separately -- see ``bake_secret_overrides``.
+    """
+
+    args = dict(
+        kv.split("=", 1)
+        for kv in build_args_for(cfg, target, include_secrets=include_secrets)
+    )
+
+    # Hand one target's output straight to the next instead of going through a
+    # registry or the local daemon. The key is the exact ref BASE_IMAGE
+    # resolved to, which is what the Dockerfile's `FROM ${BASE_IMAGE}` expands
+    # to, so BuildKit substitutes the in-run build for the pull.
+    #
+    # Nothing is emitted when the base is not part of this run -- then the
+    # rolling registry tag is the honest answer. A BASE_IMAGE_* env override
+    # wins by construction: it changes the arg, so no context key matches it.
+    contexts: dict[str, str] = {}
+    base = base_target(cfg, target)
+    # Both ends have to be in this run. The base being selected is what makes
+    # the wiring possible; the target being selected is what makes it true --
+    # the spec describes every target whatever is being built, and an entry
+    # nobody asked for should not claim it is layering on a fresh base.
+    if base and base in selected and target in selected and not base_from_registry:
+        base_ref = args.get("BASE_IMAGE", "")
+        if base_ref and base_ref == rolling_ref(cfg, base):
+            contexts[familiar_ref(base_ref)] = f"target:{bake_name(cfg, base)}"
+
+    # Guest targets export /output to the host as well as loading an image, so
+    # a local build leaves a usable qcow2 behind rather than one buried in
+    # layers. Staged and renamed into place afterwards by export_payload().
+    outputs: list[str] = []
+    if publishes_artifact(cfg, target):
+        dest = payload_dir(cfg, target)
+        outputs.append(f"type=local,dest={dest.with_name(dest.name + '.export')}")
+
+    entitlement = needs_entitlement(cfg, target)
+
+    return {
+        "bake_name": bake_name(cfg, target),
+        "key": target.key,
+        "image": target.image,
+        "scope": target_scope(cfg, target),
+        "job": str(target_attr(cfg, target, "job", "matrix")),
+        "dockerfile": f"{target.image}/Dockerfile",
+        "tags": [tagged_ref(cfg, target, tag=t) for t in tag_set(cfg, target)],
+        "args": args,
+        "labels": image_labels(cfg, target),
+        "entitlements": [entitlement] if entitlement else [],
+        "outputs": outputs,
+        "contexts": contexts,
+    }
+
+
+def bake_spec(
+    cfg: Config,
+    targets: list[Target],
+    selected: list[Target] | None = None,
+    base_from_registry: bool = False,
+) -> dict:
+    """The generated half of the bake definition, as a bake JSON file.
+
+    A bake file declaring one variable, which ``docker-bake.hcl`` forks into
+    one target per entry with a ``matrix``.  Every target is emitted every
+    time, whatever is being built: selection happens by naming bake targets or
+    groups on the command line, so the file does not change shape with the
+    argument and ``--print`` always shows the whole repo.
+
+    *selected* is the subset this run will actually build, which decides only
+    where ``contexts`` wiring is emitted, plus the ``selected`` group.
+    """
+
+    chosen = set(selected if selected is not None else targets)
+    entries = [
+        bake_target(cfg, t, chosen, base_from_registry=base_from_registry)
+        for t in targets
+    ]
+    return {
+        "variable": {
+            "TARGETS": {"default": entries},
+            "SELECTED": {
+                "default": [bake_name(cfg, t) for t in targets if t in chosen]
+            },
+        }
+    }
+
+
+def bake_secret_overrides(cfg: Config, targets: list[Target]) -> list[str]:
+    """``--set`` overrides carrying the build args kept out of the spec file.
+
+    The guest PASSWORD is the only one today.  Passed on the command line so
+    that ``bake-targets.json`` stays safe to read, print and leave lying in a
+    working tree.
+    """
+
+    overrides: list[str] = []
+    for target in targets:
+        plain = set(build_args_for(cfg, target, include_secrets=False))
+        for kv in build_args_for(cfg, target, include_secrets=True):
+            if kv in plain:
+                continue
+            key, value = kv.split("=", 1)
+            overrides.append(f"{bake_name(cfg, target)}.args.{key}={value}")
+    return overrides
+
+
+def write_bake_spec(cfg: Config, spec: dict) -> Path:
+    """Write the generated bake spec and return its path."""
+    path = cfg.workdir / BAKE_SPEC_FILE
+    path.write_text(json.dumps(spec, indent=2, sort_keys=True) + "\n")
+    return path
+
+
+# ── slurm ──────────────────────────────────────────────
+
+#: Below this buildx minor, bake has no `entitlements` field (it landed in
+#: v0.17.0) and so cannot express security.insecure at all -- which the guest
+#: targets need. The compute nodes ship 0.12.1 from the distro, so this is a
+#: real check and not a formality: what satisfies it is a newer buildx under
+#: ~/.local linked into ~/.docker/cli-plugins, picked up on every node because
+#: home is shared and the user plugin directory outranks /usr/libexec.
+MIN_BUILDX_MINOR = 17
+
+#: The body of the submitted job. Deliberately a shell script rather than a
+#: second Python entry point: everything here is docker and environment
+#: wrangling that has to happen *around* the tool, and the job's whole purpose
+#: is to invoke the tool normally once that is done.
+SLURM_JOB_TEMPLATE = """#!/usr/bin/env bash
+set -euo pipefail
+
+cd {workdir}
+
+echo "node:    $(hostname -f)"
+echo "cpus:    $(nproc)"
+echo "targets: {targets_display}"
+
+# Say which buildx is in play, and refuse the old one rather than let a guest
+# build fail much later claiming its entitlement was never requested.
+BUILDX_VERSION=$(docker buildx version | awk '{{print $2}}')
+echo "buildx:  $BUILDX_VERSION"
+BUILDX_MINOR=$(echo "${{BUILDX_VERSION#v}}" | cut -d. -f2)
+if [[ $BUILDX_MINOR -lt {min_buildx_minor} ]]; then
+    echo "Error: buildx $BUILDX_VERSION is too old for a bake entitlement;" >&2
+    echo "       v0.{min_buildx_minor} or newer is required. Install one under" >&2
+    echo "       ~/.local/lib/docker/cli-plugins and link it into" >&2
+    echo "       ~/.docker/cli-plugins -- home is shared, so one install" >&2
+    echo "       covers every node." >&2
+    exit 1
+fi
+
+# A fresh buildkitd container on top of a state volume that outlives it.
+#
+# Both halves matter. The container has to be new because a docker-container
+# buildkitd inherits the CPU affinity of the Slurm step that created it and
+# keeps it for life: one created by a 16-CPU job silently caps every later
+# build at those same 16 CPUs however large the allocation is -- nothing
+# fails, the build is just capped, while sacct reports the cores you asked
+# for. The state has to survive because it is the only place the ccache lives:
+# BuildKit never exports a --mount=type=cache, so a registry cache does not
+# carry it and nothing else can.
+#
+# `rm --keep-state` is what allows both. It drops the container and leaves the
+# volume, and creating a builder of the same name afterwards attaches the
+# existing volume rather than a new one -- so the layer cache and every ccache
+# mount from the last run on this node are still there.
+#
+# Node-local, necessarily: a Docker volume lives on the node's own disk. Land
+# on a different node and this is cold, which is what CACHE_REGISTRY covers
+# for layers and nothing covers for ccache.
+BUILDER="{builder_name}"
+
+# Two jobs on one node would otherwise recycle the builder underneath each
+# other. The loser gets its own throwaway builder and a cold cache, which is
+# slower but correct; the alternative is one job tearing down the daemon the
+# other is building on.
+exec 9>"/tmp/ci-images-builder-${{USER}}.lock"
+if flock -n 9; then
+    SHARED_BUILDER=1
+    docker buildx rm --keep-state "$BUILDER" >/dev/null 2>&1 || true
+else
+    SHARED_BUILDER=0
+    BUILDER="${{BUILDER}}-${{SLURM_JOB_ID}}"
+    echo "note: another job holds the shared builder; using $BUILDER (cold cache)"
+fi
+
+export CI_IMAGES_BUILDER="$BUILDER"
+cleanup() {{
+    if [[ $SHARED_BUILDER == 1 ]]; then
+        # Bound the state we are about to keep. Without this the volume only
+        # ever grows -- these are shared build boxes, and four guest-image
+        # builds in one run is a lot of cache to leave on somebody else's
+        # disk. BuildKit evicts its own oldest entries, so the ccache and the
+        # layers that are actually being reused survive the trim.
+        docker buildx prune --builder "$BUILDER" --force \\
+            --max-used-space {cache_max_space} >/dev/null 2>&1 || true
+        # Keep the state for the next run; drop the container so its CPU
+        # affinity does not outlive this allocation.
+        docker buildx rm --keep-state "$BUILDER" >/dev/null 2>&1 || true
+    else
+        docker buildx rm "$BUILDER" >/dev/null 2>&1 || true
+    fi
+}}
+trap cleanup EXIT
+
+docker buildx create --name "$BUILDER" \\
+    --driver docker-container \\
+    --buildkitd-flags '{buildkitd_flags}' >/dev/null
+docker buildx use "$BUILDER"
+docker buildx inspect --bootstrap "$BUILDER" >/dev/null
+
+# Report what buildkitd actually got rather than what was asked for. The two
+# disagreeing is the failure mode above, and it is invisible unless printed.
+BK_CPUS=$(docker exec "buildx_buildkit_${{BUILDER}}0" nproc 2>/dev/null || echo '?')
+echo "builder: $BUILDER"
+echo "cpus:    $BK_CPUS visible to buildkitd, $(nproc) in the allocation"
+if [[ $BK_CPUS != '?' && $BK_CPUS -lt $(nproc) ]]; then
+    echo "Warning: buildkitd sees fewer CPUs than this job was given." >&2
+fi
+
+# The guest targets boot QEMU against /dev/kvm. The device being root:kvm and
+# this user not being in that group does not matter -- buildx runs buildkitd
+# privileged, so the insecure RUN reaches it as root. The device being absent
+# would matter, so say so rather than let a build quietly take ten times as
+# long under emulation.
+if [[ ! -e /dev/kvm ]]; then
+    echo "Warning: this node has no /dev/kvm; guest targets will be" >&2
+    echo "         emulated, which is roughly 10x slower." >&2
+fi
+
+# bake picks this up as one of its own variables; see docker-bake.hcl.
+export CACHE_LOCAL={cache_local}
+if [[ -n "$CACHE_LOCAL" ]]; then
+    echo "cache:   $CACHE_LOCAL (shared, survives changing node)"
+fi
+
+BUILD_START=$(date +%s)
+echo "started: $(date -Is)"
+
+# `|| rc=$?` rather than a bare call: set -e would otherwise exit before the
+# timing below, which is most interesting precisely when something failed.
+BUILD_RC=0
+set -x
+{build_command} || BUILD_RC=$?
+set +x
+
+BUILD_END=$(date +%s)
+echo "finished: $(date -Is)"
+printf 'elapsed: %s (%ds) on %s, %s cpus\\n' \\
+    "$(date -u -d "@$((BUILD_END - BUILD_START))" +%H:%M:%S)" \\
+    "$((BUILD_END - BUILD_START))" "$(hostname -s)" "$(nproc)"
+exit $BUILD_RC
+"""
+
+
+def slurm_log_dir(cfg: Config) -> Path:
+    return cfg.workdir / "output" / "slurm"
+
+
+def _slurm_state(job_id: str) -> str:
+    """The job's current state, or "" once it has left the queue."""
+    proc = subprocess.run(
+        ["squeue", "-h", "-j", job_id, "-o", "%T|%R"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.stdout.strip()
+
+
+def _slurm_exit_code(job_id: str) -> int:
+    """The finished job's exit code, from sacct.
+
+    sacct reports ``<exit>:<signal>``; a job killed at the wall clock has a
+    zero exit and a non-zero signal, so both have to count or a timed-out
+    build would be reported as a success.
+    """
+
+    proc = subprocess.run(
+        ["sacct", "-j", job_id, "-X", "-n", "-P", "--format=State,ExitCode"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    line = proc.stdout.strip().splitlines()
+    if not line:
+        return 0
+    state, _, code = line[0].partition("|")
+    exit_code, _, signal = code.strip().partition(":")
+    for value in (exit_code, signal):
+        if value.isdigit() and int(value):
+            return int(value)
+    return 0 if state.strip().startswith("COMPLETED") else 1
+
+
+def _log_appeared(log_path: Path) -> bool:
+    """Has the job's log shown up yet?
+
+    Reads the directory rather than stat-ing the file, because this runs
+    against NFS: a stat on a path that does not exist yet is cached as a
+    negative lookup, and polling the same path just re-reads that cache for
+    as long as it lives. Listing the parent refreshes it. Getting this wrong
+    means a build whose log never appears to arrive, which is indistinguishable
+    from a job that printed nothing.
+    """
+
+    try:
+        return log_path.name in os.listdir(log_path.parent)
+    except OSError:
+        return False
+
+
+def follow_slurm_job(job_id: str, log_path: Path) -> int:
+    """Stream *job_id*'s log until it finishes, and return its exit code.
+
+    So that ``build --slurm`` reads like ``build``: the output of the thing
+    you asked for, on your terminal, ending when it ends.  The job is a real
+    batch job either way -- this only attaches to it -- so a dropped
+    connection or a Ctrl-C costs the log, not the build.
+    """
+
+    # The log is streamed with plain sys.stdout writes while the status lines
+    # go through rich, and the two buffer differently: piped to `tee` or
+    # `tail`, rich's lines all arrive after the build output rather than in
+    # place. Flushing after each one keeps the transcript in the order things
+    # actually happened.
+    def say(markup: str) -> None:
+        console.print(markup)
+        sys.stdout.flush()
+
+    say(f"[dim]Waiting for job {job_id} to start…[/]")
+    handle = None
+    last_state = ""
+    try:
+        while True:
+            state = _slurm_state(job_id)
+
+            # The log does not exist until the job is allocated a node, and a
+            # queued job can sit for a while, so say why rather than hang on a
+            # silent terminal.
+            if handle is None:
+                if _log_appeared(log_path):
+                    handle = log_path.open("r")
+                    say(f"[dim]--- {log_path} ---[/]")
+                elif state and state != last_state:
+                    say(f"[dim]{job_id}: {state}[/]")
+                    last_state = state
+
+            if handle is not None:
+                while chunk := handle.readline():
+                    sys.stdout.write(chunk)
+                sys.stdout.flush()
+
+            # Checked after draining, not before: a job that finished between
+            # the read and the check would otherwise lose its last lines.
+            if not state:
+                break
+            time.sleep(2)
+    except KeyboardInterrupt:
+        say(
+            f"\n[yellow]Detached.[/] Job {job_id} is still running.\n"
+            f"  follow again: tail -f {log_path}\n"
+            f"  cancel:       scancel {job_id}"
+        )
+        return 130
+    finally:
+        # A job short enough to finish between two polls leaves the queue
+        # before its log was ever opened -- and on a shared filesystem the
+        # file can lag the job by a second or two. Without this, a fast build
+        # prints its state transitions and not one line of what it did.
+        if handle is None:
+            for _ in range(10):
+                if _log_appeared(log_path):
+                    handle = log_path.open("r")
+                    say(f"[dim]--- {log_path} ---[/]")
+                    break
+                time.sleep(1)
+        if handle is not None:
+            for chunk in handle:
+                sys.stdout.write(chunk)
+            sys.stdout.flush()
+            handle.close()
+
+    rc = _slurm_exit_code(job_id)
+    if rc:
+        say(f"[red]Job {job_id} failed[/] (exit {rc})")
+    else:
+        say(f"[green]Job {job_id} completed[/]")
+    return rc
+
+
+def submit_slurm_build(cfg: Config, args: argparse.Namespace, argv: list[str]) -> None:
+    """Submit this build to Slurm and return, rather than building here.
+
+    The spec is generated on this side first: ``source_fingerprint()`` needs
+    the git checkout, and a spec that cannot be rendered should fail before a
+    job is ever queued.  The job then runs the ordinary ``build`` -- bake is
+    still what does the building, this only arranges a machine for it.
+    """
+
+    targets = resolve_targets(cfg, args.image)
+    write_bake_spec(
+        cfg,
+        bake_spec(
+            cfg,
+            discover_targets(cfg),
+            selected=targets,
+            base_from_registry=args.base_from_registry,
+        ),
+    )
+
+    # The same invocation minus the --slurm* flags: whatever was asked for here
+    # is what the node should do, so the flags are passed through rather than
+    # reconstructed from a subset somebody has to remember to extend.
+    inner = [shlex.quote(str(cfg.workdir / "ci-images-tool.py"))]
+    skip_next = False
+    for item in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if item == "--slurm" or item.startswith("--slurm-"):
+            # The valued ones take their argument with them.
+            if "=" not in item and item != "--slurm" and item != "--slurm-wait":
+                skip_next = True
+            continue
+        inner.append(shlex.quote(item))
+    python = cfg.workdir / ".venv" / "bin" / "python"
+    interpreter = str(python) if python.is_file() else "python3"
+    build_command = f"{shlex.quote(interpreter)} {' '.join(inner)}"
+
+    log_dir = slurm_log_dir(cfg)
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # bake reads CACHE_LOCAL as one of its own variables, straight out of the
+    # environment of whatever runs it -- so this only has to reach the job.
+    cache_local = args.slurm_cache_dir
+    if cache_local == "default":
+        cache_local = str(Path.home() / ".local" / "cache" / "batesste-ci-images")
+    if cache_local:
+        cache_local = str(Path(cache_local).expanduser())
+        Path(cache_local).mkdir(parents=True, exist_ok=True)
+
+    script = SLURM_JOB_TEMPLATE.format(
+        workdir=shlex.quote(str(cfg.workdir)),
+        targets_display=shlex.quote(" ".join(t.key for t in targets) or "<all>"),
+        min_buildx_minor=MIN_BUILDX_MINOR,
+        buildkitd_flags=BUILDKITD_FLAGS,
+        builder_name=args.slurm_builder,
+        cache_max_space=args.slurm_cache_max,
+        cache_local=shlex.quote(cache_local),
+        build_command=build_command,
+    )
+
+    sbatch = [
+        "sbatch",
+        f"--job-name={args.slurm_job_name}",
+        f"--partition={args.slurm_partition}",
+        f"--constraint={args.slurm_constraint}",
+        "--nodes=1",
+        "--ntasks=1",
+        f"--cpus-per-task={args.slurm_cpus}",
+        f"--mem={args.slurm_mem}",
+        f"--time={args.slurm_time}",
+        f"--output={log_dir}/%x-%j.log",
+    ]
+    if args.slurm_exclude:
+        sbatch.append(f"--exclude={args.slurm_exclude}")
+    # --parsable so the job id comes back on its own and the log can be found
+    # without guessing at sbatch's prose.
+    sbatch.append("--parsable")
+
+    table = Table(title="Slurm submission", show_header=False)
+    table.add_column("Key", style="bold")
+    table.add_column("Value")
+    table.add_row("Targets", ", ".join(t.key for t in targets) or "all")
+    table.add_row("Partition", f"{args.slurm_partition} ({args.slurm_constraint})")
+    table.add_row(
+        "Resources", f"{args.slurm_cpus} cpus, {args.slurm_mem}, {args.slurm_time}"
+    )
+    table.add_row("Log", f"{log_dir}/{args.slurm_job_name}-<jobid>.log")
+    table.add_row("Command", build_command)
+    console.print(table)
+
+    if args.dry_run:
+        console.print("[yellow]dry-run:[/] " + " ".join(sbatch))
+        # markup=False: the script is full of `[[ ... ]]`, which rich would
+        # otherwise read as its own tags and swallow.
+        console.print(script, markup=False, highlight=False)
+        return
+
+    proc = subprocess.run(
+        sbatch, input=script, text=True, check=False, capture_output=True
+    )
+    if proc.returncode != 0:
+        console.print("[red]Error:[/] sbatch refused the job")
+        if proc.stderr:
+            console.print(proc.stderr.strip())
+        sys.exit(proc.returncode)
+
+    # --parsable gives "<jobid>" or "<jobid>;<cluster>".
+    job_id = proc.stdout.strip().split(";")[0]
+    log_path = log_dir / f"{args.slurm_job_name}-{job_id}.log"
+    console.print(f"[green]Submitted[/] job {job_id}")
+
+    if args.slurm_detach:
+        console.print(f"  follow: tail -f {log_path}\n  cancel: scancel {job_id}")
+        return
+
+    sys.exit(follow_slurm_job(job_id, log_path))
+
+
 # ── docker helpers ─────────────────────────────────────
 
 
@@ -1310,6 +1898,14 @@ def cmd_build(args: argparse.Namespace) -> None:
         env_file=args.env_file,
         password_file=args.password_file,
     )
+
+    # Hand the whole build to a compute node and return. Everything below runs
+    # unchanged there -- the job re-invokes this command without --slurm -- so
+    # there is one build path, not a cluster one and a local one.
+    if args.slurm:
+        submit_slurm_build(cfg, args, sys.argv[1:])
+        return
+
     targets = resolve_targets(cfg, args.image)
     dry_run: bool = args.dry_run
     # --no-push governs what this run *writes*, not what it may read: the login
@@ -1329,88 +1925,58 @@ def cmd_build(args: argparse.Namespace) -> None:
     if not dry_run and any(needs_entitlement(cfg, t) for t in targets):
         require_kvm(insecure_ok)
 
-    # A base built earlier in this same run only exists in the local daemon,
-    # which the docker-container builder cannot see.
-    selected = set(targets)
-    local_bases = {
-        t
-        for t in targets
-        if base_target(cfg, t) in selected and not args.base_from_registry
-    }
-
-    # Entitlement-needing images are the only ones for which being pushed off
-    # the buildx builder actually costs anything -- the 'default' builder cannot
-    # grant security.insecure at all. Targets are built in dependency order and
-    # each is pushed as soon as it is built, so when we have credentials the base
-    # is already published by the time we get here: point at that and keep the
-    # builder, rather than trading KVM for a local image reference. Only worth it
-    # for entitlement-needing images -- routing ubuntu-cuda-rocm-fio the same way
-    # would re-pull a 28 GB base for no gain.
+    # One bake invocation for the whole run, rather than one `docker buildx
+    # build` per target. Bake schedules the independent targets in parallel and
+    # -- through the `contexts` wiring the spec carries -- hands a base built
+    # here straight to whatever layers on it, inside a single solve.
     #
-    # --no-push takes that away again: nothing this run builds reaches the
-    # registry, so the published base is whatever was there beforehand. The
-    # target stays in local_bases and the check below makes the choice explicit
-    # rather than silently building a guest on a stale base.
-    if pushing:
-        local_bases -= {t for t in local_bases if needs_entitlement(cfg, t)}
+    # That wiring is what replaced the old local-base handling: a base built in
+    # this run used to exist only in the local daemon, which the
+    # docker-container builder cannot see, so such targets were pushed onto the
+    # 'default' builder -- which cannot grant security.insecure, which meant a
+    # guest build in that position was a hard error telling the user to pass
+    # --base-from-registry or drop --no-push. None of that applies now: nothing
+    # round-trips through a daemon or a registry, so every target stays on the
+    # one builder and keeps KVM.
+    spec = bake_spec(
+        cfg,
+        discover_targets(cfg),
+        selected=targets,
+        base_from_registry=args.base_from_registry,
+    )
+    spec_path = write_bake_spec(cfg, spec)
 
-    for t in sorted(local_bases, key=lambda x: x.key):
-        if needs_entitlement(cfg, t):
-            console.print(
-                f"[red]Error:[/] {base_target(cfg, t)} is being built in this "
-                f"run and is not being published, so {t.key} would have "
-                "to build on the 'default' builder, which cannot grant "
-                "security.insecure -- and its VM build needs /dev/kvm.\n"
-                "Pass --base-from-registry to build against the published base "
-                "and keep KVM, or drop --no-push / set registry credentials."
-            )
-            sys.exit(1)
+    cmd: list[str] = [
+        "docker",
+        "buildx",
+        "bake",
+        "-f",
+        str(spec_path),
+        "-f",
+        str(cfg.workdir / BAKE_HCL_FILE),
+    ]
+    # Requesting security.insecure in the bake file is not the same as being
+    # granted it: the invocation has to allow it too.
+    if any(needs_entitlement(cfg, t) for t in targets):
+        cmd += ["--allow", "security.insecure"]
+    # A cache directory outside the build context needs saying so out loud:
+    # from buildx 0.20 bake refuses to read or write outside the working
+    # directory without it, with "additional privileges requested" and no hint
+    # as to which path it meant.
+    cache_local = os.environ.get("CACHE_LOCAL", "")
+    if cache_local:
+        cmd += ["--allow", f"fs={cache_local}"]
+    if args.no_cache:
+        cmd.append("--no-cache")
+    # Kept out of the spec file so a password cannot be left behind in a
+    # working tree; see bake_secret_overrides.
+    for override in bake_secret_overrides(cfg, targets):
+        cmd += ["--set", override]
+    if args.cache_bust:
+        cmd += ["--set", f"*.args.CACHE_BUST={args.cache_bust}"]
+    cmd += [bake_name(cfg, t) for t in targets]
 
     for target in targets:
-        refs = [tagged_ref(cfg, target, tag=x) for x in tag_set(cfg, target)]
-        local_base = target in local_bases
-        entitlement = needs_entitlement(cfg, target)
-
-        build_args = build_args_for(cfg, target)
-        if args.cache_bust:
-            build_args.append(f"CACHE_BUST={args.cache_bust}")
-
-        cmd: list[str] = ["docker", "buildx", "build"]
-        # The named builder uses the docker-container driver, which has its
-        # own image store and cannot resolve a base image that only exists
-        # in the local daemon.  Such images build on the 'default' (docker
-        # driver) builder instead, which still has a full local layer cache.
-        if local_base:
-            cmd += ["--builder", "default"]
-        # The VM build stage runs QEMU against /dev/kvm, which only
-        # an insecure-entitlement RUN can reach.
-        if entitlement:
-            cmd += ["--allow", entitlement]
-        for ba in build_args:
-            cmd += ["--build-arg", ba]
-        if args.no_cache:
-            cmd.append("--no-cache")
-        for ref in refs:
-            cmd += ["--tag", ref]
-        for key, value in image_labels(cfg, target).items():
-            cmd += ["--label", f"{key}={value}"]
-        cmd += ["--load"]
-        # Guest targets also export /output onto the host, so a local build
-        # leaves a usable qcow2 behind rather than one buried in image layers,
-        # and so the artifact push has something to read without re-pulling a
-        # multi-GB image it just built.
-        dest = payload_dir(cfg, target) if publishes_artifact(cfg, target) else None
-        # Exported to a staging directory and renamed into place afterwards,
-        # so the payload stage's /output nesting never reaches the host.
-        staging = dest.with_name(dest.name + ".export") if dest else None
-        if staging is not None:
-            cmd += ["--output", f"type=local,dest={staging}"]
-        cmd += [
-            "-f",
-            str(cfg.workdir / target.image / "Dockerfile"),
-        ]
-        cmd.append(str(cfg.workdir))
-
         console.rule(f"[bold]Building {target.key}[/]")
         _print_build_summary(cfg, target, args)
 
@@ -1419,25 +1985,31 @@ def cmd_build(args: argparse.Namespace) -> None:
         for rel in target_attr(cfg, target, "context_dirs", []) or []:
             (cfg.workdir / str(rel)).mkdir(parents=True, exist_ok=True)
 
-        if dry_run:
-            console.print("[yellow]dry-run:[/] " + " ".join(cmd))
-            continue
-
         # The local exporter merges into whatever is already there, so a stale
         # qcow2 from an earlier build under a different vm_name would survive
         # and confuse every consumer that globs for *.qcow2.
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
+        if not dry_run and publishes_artifact(cfg, target):
+            dest = payload_dir(cfg, target)
+            staging = dest.with_name(dest.name + ".export")
+            if staging.exists():
+                shutil.rmtree(staging)
 
-        subprocess.run(cmd, check=True)
+    if dry_run:
+        console.print("[yellow]dry-run:[/] " + " ".join(cmd))
+        subprocess.run(cmd + ["--print"], check=False)
+        return
 
-        if dest is not None and staging is not None:
-            export_payload(dest, staging)
+    subprocess.run(cmd, check=True)
+
+    for target in targets:
+        if publishes_artifact(cfg, target):
+            dest = payload_dir(cfg, target)
+            export_payload(dest, dest.with_name(dest.name + ".export"))
             console.print(f"[green]Payload[/] {dest}")
 
         if pushing:
             console.rule("[bold]Pushing to registry[/]")
-            for ref in refs:
+            for ref in [tagged_ref(cfg, target, tag=x) for x in tag_set(cfg, target)]:
                 subprocess.run(["docker", "push", ref], check=True)
                 console.print(f"[green]Pushed[/] {ref}")
             if publishes_artifact(cfg, target):
@@ -2203,6 +2775,18 @@ def cmd_validate(args: argparse.Namespace) -> None:
         except ValueError as exc:
             errors.append(str(exc))
 
+    # The bake spec is generated from the same values checked above, so this
+    # cannot fail on a template -- what it catches is the hand-written half
+    # going missing or being renamed, which would otherwise surface as an
+    # empty plan at build time rather than an error.
+    #
+    # Bake target names must be unique across the whole file. They are the
+    # scope strings, whose uniqueness the loop above already enforces, so
+    # there is nothing further to check here.
+    if not (cfg.workdir / BAKE_HCL_FILE).is_file():
+        errors.append(f"{BAKE_HCL_FILE} is missing; `build` cannot bake without it")
+    bake_spec(cfg, targets)
+
     if errors:
         for e in errors:
             console.print(f"[red]Error:[/] {e}")
@@ -2447,6 +3031,42 @@ def cmd_tags(args: argparse.Namespace) -> None:
     name = full_image_ref(cfg, target) + args.suffix
     seen = dict.fromkeys(f"{cfg.registry}/{name}:{t}" for t in tags)
     print("\n".join(seen))
+
+
+def cmd_bake(args: argparse.Namespace) -> None:
+    """Generate the bake spec docker-bake.hcl reads.
+
+    Writes bake-targets.json beside docker-bake.hcl, or prints it with
+    --stdout.  Useful on its own for inspecting a plan::
+
+        ./ci-images-tool.py bake
+        docker buildx bake -f bake-targets.json -f docker-bake.hcl --print
+
+    `build` calls this for you; this command is for looking.
+    """
+
+    cfg = load_config(env_file=args.env_file)
+    if args.tag:
+        cfg.image_tag = resolve_image_tag(args.tag)
+
+    targets = discover_targets(cfg)
+    selected = resolve_targets(cfg, args.image)
+    spec = bake_spec(
+        cfg,
+        targets,
+        selected=selected,
+        base_from_registry=args.base_from_registry,
+    )
+
+    if args.stdout:
+        print(json.dumps(spec, indent=2, sort_keys=True))
+        return
+
+    path = write_bake_spec(cfg, spec)
+    console.print(
+        f"[green]Wrote[/] {path.name} "
+        f"({len(targets)} target(s), {len(selected)} selected)"
+    )
 
 
 def cmd_build_args(args: argparse.Namespace) -> None:
@@ -3829,7 +4449,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_build.add_argument(
         "image",
-        nargs="?",
+        nargs="*",
         default=None,
         metavar="TARGET",
         help=f"{TARGET_HELP} (builds all if omitted)",
@@ -3871,7 +4491,152 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print commands without executing",
     )
+    # ── slurm ──
+    # Only `build` takes these. Nothing else in this tool wants a big machine:
+    # verify runs libguestfs in a container, and describe, status, prune and
+    # push-artifact are API or network calls that a compute node would not
+    # make any faster.
+    slurm = p_build.add_argument_group(
+        "slurm",
+        "Run the build on a Slurm compute node instead of this machine. "
+        "The job re-invokes this same command without --slurm, so every other "
+        "flag means what it means here.",
+    )
+    slurm.add_argument(
+        "--slurm",
+        action="store_true",
+        help="Submit this build to Slurm and return the job id",
+    )
+    slurm.add_argument(
+        "--slurm-detach",
+        action="store_true",
+        help=(
+            "Submit and return immediately. The default is to stay attached "
+            "and stream the job's log, so --slurm reads like an ordinary "
+            "build; Ctrl-C detaches without cancelling the job"
+        ),
+    )
+    slurm.add_argument(
+        "--slurm-partition",
+        default="defq",
+        metavar="NAME",
+        help="Slurm partition (default: defq)",
+    )
+    slurm.add_argument(
+        "--slurm-constraint",
+        default="CPUONLY",
+        metavar="FEATURE",
+        help=(
+            "Node feature (default: CPUONLY). Applied inconsistently in this "
+            "cluster -- some nodes advertise it with GPUs present -- so it "
+            "narrows the pool without guaranteeing a GPU-free node"
+        ),
+    )
+    slurm.add_argument(
+        "--slurm-cpus",
+        type=int,
+        default=32,
+        metavar="N",
+        help="Cores to request (default: 32)",
+    )
+    slurm.add_argument(
+        "--slurm-mem",
+        default="64G",
+        metavar="SIZE",
+        help="Memory to request (default: 64G)",
+    )
+    slurm.add_argument(
+        "--slurm-time",
+        default="08:00:00",
+        metavar="HH:MM:SS",
+        help=(
+            "Wall clock limit (default: 08:00:00). Generous because the guest "
+            "flavours install a kernel and rebuild amdgpu-dkms inside a booted "
+            "VM, and a build killed at the limit has nothing to show for it"
+        ),
+    )
+    slurm.add_argument(
+        "--slurm-exclude",
+        default="",
+        metavar="NODES",
+        help="Nodes to exclude, e.g. a mis-tagged GPU box",
+    )
+    slurm.add_argument(
+        "--slurm-job-name",
+        default="batesste-bake",
+        metavar="NAME",
+        help="Slurm job name, which also names the log file",
+    )
+    slurm.add_argument(
+        "--slurm-cache-dir",
+        default="",
+        metavar="DIR",
+        help=(
+            "Keep the layer cache in DIR, e.g. ~/.local/cache/"
+            "batesste-ci-images. On the cluster home is shared, so this is "
+            "the cache that survives landing on a different node -- the "
+            "builder's own state volume is node-local. Pass 'default' for "
+            "the path above. Not cheap: mode=max over these images is a lot "
+            "of NFS traffic"
+        ),
+    )
+    slurm.add_argument(
+        "--slurm-cache-max",
+        default="500GB",
+        metavar="SIZE",
+        help=(
+            "Ceiling for the builder's own state on the node (default: "
+            "500GB). Trimmed after each run so a recycled builder's cache "
+            "cannot grow without bound on a shared machine. Sized for the "
+            "full matrix: the four guest payloads alone are ~44GB before "
+            "their parent layers, and ubuntu-cuda-rocm is ~28GB, so a "
+            "smaller ceiling evicts the slowest things to rebuild"
+        ),
+    )
+    slurm.add_argument(
+        "--slurm-builder",
+        default="batesste-bake",
+        metavar="NAME",
+        help=(
+            "Builder to recycle on the node. Its BuildKit state -- the layer "
+            "cache and every ccache mount -- is kept between runs and reused "
+            "by the next job that lands on the same node. Use a different "
+            "name to build against a cache of your own"
+        ),
+    )
     _add_common_args(p_build)
+
+    # ── bake ──
+    p_bake = sub.add_parser(
+        "bake",
+        help=f"Generate {BAKE_SPEC_FILE}, the data half of the bake definition",
+    )
+    p_bake.add_argument(
+        "image",
+        nargs="*",
+        default=None,
+        metavar="TARGET",
+        help=f"{TARGET_HELP} (marks it selected; all if omitted)",
+    )
+    p_bake.add_argument(
+        "--stdout",
+        action="store_true",
+        help="Print the spec instead of writing it",
+    )
+    p_bake.add_argument(
+        "--tag",
+        metavar="TAG",
+        help="Base image tag to resolve the tag set against",
+    )
+    p_bake.add_argument(
+        "--base-from-registry",
+        action="store_true",
+        help=(
+            "Do not wire a base built in this run into its dependants; "
+            "layer on the published base images instead"
+        ),
+    )
+    _add_common_args(p_bake)
 
     # ── push ──
     p_push = sub.add_parser(
@@ -4279,6 +5044,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 DISPATCH = {
     "build": cmd_build,
+    "bake": cmd_bake,
     "push": cmd_push,
     "push-artifact": cmd_push_artifact,
     "verify": cmd_verify,

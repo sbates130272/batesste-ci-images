@@ -48,6 +48,20 @@ else
     export KV_HOST_MEM_SIZE="${KV_SMOKE_MEM_SIZE}"
 fi
 
+# kv_host's default core mask is 0x1, and CPU 0 is not necessarily ours: under
+# a constrained cpuset -- a Slurm allocation, a container with --cpuset-cpus --
+# DPDK fails startup with "Cannot set affinity" rather than picking a CPU it
+# has. Name the first CPU this process is actually allowed on. Inherited from
+# the caller if it set one, so SPDK_CPUMASK and this can be kept in step.
+if [ -z "${KV_HOST_CPUMASK:-}" ]; then
+    cpu=$(awk '/Cpus_allowed_list/ {split($2, r, ","); split(r[1], c, "-"); print c[1]}' \
+        /proc/self/status)
+    if [ -n "${cpu}" ]; then
+        log "cpumask: [${cpu}] (first allowed CPU)"
+        export KV_HOST_CPUMASK="[${cpu}]"
+    fi
+fi
+
 # Both of these are worth saying out loud rather than leaving to be discovered:
 # libvfio-user serves one client at a time, so this cannot be run against a
 # socket a guest already holds, and the round trip leaves its own keys behind
