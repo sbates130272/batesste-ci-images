@@ -563,10 +563,15 @@ them can leave the node.
   stops a stale CPU affinity outliving its allocation, while the state volume
   is reattached by the next job that lands on that node. Node-local, since a
   Docker volume lives on the node's own disk. Bounded by `--slurm-cache-max`
-  (default 100 GB), trimmed after each run so a recycled builder cannot grow
-  without limit on a shared machine. Two jobs on one node take a lock; the
-  loser builds on a throwaway builder with a cold cache rather than tearing
-  down the daemon the other is using.
+  (default 500 GB), trimmed after each run so a recycled builder cannot grow
+  without limit on a shared machine. Sized for the whole matrix rather than
+  for tidiness: the four guest payloads are ~44 GB before their parent layers
+  and `ubuntu-cuda-rocm` is ~28 GB, so a ceiling much below this evicts
+  precisely the things that take longest to rebuild — a 100 GB cap was
+  observed dropping two guests and the ROCm base between consecutive runs on
+  the same node. Two jobs on one node take a lock; the loser builds on a
+  throwaway builder with a cold cache rather than tearing down the daemon the
+  other is using.
 - **A shared directory**, via `--slurm-cache-dir ~/.local/cache/...` (or
   `--slurm-cache-dir default`). Home is shared, so this is the cache that
   survives landing on a *different* node — layers only. Written per target, as

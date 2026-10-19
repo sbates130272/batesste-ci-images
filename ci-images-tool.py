@@ -4582,12 +4582,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     slurm.add_argument(
         "--slurm-cache-max",
-        default="100GB",
+        default="500GB",
         metavar="SIZE",
         help=(
             "Ceiling for the builder's own state on the node (default: "
-            "100GB). Trimmed after each run so a recycled builder's cache "
-            "cannot grow without bound on a shared machine"
+            "500GB). Trimmed after each run so a recycled builder's cache "
+            "cannot grow without bound on a shared machine. Sized for the "
+            "full matrix: the four guest payloads alone are ~44GB before "
+            "their parent layers, and ubuntu-cuda-rocm is ~28GB, so a "
+            "smaller ceiling evicts the slowest things to rebuild"
         ),
     )
     slurm.add_argument(
