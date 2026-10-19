@@ -356,7 +356,7 @@ images:
     base: ubuntu-libvfio-user
     artifact: true
     vars:
-      rocm_ernic_commit: cbc1e72baa0af381ea0bbb8b7b6221319ef355b1
+      rocm_ernic_commit: 31d311417ff74e914f1f4c3b08833c2fe98a2117
     build_args:
       ROCM_ERNIC_COMMIT: "{rocm_ernic_commit}"
     # This image links against libvfio-user, so that pin belongs in the tag:
@@ -514,7 +514,7 @@ images:
       # ubuntu-qcow2-gen -- the ansible/ tree its guest builds are driven by, so
       # the CLI and the playbooks always come from one commit.
       qemu_minimal_repo: https://github.com/sbates130272/qemu-minimal.git
-      qemu_minimal_commit: c5d51ce8d7e9d4b258235cf3ed934591951c7a67
+      qemu_minimal_commit: b4eb552841c6ade51e48ac9f40d900cda889ee81
       # Provenance only, and empty here: the default target builds a release
       # tag, which belongs to no branch. A fork variant fills it in and the
       # label appears only there.
