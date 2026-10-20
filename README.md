@@ -33,8 +33,8 @@ adding an image or a variant adds its row.
 **Pinned commits**
 
 [![libvfio-user 8039244](https://img.shields.io/badge/libvfio--user-8039244-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/803924493a7c787b2ba358751f55f07d5dba64b2)
-[![qemu-minimal c5d51ce](https://img.shields.io/badge/qemu--minimal-c5d51ce-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/c5d51ce8d7e9d4b258235cf3ed934591951c7a67)
-[![rocm-ernic cbc1e72](https://img.shields.io/badge/rocm--ernic-cbc1e72-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/cbc1e72baa0af381ea0bbb8b7b6221319ef355b1)
+[![qemu-minimal b4eb552](https://img.shields.io/badge/qemu--minimal-b4eb552-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/b4eb552841c6ade51e48ac9f40d900cda889ee81)
+[![rocm-ernic 31d3114](https://img.shields.io/badge/rocm--ernic-31d3114-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/31d311417ff74e914f1f4c3b08833c2fe98a2117)
 [![rocjitsu 84fb06b](https://img.shields.io/badge/rocjitsu-84fb06b-ED1C24)](https://github.com/ROCm/rocm-systems/commit/84fb06bc970a0049091a0fa7a7dbf2b925e488ee)
 [![spdk 18d1d8d](https://img.shields.io/badge/spdk-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
 [![fio d2dcd7e](https://img.shields.io/badge/fio-d2dcd7e-4B8BBE)](https://github.com/axboe/fio/commit/d2dcd7e053d1902d2420f151c83990e6acdd9f8c)
