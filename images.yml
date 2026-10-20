@@ -541,12 +541,13 @@ images:
         # A SHA, not the branch name: the branch is rebased and force-pushed as
         # the series is reworked upstream, so a branch pin silently rebuilds a
         # different QEMU and the tag it publishes never changes. This commit is
-        # the head of dev/stephen/pci-mmio-bridge-submit as of 2026-09-26.
+        # the head of dev/stephen/pci-mmio-bridge-submit as of 2026-10-20,
+        # "hw/pci: fix vfio-user write path and override GPA commit trigger".
         # version-scrub.sh must not touch it -- it tracks QEMU releases, and
         # this is not one.
         vars:
           qemu_repo: https://github.com/sbates130272/qemu.git
-          qemu_commit: 31e3d06a4e3e1d610f00dc8045d2c3a0ea97fb00
+          qemu_commit: aa4344e5131f25eb4240a61da8c5cd1e3b242cd4
           qemu_branch: dev/stephen/pci-mmio-bridge-submit
 
   # Guest qcow2 images. One parameterised Dockerfile, one repository per
