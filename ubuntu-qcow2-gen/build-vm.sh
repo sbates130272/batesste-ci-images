@@ -154,6 +154,26 @@ if [ -n "${FINAL_PACKAGES}" ] && [ "${FINAL_PACKAGES}" != "none" ]; then
     PACKAGES_FILE="${COMBINED}"
 fi
 
+# One keypair across every flavour and every build, when the build context
+# carries one. The Dockerfile generates a throwaway pair per flavour as a
+# fallback, which is what made four flavours ship four different keys and a
+# rebuild of any one of them ship a fifth -- fine for a disposable guest, but
+# it means a consumer cannot hold a known_hosts entry or a key of its own.
+#
+# Deliberately not in git: this is a private key, the repository is public,
+# and a key committed once is published forever. It lives under common/,
+# which the build already bind-mounts for the AMD root CA, and which is
+# gitignored. A clone without it still builds -- it just gets the old
+# per-flavour behaviour, which is why the fallback stays.
+if [ -f "${CTX}/ssh/id_rsa" ] && [ -f "${CTX}/ssh/id_rsa.pub" ]; then
+    echo "SSH KEY: shared, from common/ssh/"
+    install -d -m 700 /root/.ssh
+    install -m 600 "${CTX}/ssh/id_rsa" /root/.ssh/id_rsa
+    install -m 644 "${CTX}/ssh/id_rsa.pub" /root/.ssh/id_rsa.pub
+else
+    echo "SSH KEY: per-flavour fallback (no common/ssh/ in the build context)"
+fi
+
 set -- \
     --vm-name "${FINAL_VM_NAME}" \
     --username "${FINAL_USERNAME}" \

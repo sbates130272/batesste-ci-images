@@ -643,7 +643,11 @@ images:
       # measuring hipFile in the guest is to compare against the container's
       # numbers, and two different fios make that comparison meaningless.
       fio_commit: ""
-      username: batesste
+      # The login the guest is provisioned with. "ubuntu" is also the name of
+      # the default user Ubuntu's own cloud images ship, so gen-vm is creating
+      # a user cloud-init already knows about rather than a fresh one -- see
+      # the note in the README before changing it back and forth.
+      username: ubuntu
       vm_name: ""
       # The host port probe-guest forwards the guest's SSH to during the
       # verification boot. Per-flavour because a --security=insecure build step
@@ -654,8 +658,13 @@ images:
       # Only ever bound on 127.0.0.1 inside the build, and only while the
       # verification boot runs. A flavour added below needs its own number.
       probe_ssh_port: 2222
+      # Marked secret so it stays out of build-args output, the config table
+      # and the generated bake spec -- but it is written verbatim into the
+      # guest's vm-info.json, which ships inside the published artifact. These
+      # are disposable CI guests and the password is deliberately well known;
+      # do not treat one as anything else.
       password:
-        value: changeme
+        value: ubuntu
         secret: true
     build_args:
       QEMU_MINIMAL_REPO: "{qemu_minimal_repo}"

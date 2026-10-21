@@ -13,6 +13,13 @@ images.local.yml
 compose/vm/
 # AMD corporate root CA (ZScaler) - local only, not committed
 **/amd-root-ca.crt
+
+# The shared guest SSH keypair. Every guest flavour is provisioned with this
+# key when it is present, so a consumer can hold one known_hosts entry instead
+# of a different key per flavour per rebuild. Never committed: it is a private
+# key and this repository is public. build-vm.sh falls back to generating a
+# throwaway pair per flavour when it is absent, so a fresh clone still builds.
+common/ssh/
 # VSCode 
 .vscode
 # Python cache
