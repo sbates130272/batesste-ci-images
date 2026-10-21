@@ -58,12 +58,28 @@ command -v ib_send_bw ib_write_bw ib_read_bw ib_send_lat
 
 # --- the rocjitsu half ---------------------------------------------------
 
-# ROCm userspace.  Asserted through ldconfig rather than through package state:
-# the trim deletes dpkg-owned subtrees under ${ROCM_PATH} (LLVM, headers,
-# static libraries), so what matters is that the runtime libraries still
-# resolve, not what dpkg believes about the package that shipped them.
-ldconfig -p | grep -q libamdhip64
-ldconfig -p | grep -q libhsa-runtime64
+# ROCm userspace.  Asserted through the dynamic loader rather than through
+# package state: the trim purges the -dev packages and deletes dpkg-owned
+# subtrees under ${ROCM_PATH}, so what matters is that the runtime libraries
+# still resolve, not what dpkg believes about what shipped them.
+#
+# And resolve means resolve.  "ldconfig -p | grep" is a cache lookup: it passes
+# for a library whose NEEDED entries were deleted out from under it, which is
+# exactly the guest a subtractive build can produce -- libamdhip64 needs
+# libamd_comgr, and comgr reaches libLLVM and libclang-cpp through an RPATH
+# into lib/llvm, which the trim prunes.  ldd is transitive and would have
+# caught it.
+HIP_SO=$(ldconfig -p | awk '/libamdhip64\.so\.[0-9]/ {print $NF; exit}')
+HSA_SO=$(ldconfig -p | awk '/libhsa-runtime64\.so\.[0-9]/ {print $NF; exit}')
+test -n "${HIP_SO}"
+test -n "${HSA_SO}"
+for so in "${HIP_SO}" "${HSA_SO}"; do
+    if ldd "${so}" 2>&1 | grep -q 'not found'; then
+        echo "ERROR: ${so} has unresolved dependencies:" >&2
+        ldd "${so}" 2>&1 | grep 'not found' >&2
+        exit 1
+    fi
+done
 
 # ROCM_PATH and PATH from /etc/profile.d/rocm.sh, asserted through an actual
 # login shell: that the file exists proves nothing about whether anything
@@ -77,7 +93,14 @@ echo "note: login-shell ROCM_PATH=${LOGIN_ROCM_PATH}"
 # The device bitcode the runtime loads at dispatch.  Deleting it along with
 # LLVM would leave a guest that links and then fails to launch a kernel, which
 # is a far more expensive failure than a missing compiler.
-test -d "${LOGIN_ROCM_PATH}/amdgcn"
+#
+# Asserted through the files and not only the directory: ${ROCM_PATH}/amdgcn is
+# a symlink into lib/llvm/amdgcn, so "test -d" passes on a dangling link only
+# by dereference, and the trim prunes exactly that tree.
+test -d "${LOGIN_ROCM_PATH}/amdgcn/bitcode"
+test -s "${LOGIN_ROCM_PATH}/amdgcn/bitcode/hip.bc"
+test -s "${LOGIN_ROCM_PATH}/amdgcn/bitcode/ockl.bc"
+test -s "${LOGIN_ROCM_PATH}/lib/llvm/amdgcn/bitcode/hip.bc"
 
 # The module modprobe would pick must still be the patched DKMS build, for the
 # kernel this guest booted -- the trim removes the package that owned it and
@@ -115,8 +138,8 @@ if lsmod | grep -q '^amdgpu '; then
 fi
 
 # And absent from the initramfs, not merely blacklisted inside it.  The trim
-# rebuilds every initramfs (MODULES=dep, zstd), so this also proves the
-# exclude hook survived that rebuild.
+# rebuilds every initramfs, so this also proves the exclude hook survived that
+# rebuild.
 #
 # if/exit, not `! lsinitramfs ... | grep -q ...`: bash never applies set -e to
 # a command whose status is inverted with `!`.
@@ -126,6 +149,35 @@ for img in /boot/initrd.img-*; do
         echo "ERROR: amdgpu.ko is present in ${img}" >&2
         exit 1
     fi
+done
+
+# And the initramfs is still a general one.  The negative above passes just as
+# happily on an initrd that carries nothing at all, which is the shape
+# MODULES=dep produces: it keeps only what the *build* machine needed, so the
+# build goes green and a consumer whose root disk is not this build's topology
+# drops to an initramfs shell.
+#
+# Counted rather than checked by name, and that is not laziness.  The obvious
+# assertion -- virtio_pci, virtio_blk, ext4 are present -- can never pass on
+# this kernel: mainline 7.2.4 builds CONFIG_VIRTIO_PCI, CONFIG_VIRTIO_BLK,
+# CONFIG_SCSI_VIRTIO and CONFIG_EXT4_FS as "y", so no such module exists to
+# find and their absence says nothing.  What a pruned initrd really loses here
+# is the drivers that *are* modules -- nvme and ahci among them -- and the
+# honest way to see that is the size of the module set.  A MODULES=dep initrd
+# on this guest carries a handful; a general one carries hundreds.
+MODCOUNT=$(lsinitramfs "/boot/initrd.img-$(uname -r)" |
+    grep -cE '\.ko(\.[a-z]+)?$')
+echo "note: initramfs carries ${MODCOUNT} modules"
+if [ "${MODCOUNT}" -lt 100 ]; then
+    echo "ERROR: the initramfs carries only ${MODCOUNT} modules; something" >&2
+    echo "       has pruned it to this build's own hardware, which strands" >&2
+    echo "       any consumer whose root disk is NVMe, AHCI or virtio-scsi" >&2
+    exit 1
+fi
+# The root path itself, allowing for either shape: a module in the initrd, or
+# built into the kernel, which is what this one does.
+for m in VIRTIO_PCI VIRTIO_BLK EXT4_FS; do
+    grep -q "^CONFIG_${m}=[ym]$" "/boot/config-$(uname -r)"
 done
 
 # The probe helper is offered, not run: the blacklist above still stands.
@@ -168,11 +220,20 @@ test ! -e /lib/firmware/updates/amdgpu/ip_discovery.bin
 # these, a trim step that silently stopped working ships a fat guest under a
 # slim name and every check above still passes.
 
-# No toolchain.  Named individually rather than as a loop over "command -v":
-# which one came back is the first thing anyone debugging this wants to know.
-for tool in gcc cc g++ make cmake ninja dkms git hipcc; do
+# No toolchain.  Checked on both PATHs: this script runs over
+# `ssh ... 'bash -s'`, which is neither a login nor an interactive shell, so
+# /etc/profile.d/rocm.sh is never sourced and a bare "command -v hipcc" could
+# not fire no matter what ${ROCM_PATH}/bin held.  The login PATH is the one a
+# consumer gets.
+for tool in gcc cc g++ make cmake ninja dkms git hipcc hipconfig \
+            amdclang amdclang++; do
     if command -v "${tool}" > /dev/null 2>&1; then
         echo "ERROR: ${tool} is present; trim/slim.sh should have removed it" >&2
+        exit 1
+    fi
+    if bash -lc "command -v '${tool}'" > /dev/null 2>&1; then
+        echo "ERROR: ${tool} is on the login PATH; trim/slim.sh should have" \
+             "removed it" >&2
         exit 1
     fi
 done
@@ -198,17 +259,58 @@ done
 # cloud-init disabled, and the netplan it wrote still in place -- the second
 # half matters more than the first, because that file is what gives this guest
 # an address and purging cloud-init is how it would have been lost.
+#
+# The units are asserted and not just the flag file: cloud-init.service is an
+# alias on this release and systemd will not mask an alias, so a mask that
+# silently did nothing is the failure mode worth catching here.
 test -e /etc/cloud/cloud-init.disabled
+for u in cloud-init-local cloud-init-network cloud-config cloud-final; do
+    state=$(systemctl is-enabled "${u}.service" 2>/dev/null || true)
+    case "${state}" in
+        masked|disabled|"") ;;
+        *)
+            echo "ERROR: ${u}.service is ${state}, not masked" >&2
+            exit 1
+            ;;
+    esac
+done
 
-# ROCm's build half is gone but the runtime half is not.  Asserted on the
-# login shell's own ROCM_PATH, resolved above.
-test ! -e "${LOGIN_ROCM_PATH}/lib/llvm"
+# ROCm's build half is gone but the runtime half is not.  lib/llvm survives as
+# a pruned directory, by design: libamd_comgr resolves libLLVM and libclang-cpp
+# out of it through an RPATH, and the device bitcode lives beside them.  What
+# must be gone is everything a consumer could compile with.
+test ! -e "${LOGIN_ROCM_PATH}/lib/llvm/bin"
+test ! -e "${LOGIN_ROCM_PATH}/lib/llvm/include"
+test ! -e "${LOGIN_ROCM_PATH}/lib/llvm/lib/clang"
+test ! -e "${LOGIN_ROCM_PATH}/bin/hipcc"
 test ! -e "${LOGIN_ROCM_PATH}/include"
+test -d "${LOGIN_ROCM_PATH}/lib/llvm/amdgcn"
+ls "${LOGIN_ROCM_PATH}"/lib/llvm/lib/libLLVM.so.* > /dev/null
+ls "${LOGIN_ROCM_PATH}"/lib/llvm/lib/libclang-cpp.so.* > /dev/null
+# The expensive half of the prune, asserted so it cannot silently stop working.
+test -z "$(ls "${LOGIN_ROCM_PATH}"/lib/llvm/lib/libMLIR.so.* 2>/dev/null || true)"
+
+# The ROCm -dev packages are gone as packages, not merely as files.
+for pkg in "amdrocm-runtime-dev" "amdrocm-llvm-dev" "amdrocm-blas-dev"; do
+    if dpkg-query -W -f='${Package} ${Status}\n' "${pkg}*" 2>/dev/null |
+            grep -q ' install ok installed$'; then
+        echo "ERROR: ${pkg}* is still installed; trim/slim.sh should have" \
+             "purged it" >&2
+        exit 1
+    fi
+done
 
 # The grub snippet that makes the boot quick, and the pinned-kernel default it
 # must not have disturbed.  build-vm's probe asserts the default resolves to
 # the pinned kernel; this asserts the timeout reached the generated config,
 # which is the half that is this trim's to get right.
+#
+# timeout_style is the variable that makes this assertion mean something:
+# 50-cloudimg-settings.cfg already sets GRUB_TIMEOUT=0 on a cloud image, so
+# "set timeout=0" alone passes on the fat flavour too.
+test -s /etc/default/grub.d/99-slim-fastboot.cfg
+grep -q '^GRUB_RECORDFAIL_TIMEOUT=0$' /etc/default/grub.d/99-slim-fastboot.cfg
+sudo -n grep -q 'set timeout_style=hidden' /boot/grub/grub.cfg
 sudo -n grep -q 'set timeout=0' /boot/grub/grub.cfg
 
 # --- the guest itself ----------------------------------------------------
@@ -227,14 +329,19 @@ grep -q 'This is the slim guest' "${HOME}/WELCOME.md"
 
 # The size the flavour exists to deliver.  A ceiling rather than a target, and
 # generous enough not to fail on an archive that grew a little -- but low
-# enough that losing a whole trim section (the toolchain is ~2 GB, the DKMS
-# source ~2 GB, linux-firmware ~1.5 GB, ROCm's LLVM more than any of them)
+# enough that losing a whole trim section (the ROCm -dev packages are ~1.9 GB,
+# the DKMS source ~2 GB, the toolchain and the LLVM prune ~0.7 GB between them)
 # fails here instead of shipping.  Raising it is a decision, not a fix.
-USED_GB=$(df --output=used -BG / | tail -1 | tr -dc 0-9)
-echo "note: root filesystem uses ${USED_GB} GB"
-if [ "${USED_GB}" -ge 5 ]; then
-    echo "ERROR: the slim guest uses ${USED_GB} GB; a trim step has stopped" >&2
-    echo "       working, or something large was added to the fat flavour." >&2
+#
+# MiB rather than GB, because "df -BG" rounds the block count *up*: 4097 MiB
+# prints as "5G", so a "-ge 5" test is really a 4096 MiB cliff sitting a couple
+# of hundred MB from the expected footprint -- a check that would have started
+# failing on a guest nobody had changed.
+USED_MIB=$(df --output=used -BM / | tail -1 | tr -dc 0-9)
+echo "note: root filesystem uses ${USED_MIB} MiB"
+if [ "${USED_MIB}" -ge 5120 ]; then
+    echo "ERROR: the slim guest uses ${USED_MIB} MiB (ceiling 5120); a trim" >&2
+    echo "       step has stopped working, or the fat flavour grew." >&2
     echo "       See /etc/slim-trim.json for what the trim believes it did." >&2
     exit 1
 fi

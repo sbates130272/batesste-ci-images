@@ -605,9 +605,17 @@ if [ -e /etc/profile.d/rocm.sh ]; then
     # shellcheck disable=SC1091
     . /etc/profile.d/rocm.sh
     printf 'PROBE_ROCM_PATH=%s\n' "${ROCM_PATH:-}"
+    # Whichever runtime package is installed, not the -dev one by name: a
+    # trimmed flavour purges amdrocm-runtime-dev and keeps amdrocm-runtime,
+    # and reading only the first left this empty in the manifest -- the one
+    # place a consumer looks precisely so it does not have to boot the image.
+    # The status is matched rather than the version taken on trust, because a
+    # purged package is still known to dpkg and reports an empty version.
     printf 'PROBE_ROCM_VERSION=%s\n' \
-        "$(dpkg-query -W -f='${Version}' 'amdrocm-runtime-dev*' 2>/dev/null |
-            head -1)"
+        "$(dpkg-query -W -f='${Package} ${Status} ${Version}\n' \
+            'amdrocm-runtime*' 2>/dev/null |
+            awk '$2=="install" && $3=="ok" && $4=="installed" {print $1, $5}' |
+            sort | awk 'NR==1{print $2}')"
 else
     printf 'PROBE_ROCM_PATH=\n'
     printf 'PROBE_ROCM_VERSION=\n'

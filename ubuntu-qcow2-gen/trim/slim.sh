@@ -146,10 +146,18 @@ if [ -n "${HEADERS}" ]; then
 fi
 sudo rm -rf /usr/src/linux-headers-*
 
-# linux-firmware is ~1.5 GB of microcode for hardware that cannot exist here:
-# the guest sees virtio devices and two emulated functions, and the blobs those
-# need come from amdgpu-dkms-firmware, which is a different package and stays.
-purge_installed linux-firmware
+# linux-firmware is microcode for hardware that cannot exist here -- when the
+# image has it at all.  It was assumed to be ~1.5 GB of the guest and it is not
+# in it: the cloud image's linux-image-virtual does not pull it and the mainline
+# .debs do not either, so on this flavour this is a no-op.  Left in because a
+# release that starts shipping it should still lose it, and recorded in the JSON
+# below as what actually happened rather than as an asserted saving.
+FW_REMOVED=false
+if dpkg-query -W -f='${Status}' linux-firmware 2>/dev/null |
+        grep -q '^install ok installed$'; then
+    ${APT} purge -y linux-firmware
+    FW_REMOVED=true
+fi
 
 ${APT} autoremove --purge -y
 
@@ -174,58 +182,207 @@ test -e "/boot/vmlinuz-${KVER}"
 # pciutils, nvme-cli, kmod, initramfs-tools, curl, ca-certificates and the base
 # python3 -- megabytes, all of them, and each one is something a consumer would
 # otherwise have to install over SSH in a guest with no compiler.
+# dpkg-dev is in the list for a reason that is not obvious: it Depends "make",
+# so purging make without it makes apt satisfy that dependency by *installing*
+# make-guile, which ships /usr/bin/make.  A trim that installs a compiler-
+# adjacent package is bad enough; the checks' no-toolchain loop would then have
+# failed the verification boot, twelve minutes later, on a package this script
+# caused to appear.
 purge_installed \
-    build-essential g++ gcc cpp make cmake ninja-build pkg-config dkms git \
+    build-essential g++ gcc cpp make dpkg-dev cmake ninja-build pkg-config \
+    dkms git \
     python3-dev python3-docutils libstdc++-14-dev \
     libdrm-dev libssl-dev libcli11-dev libnl-3-dev libnl-route-3-dev \
     libudev-dev libsystemd-dev libibverbs-dev \
     pipx python3-venv rsync
 
 # The compiler packages above are metapackages and versioned names both; take
-# whatever is left of either, plus the ROCm headers-only package, which is
-# useless without a compiler to point at them.
+# whatever is left of either.
 #
 # gcc-<n>-base is excluded: it is not a compiler, it is what libstdc++6 and
 # libgcc-s1 depend on, and purging it takes the C++ runtime -- and therefore
 # the HIP runtime this flavour exists to ship -- with it.
+#
+# Every *-dev name is excluded for a related reason, and this one failed a
+# build rather than being reasoned out in advance: amdrocm-llvm10.1 Depends
+# "libstdc++-5-dev|...|libstdc++-15-dev" and "libgcc-5-dev|...|libgcc-15-dev",
+# and amdrocm-runtime10.1 Depends amdrocm-llvm10.1 -- so that or-group is held
+# by the HIP runtime itself and survives every ROCm -dev purge in section 3b.
+# libstdc++-15-dev is the installed satisfier; it pulls libgcc-15-dev and
+# libc6-dev, and libc6-dev (with liburing-dev) pulls linux-libc-dev.  Naming
+# any of them here makes a kept package uninstallable, and apt fails the entire
+# transaction -- "E: Solver timed out" with no package named, which is a slow
+# way to learn this.  The chain is tens of MB against a multi-GB saving.
+#
+# libgcc-14-dev is likewise left alone: libgccjit0 needs it, and emacs-nox --
+# which qemu-minimal's default manifest installs -- needs libgccjit0.
 LEFTOVER=$(dpkg-query -W -f='${Package} ${Status}\n' 'gcc-*' 'g++-*' 'cpp-*' \
-    'libgcc-*-dev' 'linux-libc-dev' 'amdrocm-blas-dev*' 2>/dev/null |
-    grep ' install ok installed$' | cut -d' ' -f1 | grep -v -- '-base$' || true)
+    2>/dev/null |
+    grep ' install ok installed$' | cut -d' ' -f1 |
+    grep -vE -- '(-base|-dev)$' || true)
 if [ -n "${LEFTOVER}" ]; then
     echo "purging:" "${LEFTOVER}"
     # shellcheck disable=SC2086
     ${APT} purge -y ${LEFTOVER}
 fi
+
+# Purging the toolchain takes ubuntu-standard and ubuntu-server with it -- they
+# Depend rsync and git -- which turns a good deal of the base system into
+# autoremove garbage, including the runtime tools this flavour promises and the
+# libdrm stack the GPU half links.  Nothing in the ROCm package graph declares
+# libdrm, so apt would take it without complaint and only a consumer's HIP
+# binary would notice.  Pin what must survive, the way section 1 pins
+# amdgpu-dkms-firmware, and guard each name so an archive rename cannot kill
+# the trim.
+for _keep in rdma-core ibverbs-utils perftest pciutils nvme-cli kmod \
+             initramfs-tools curl ca-certificates python3 cloud-guest-utils \
+             libdrm2 libdrm-amdgpu1 libpciaccess0 libnuma1 libelf1; do
+    if dpkg-query -W -f='${Status}' "${_keep}" 2>/dev/null |
+            grep -q '^install ok installed$'; then
+        sudo apt-mark manual "${_keep}" > /dev/null
+    fi
+done
 ${APT} autoremove --purge -y
+
+# A provider apt substitutes *during* a transaction cannot be filtered out
+# before it, so make-guile is purged here rather than guarded against above.
+purge_installed make make-guile guile-3.0-libs
+if command -v make > /dev/null 2>&1; then
+    echo "Error: make survived the trim ($(command -v make)); something here" \
+         "still depends on it" >&2
+    exit 1
+fi
+
+# --- 3b. ROCm's build half, as packages ----------------------------------
+#
+# ~2 GB, removed by dpkg rather than file by file: amdrocm-llvm-dev alone
+# unpacks 2051213 KB of static archives and headers.  This is the saving the
+# first version of this script tried to take with rm -rf, and taking it as
+# packages is both larger and honest.
+#
+# The set installed by provision/ernic-rocjitsu.sh resolves to eight packages.
+# Nothing installed reverse-depends on these four outside the set itself
+# (blas-dev -> runtime-dev -> llvm-dev, plus hipblas-common-dev), so the purge
+# is satisfiable and what remains is {sysdeps, base, llvm, runtime} -- which is
+# what carries libamdhip64, libhsa-runtime64, libamd_comgr and the bitcode.
+#
+# All four of those arrived as dependencies rather than by hand, so purging the
+# manual roots above them makes the whole ROCm half an autoremove candidate.
+# The apt-mark is the same defence section 1 gives amdgpu-dkms-firmware, and
+# the assertion after it is there because an autoremove that quietly took
+# amdrocm-runtime would leave a guest that passes every ldconfig check in the
+# checks file and runs nothing.
+ROCM_KEEP="amdrocm-sysdeps${ROCM_VERSION} amdrocm-base${ROCM_VERSION} \
+amdrocm-llvm${ROCM_VERSION} amdrocm-runtime${ROCM_VERSION}"
+# Guarded one at a time rather than in one apt-mark: a name that has moved
+# should fail at the assertion below, which says what is missing and why it
+# matters, and not at an exit code from apt-mark.
+for _pkg in ${ROCM_KEEP}; do
+    if dpkg-query -W -f='${Status}' "${_pkg}" 2>/dev/null |
+            grep -q '^install ok installed$'; then
+        sudo apt-mark manual "${_pkg}" > /dev/null
+    fi
+done
+purge_installed "amdrocm-blas-dev${ROCM_VERSION}" \
+    "amdrocm-hipblas-common-dev${ROCM_VERSION}" \
+    "amdrocm-runtime-dev${ROCM_VERSION}" "amdrocm-llvm-dev${ROCM_VERSION}"
+${APT} autoremove --purge -y
+for _pkg in ${ROCM_KEEP}; do
+    if ! dpkg-query -W -f='${Status}' "${_pkg}" 2>/dev/null |
+            grep -q '^install ok installed$'; then
+        echo "Error: ${_pkg} is not installed after the ROCm -dev purge; the" \
+             "HIP runtime this flavour ships comes from it" >&2
+        exit 1
+    fi
+done
 
 # --- 4. ROCm, runtime only -----------------------------------------------
 #
-# amdrocm-runtime-dev stays installed -- it is what provides libamdhip64 and
-# libhsa-runtime64, which is the whole ROCm half of this guest -- but most of
-# what it unpacks is for building: LLVM and clang are the single largest
-# directory in the image, and headers and CMake config files are no use in a
-# guest with no compiler.
+# What is left after 3b is the runtime half: amdrocm-runtime ships
+# ${ROCM_PATH}/lib/libamdhip64.so.*, libhsa-runtime64.so.* and
+# libamd_comgr.so.* with their unversioned symlinks, so dlopen by bare name
+# keeps working.  What this section removes is what survives inside
+# amdrocm-llvm, which cannot be purged because the runtime depends on it.
 #
 # These are dpkg-owned paths, so dpkg -V will report them missing.  That is a
 # deliberate, recorded property of a slim guest rather than damage: see
-# /etc/slim-trim.json below, and note that the checks assert the surviving
-# libraries through ldconfig rather than through package state.
+# /etc/slim-trim.json below.
 #
-# amdgcn/ is kept: it is the device bitcode the runtime loads, not a build
-# artifact, and a guest without it fails at dispatch rather than at link.
+# lib/llvm is TRIMMED, NOT DELETED, and the reason is a hard link rather than a
+# preference: libamdhip64 has DT_NEEDED libamd_comgr, comgr has DT_NEEDED
+# libLLVM and libclang-cpp and finds them through RPATH $ORIGIN/llvm/lib, and
+# ${ROCM_PATH}/amdgcn is a *symlink* into lib/llvm/amdgcn, where the device
+# bitcode lives.  Deleting the directory outright -- which is what the first
+# version of this script did -- leaves a guest whose every HIP binary dies in
+# the dynamic loader while "ldconfig -p" still cheerfully reports libamdhip64,
+# because a cache lookup is not a resolution.
 test -n "${ROCM_PATH}"
 test -d "${ROCM_PATH}"
 ROCM_DELETED=""
-for d in lib/llvm include lib/cmake share/doc share/man lib/rocmcc; do
+for d in include lib/cmake share/doc share/man lib/rocmcc; do
     if [ -e "${ROCM_PATH}/${d}" ]; then
         sudo rm -rf "${ROCM_PATH:?}/${d}"
         ROCM_DELETED="${ROCM_DELETED}${ROCM_DELETED:+,}\"${d}\""
     fi
 done
+
+# Keep exactly what comgr reaches, plus the bitcode beside it.  libMLIR and
+# libclang are the bulk of what goes and nothing installed reaches either.
+# Matched by glob rather than by soname: the version suffix is TheRock's, and
+# readelf is gone by this point anyway.
+sudo rm -rf "${ROCM_PATH:?}/lib/llvm/bin" "${ROCM_PATH:?}/lib/llvm/include"
+sudo find "${ROCM_PATH:?}/lib/llvm" -mindepth 1 -maxdepth 1 \
+    ! -name amdgcn ! -name lib -exec rm -rf {} +
+sudo find "${ROCM_PATH:?}/lib/llvm/lib" -mindepth 1 -maxdepth 1 \
+    ! -name 'libLLVM.so*' ! -name 'libclang-cpp.so*' -exec rm -rf {} +
+ROCM_DELETED="${ROCM_DELETED}${ROCM_DELETED:+,}\"lib/llvm (kept: amdgcn, libLLVM.so*, libclang-cpp.so*)\""
+
+# The compiler drivers are standalone executables in bin/ shipped by the kept
+# amdrocm-llvm, not symlinks into the tree just deleted, so nothing above
+# removes them -- and WELCOME.md's "hipcc is not here" would be a lie on a
+# login PATH that includes ${ROCM_PATH}/bin.
+if [ -d "${ROCM_PATH}/bin" ]; then
+    for b in hipcc hipcc.bin hipcc.pl hipconfig hipconfig.bin hipconfig.pl \
+             hipcc_cmake_linker_helper amdclang amdclang++ amdclang-cl \
+             amdclang-cpp amdflang amdlld amdllvm offload-arch; do
+        sudo rm -f "${ROCM_PATH:?}/bin/${b}"
+    done
+    # And anything else that pointed into the deleted lib/llvm/bin.
+    sudo find "${ROCM_PATH:?}/bin" -xtype l -delete
+    for b in hipcc hipconfig amdclang++; do
+        if [ -e "${ROCM_PATH}/bin/${b}" ]; then
+            echo "Error: ${ROCM_PATH}/bin/${b} survived the trim; the slim" \
+                 "checks assert it is absent from the login PATH" >&2
+            exit 1
+        fi
+    done
+fi
+
 sudo find "${ROCM_PATH}" -name '*.a' -delete
 sudo ldconfig
-ldconfig -p | grep -q libamdhip64
-ldconfig -p | grep -q libhsa-runtime64
+
+# The device bitcode the runtime loads at dispatch, asserted here so a future
+# edit to the deletion list fails with the cause on screen instead of in a
+# consumer's first hipMalloc.
+test -d "${ROCM_PATH}/lib/llvm/amdgcn/bitcode"
+test -d "${ROCM_PATH}/amdgcn"
+test -s "${ROCM_PATH}/amdgcn/bitcode/ockl.bc"
+test -s "${ROCM_PATH}/amdgcn/bitcode/hip.bc"
+test -n "$(ls "${ROCM_PATH}"/amdgcn/bitcode/oclc_*.bc 2>/dev/null)"
+
+# Resolution, not presence.  This is the assertion that would have caught the
+# lib/llvm deletion above: ldconfig reads a cache and passes happily for a
+# library whose NEEDED entries are no longer on disk.  ldd resolves them, and
+# it is transitive, so it covers comgr reaching into lib/llvm as well.
+for _lib in libamdhip64 libhsa-runtime64; do
+    _so=$(ldconfig -p | awk -v l="${_lib}\\.so" '$0 ~ l {print $NF; exit}')
+    test -n "${_so}"
+    if ldd "${_so}" 2>&1 | grep -q 'not found'; then
+        echo "Error: ${_so} has unresolved dependencies after the trim:" >&2
+        ldd "${_so}" 2>&1 | grep 'not found' >&2
+        exit 1
+    fi
+done
 
 # --- 5. boot speed -------------------------------------------------------
 #
@@ -238,9 +395,16 @@ ldconfig -p | grep -q libhsa-runtime64
 # The consequence for a consumer is real and is documented: no seed ISO, no
 # NoCloud userdata, no injecting an SSH key at launch.  The baked-in login and
 # the keypair published beside the image are how you get in.
+#
+# cloud-init.service is only an Alias of cloud-init-network.service on this
+# release, and systemd refuses to mask an alias -- which the "|| true" would
+# have swallowed, leaving the network stage running in a guest advertised as
+# having cloud-init disabled.  Both spellings are listed; the one that is not
+# a unit here is the one the error is discarded for.
 sudo touch /etc/cloud/cloud-init.disabled
-sudo systemctl mask cloud-init.service cloud-init-local.service \
-    cloud-config.service cloud-final.service 2>/dev/null || true
+sudo systemctl mask cloud-init-local.service cloud-init-network.service \
+    cloud-config.service cloud-final.service cloud-init.target \
+    2>/dev/null || true
 
 purge_installed snapd modemmanager packagekit apport whoopsie \
     multipath-tools lxd-installer
@@ -271,15 +435,21 @@ GRUB_TIMEOUT_STYLE=hidden
 GRUB_RECORDFAIL_TIMEOUT=0
 EOF
 
-# A dep-only initramfs carries the handful of modules this machine actually
-# needs instead of every storage and network driver in the tree.  The
-# amdgpu-exclude hook from provisioning still runs, and the "no amdgpu.ko in
-# any initrd" assertion in the checks still has to pass afterwards -- which is
-# the point of rebuilding here rather than leaving the fat initramfs in place.
-sudo tee /etc/initramfs-tools/conf.d/slim.conf > /dev/null <<'EOF'
-MODULES=dep
-COMPRESS=zstd
-EOF
+# Rebuild every initramfs, so the amdgpu-exclude hook from provisioning is
+# proved to still run -- the "no amdgpu.ko in any initrd" assertion in the
+# checks is what that is worth.
+#
+# Deliberately no MODULES= override.  MODULES=dep reads like free savings and
+# is not: it walks the *build-time* /sys and keeps only what this machine
+# needed, so the verification boot -- same topology, same command line -- goes
+# green and a consumer whose root disk is NVMe or AHCI drops to an initramfs
+# shell.  On this kernel that is the whole of the exposure and it is still
+# real: mainline 7.2.4 has CONFIG_VIRTIO_PCI, VIRTIO_BLK, SCSI_VIRTIO and
+# EXT4_FS built in, so the virtio path survives any pruning, while
+# BLK_DEV_NVME and SATA_AHCI are modules and would not.  Its mount helper also
+# exits 1 outright when blkid cannot resolve /, which under "set -eu" is a lost
+# build with no fallback.  The initramfs is tens of MB; the guest it can strand
+# is the whole artifact.
 sudo update-initramfs -u -k all
 sudo update-grub
 # The pinned-kernel default and the amdgpu blacklist both have to survive a
@@ -334,7 +504,11 @@ sudo tee /etc/slim-trim.json > /dev/null <<EOF
   "amdgpu_module_source_removed": true,
   "rocm_path": "${ROCM_PATH}",
   "rocm_subtrees_removed": [${ROCM_DELETED}],
-  "linux_firmware_removed": true,
+  "rocm_packages_purged": ["amdrocm-blas-dev${ROCM_VERSION}",
+                           "amdrocm-hipblas-common-dev${ROCM_VERSION}",
+                           "amdrocm-runtime-dev${ROCM_VERSION}",
+                           "amdrocm-llvm-dev${ROCM_VERSION}"],
+  "linux_firmware_removed": ${FW_REMOVED},
   "snapd_removed": true,
   "root_used_mib_before": ${USED_BEFORE},
   "root_used_mib_after": ${USED_AFTER}
@@ -359,9 +533,16 @@ half are identical. What is gone:
   \`ernic-rocjitsu\` flavour for a lane that compiles in-guest.
 - **The amdgpu DKMS source.** The patched module is installed and is what
   \`modprobe\` picks; it cannot be rebuilt here, so do not install a kernel.
-- **ROCm's LLVM and headers.** The HIP runtime is here; \`hipcc\` is not.
+- **ROCm's compilers and headers.** The HIP runtime is here and a prebuilt HIP
+  binary runs; \`hipcc\`, \`amdclang\` and every ROCm header are gone. LLVM
+  survives only as the two shared libraries \`libamd_comgr\` links against,
+  and the device bitcode beside them.
 - **cloud-init is disabled.** No seed ISO, no userdata, no key injection at
   launch -- log in as \`${USERNAME}\` with the published keypair.
+- **No growpart.** cloud-init is what grew the root filesystem on first boot,
+  so resizing the qcow2 no longer resizes the guest. After a
+  \`qemu-img resize\`, run \`sudo growpart /dev/vda 1 && sudo resize2fs
+  /dev/vda1\` once inside the guest.
 - linux-firmware, snapd, docs, man pages and every apt cache.
 
 \`/etc/slim-trim.json\` is the machine-readable version of this list.
