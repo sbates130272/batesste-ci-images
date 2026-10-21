@@ -1310,10 +1310,10 @@ The `vm-info.json` file contains the following information:
 
 ```json
 {
-  "vm_name": "batesste-ci-vm",
-  "username": "batesste",
-  "password": "changeme",
-  "image_path": "/output/batesste-ci-vm.qcow2",
+  "vm_name": "ubuntu-ci-vm",
+  "username": "ubuntu",
+  "password": "ubuntu",
+  "image_path": "/output/ubuntu-ci-vm.qcow2",
   "image_format": "qcow2",
   "image_size_bytes": 1234567890,
   "release": "resolute",

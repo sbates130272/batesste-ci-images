@@ -19,8 +19,8 @@ services:
       - vfio-sockets:/tmp/vfio-sockets
       - ./vm:/output
     environment:
-      USERNAME: batesste
-      VM_NAME: batesste-ci-vm
+      USERNAME: ubuntu
+      VM_NAME: ubuntu-ci-vm
       SSH_PORT: "2222"
       VCPUS: "2"
       VMEM: "4096"
