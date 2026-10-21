@@ -2495,6 +2495,12 @@ def artifact_annotations(
 
     provisioning = info.get("provisioning") or {}
     build_info = info.get("build_info") or {}
+    # vm-info.json spells "no trim script" as "none", like the provision and
+    # checks keys beside it; the annotations drop empty values, so map it and
+    # let the annotation's *presence* be the signal that this guest had things
+    # removed after it was provisioned.
+    trim = provisioning.get("trim", "")
+    trim = "" if trim == "none" else trim
     meta = _repo_metadata(cfg, target)
     stamp = _build_stamp()
 
@@ -2523,6 +2529,7 @@ def artifact_annotations(
         "vm.packages": provisioning.get("vm_packages", ""),
         "vm.packages_digest": provisioning.get("packages_digest", ""),
         "vm.playbook": provisioning.get("vm_playbook", ""),
+        "vm.trim": trim,
         "vm.kernel_ref": provisioning.get("kernel_ref", ""),
         "vm.kernel_debs": provisioning.get("kernel_debs", ""),
         "vm.qemu_commit": build_info.get("qemu_commit", ""),

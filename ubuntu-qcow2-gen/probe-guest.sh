@@ -26,6 +26,11 @@
 # VM_VCPUS and VM_VMEM size the boot, and build-vm exports the same values it
 # gave gen-vm.  They affect how fast the probe runs, never what it observes.
 #
+# The disk is attached with discard=unmap so an "fstrim" inside the guest
+# reaches the qcow2 rather than stopping at the guest filesystem.  Only a trim
+# boot asks for it, and it costs the other flavours nothing: without a discard
+# the option changes no behaviour at all.
+#
 
 set -eu
 
@@ -77,7 +82,7 @@ echo "probe-guest: booting ${IMAGE}" >&2
     -cpu host \
     -m "${VMEM}" \
     -smp "${VCPUS}" \
-    -drive "if=virtio,format=qcow2,file=${DISK}" \
+    -drive "if=virtio,format=qcow2,file=${DISK},discard=unmap,detect-zeroes=unmap" \
     -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:${PORT}-:22" \
     -device virtio-net-pci,netdev=n0 \
     -display none \

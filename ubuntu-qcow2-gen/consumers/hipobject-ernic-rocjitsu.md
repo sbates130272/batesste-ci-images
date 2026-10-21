@@ -192,6 +192,34 @@ consumer should actually branch on:
 | `render_video_groups` | `true` |
 | `rdma_driver` | in-tree `ionic_rdma`; `ionic-ernic` is the consumer's DKMS build |
 
+## The slim variant
+
+`ubuntu-qcow2-gen@ernic-rocjitsu-slim` is this image with everything a runtime
+consumer cannot use removed: roughly 2-3 GB instead of 9.7, and seconds rather
+than most of a minute to reach SSH. It is built from this flavour's own
+provision script and assets — `provision_flavour: ernic-rocjitsu` in
+`images.yml` — so the patch set, the DKMS build and the firmware gap set are
+the same bytes, and then `trim/slim.sh` subtracts.
+
+Use it for a lane that **boots a binary built elsewhere** against the two
+emulated devices. Do not use it for this lane: hipObject's `ernic-rocjitsu-gpu`
+job builds `ionic-ernic` as a DKMS module inside the guest, and the slim guest
+has no compiler, no kernel headers and no DKMS. It also cannot rebuild
+`amdgpu`, so do not install a kernel in it.
+
+Two further differences a consumer sees:
+
+- **cloud-init is disabled.** No seed ISO, no userdata, no key injection at
+  launch. The baked-in `ubuntu` login and the keypair published beside the
+  image are the way in; the netplan written during the fat build is kept, so
+  the guest still gets an address.
+- **ROCm's LLVM and headers are gone.** The HIP runtime and the device bitcode
+  under `${ROCM_PATH}/amdgcn` are present; `hipcc` is not.
+
+`/etc/slim-trim.json` records what the trim removed, including the before and
+after footprint. Read that rather than inferring capability from the flavour
+name.
+
 ## Publishing contract
 
 Unchanged from the other flavours: a `FROM scratch` payload whose `/output`
