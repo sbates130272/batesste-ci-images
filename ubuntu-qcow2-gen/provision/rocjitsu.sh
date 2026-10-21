@@ -179,9 +179,24 @@ printf 'GRUB_CMDLINE_LINUX_DEFAULT="${GRUB_CMDLINE_LINUX_DEFAULT} modprobe.black
 # is still in the initramfs is one udev rule or one edited cmdline away from
 # binding the device before the vfio-user server is serving, which is the
 # failure the blacklist exists to prevent rather than a milder version of it.
-# initramfs-tools has no exclude list, so the module is dropped from the
-# staging tree by a hook -- that runs on every later update-initramfs too,
-# including the ones the DKMS build triggers.
+# initramfs-tools has no exclude list, so the module is dropped by a hook --
+# which runs on every later update-initramfs too, including the ones a DKMS
+# build triggers.
+#
+# The hook has to do two things, and doing only the obvious one is why this
+# silently stopped working. resolute's mkinitramfs calls apply_add_modules
+# *twice* -- once before the hooks and once after them:
+#
+#   apply_add_modules                            # modules copied into DESTDIR
+#   run_scripts_optional .../hooks               # stock hooks
+#   run_scripts_optional ${CONFDIR}/hooks        # this hook
+#   apply_add_modules                            # copies the queue again
+#
+# so deleting the file from DESTDIR is undone a few lines later by the second
+# flush. Ubuntu 24.04's mkinitramfs has a single apply_add_modules before the
+# local hooks, which is why the delete-only form worked when it was written
+# and stopped working when the guest moved to resolute. Dropping the module
+# from the pending queue as well is what survives the second flush.
 sudo install -d -m 0755 /etc/initramfs-tools/hooks
 sudo tee /etc/initramfs-tools/hooks/amdgpu-exclude > /dev/null <<'HOOK'
 #!/bin/sh
@@ -343,7 +358,32 @@ fi
 
 # Regenerated so the exclude hook above applies to every initramfs on the
 # disk, not only to the ones the DKMS build happened to rebuild.
+# Autoinstall back on before anything ships. From here the guest behaves as a
+# consumer expects: installing a kernel rebuilds the patched amdgpu, which is
+# the property the whole patch-the-source approach exists to provide.
 sudo update-initramfs -u -k all
+
+# Assert it actually worked, here, where the build can still fail.
+#
+# This is the line that matters. The hook above reaches into a mkinitramfs
+# internal, so it is one upstream rename away from quietly doing nothing --
+# which is exactly what happened before, shipping two flavours whose
+# initramfs carried amdgpu.ko.zst under updates/dkms/ while the checks said
+# otherwise. An assert that runs on every build is worth more than a hook
+# that is assumed to work.
+#
+# Written as an if/exit rather than `! lsinitramfs ... | grep -q ...`: a
+# command whose status is inverted with `!` never trips `set -e`, so the
+# negated form cannot fail a build no matter what it finds.
+for img in /boot/initrd.img-*; do
+    [ -e "${img}" ] || continue
+    if lsinitramfs "${img}" | grep -qE '(^|/)amdgpu\.ko(\.[a-z]+)?$'; then
+        echo "ERROR: amdgpu.ko is present in ${img}" >&2
+        echo "       the initramfs exclude hook did not take; see the note" >&2
+        echo "       beside /etc/initramfs-tools/hooks/amdgpu-exclude" >&2
+        exit 1
+    fi
+done
 
 sudo update-grub
 # The grub.d snippet is only worth anything if it reached the generated config:

@@ -152,15 +152,27 @@ grep -q 'adev->mode_info.atom_context' "${AMDGPU_SRC}/amd/amdgpu/amdgpu_ras.c"
 # braces (kernel cmdline, which also covers a load from the initramfs).
 grep -qx 'blacklist amdgpu' /etc/modprobe.d/amdgpu-blacklist.conf
 grep -q 'modprobe.blacklist=amdgpu' /proc/cmdline
-! lsmod | grep -q '^amdgpu '
+if lsmod | grep -q '^amdgpu '; then
+    echo "ERROR: amdgpu is loaded; it must be modprobed by hand after the" >&2
+    echo "       vfio-user server is serving, not autoloaded at boot" >&2
+    exit 1
+fi
 
 # And absent from the initramfs, not merely blacklisted inside it. The hook in
 # provisioning drops it from the staging tree; this is what proves the hook
 # ran and kept running across the DKMS rebuilds. Every initramfs on the disk,
 # not just the booted one -- a consumer can select any of them from grub.
+#
+# if/exit, not `! lsinitramfs ... | grep -q ...`: bash never applies set -e to
+# a command whose status is inverted with `!`, so the negated form silently
+# passes whatever it finds. It did exactly that -- two flavours shipped with
+# amdgpu.ko.zst in every initramfs and this check green.
 for img in /boot/initrd.img-*; do
     [ -e "${img}" ] || continue
-    ! lsinitramfs "${img}" | grep -q 'amdgpu\.ko'
+    if lsinitramfs "${img}" | grep -qE '(^|/)amdgpu\.ko(\.[a-z]+)?$'; then
+        echo "ERROR: amdgpu.ko is present in ${img}" >&2
+        exit 1
+    fi
 done
 
 # The probe helper is offered, not run: the blacklist above still stands.  The
