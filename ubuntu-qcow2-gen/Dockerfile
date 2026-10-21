@@ -39,6 +39,10 @@ ARG ROCM_PATH=
 ARG ROCM_VERSION=
 ARG RDMA_CORE_VERSION=
 ARG FIO_COMMIT=
+# Whose provision script and assets to use (empty: this flavour's own), and
+# the trim/<file> that takes things back out afterwards (empty: none).
+ARG PROVISION_FLAVOUR=
+ARG TRIM=
 ARG CACHE_BUST=
 
 WORKDIR /build
@@ -74,6 +78,10 @@ RUN python3 -m venv /opt/qemu-tool --clear && \
 COPY ubuntu-qcow2-gen/packages/ /build/packages/
 COPY ubuntu-qcow2-gen/provision/ /build/provision/
 COPY ubuntu-qcow2-gen/checks/ /build/checks/
+# The trim layer: scripts that take things back out of a provisioned guest, for
+# a flavour that is another flavour's image minus what a runtime consumer
+# cannot use. Named by the flavour's TRIM var, so adding one is a file here.
+COPY ubuntu-qcow2-gen/trim/ /build/trim/
 
 # Files a provision script needs *inside* the guest -- patches, generators --
 # rather than on the builder.  build-vm.sh copies assets/<flavour> to
@@ -145,6 +153,10 @@ ARG ROCM_PATH=
 ARG ROCM_VERSION=
 ARG RDMA_CORE_VERSION=
 ARG FIO_COMMIT=
+# Whose provision script and assets to use (empty: this flavour's own), and
+# the trim/<file> that takes things back out afterwards (empty: none).
+ARG PROVISION_FLAVOUR=
+ARG TRIM=
 ARG CACHE_BUST=
 # The host port probe-guest forwards the guest's SSH to, and the one thing in
 # this build that is not private to it: a --security=insecure step shares the

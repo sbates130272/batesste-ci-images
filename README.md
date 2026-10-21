@@ -64,6 +64,7 @@ adding an image or a variant adds its row.
 | [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen-ionic (job: ubuntu-qcow2-gen@ionic) | [![ubuntu-qcow2-gen-ionic main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen%40ionic)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen-rocjitsu (job: ubuntu-qcow2-gen@rocjitsu) | [![ubuntu-qcow2-gen-rocjitsu main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen%40rocjitsu)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen-ernic-rocjitsu (job: ubuntu-qcow2-gen@ernic-rocjitsu) | [![ubuntu-qcow2-gen-ernic-rocjitsu main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen%40ernic-rocjitsu)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen-ernic-rocjitsu-slim (job: ubuntu-qcow2-gen@ernic-rocjitsu-slim) | [![ubuntu-qcow2-gen-ernic-rocjitsu-slim main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen%40ernic-rocjitsu-slim)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 
 <!-- END BUILD STATUS -->
 
@@ -146,7 +147,8 @@ and pushing of these images.
   Built on `ubuntu-qemu-libvfio-user` and published `FROM scratch` with nothing
   but `/output` in it, one Docker Hub repository per flavour
   (`…-ubuntu-qcow2-gen`, `…-ubuntu-qcow2-gen-ionic`,
-  `…-ubuntu-qcow2-gen-rocjitsu`, `…-ubuntu-qcow2-gen-ernic-rocjitsu`). See
+  `…-ubuntu-qcow2-gen-rocjitsu`, `…-ubuntu-qcow2-gen-ernic-rocjitsu`,
+  `…-ubuntu-qcow2-gen-ernic-rocjitsu-slim`). See
   [Guest VM images](#guest-vm-images-ubuntu-qcow2-gen) and `ubuntu-qcow2-gen/`.
 
 ### rocjitsu vfio-user mode

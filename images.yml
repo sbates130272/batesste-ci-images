@@ -592,6 +592,19 @@ images:
       vm_vmem: 4096
       # ubuntu-qcow2-gen/packages/<file> and ubuntu-qcow2-gen/checks/<flavour>.sh
       vm_packages: base.txt
+      # Whose ubuntu-qcow2-gen/provision/<name>.sh and assets/<name>/ this
+      # flavour uses. Empty means its own, which is every flavour but a slim
+      # one: those are another flavour's guest with things removed, and a
+      # second copy of a 600-line provision script carrying unreviewed kernel
+      # patches is precisely what should not exist twice.
+      provision_flavour: ""
+      # ubuntu-qcow2-gen/trim/<file>, run in a boot of its own after
+      # provisioning and before the verification boot. Empty means the flavour
+      # ships what it provisioned. A flavour that sets this also gets the
+      # package-presence assertion skipped -- it installs a manifest in order
+      # to build with it and then purges most of it -- so its checks file is
+      # what asserts the guest's contents, negatives included.
+      trim: ""
       # qemu-minimal ansible/playbooks/<file>; empty means cloud-init only.
       vm_playbook: ""
       # An Ubuntu mainline build tag (kernel.ubuntu.com/mainline/<ref>/), or
@@ -680,6 +693,8 @@ images:
       VM_VMEM: "{vm_vmem}"
       VM_PACKAGES: "{vm_packages}"
       VM_PLAYBOOK: "{vm_playbook}"
+      PROVISION_FLAVOUR: "{provision_flavour}"
+      TRIM: "{trim}"
       KERNEL_REF: "{kernel_ref}"
       AMDGPU_DRIVER_VERSION: "{amdgpu_driver_version}"
       # Composed here rather than stored as a var, so the version number lives
@@ -703,6 +718,7 @@ images:
       "{ns}.vm.flavour": "{flavour}"
       "{ns}.vm.packages": "{vm_packages}"
       "{ns}.vm.playbook": "{vm_playbook}"
+      "{ns}.vm.trim": "{trim}"
       "{ns}.vm.kernel-ref": "{kernel_ref}"
       "{ns}.vm.amdgpu-driver-version": "{amdgpu_driver_version}"
       "{ns}.vm.rocm-path": "/opt/rocm/core-{guest_rocm_version}"
@@ -894,6 +910,61 @@ images:
           flavour: ernic-rocjitsu
           vm_packages: ernic-rocjitsu.txt
           probe_ssh_port: 2225
+          release: resolute
+          kernel_ref: v7.2.4
+          amdgpu_driver_version: "31.60"
+          guest_rocm_version: "10.1"
+          rdma_core_version: "61.0"
+
+      # The same guest as above, with everything a *runtime* consumer cannot
+      # use taken back out: 9.7 GB and a cloud-image boot become something in
+      # the 2-3 GB range that comes up in seconds. For a lane that boots a
+      # prebuilt binary against the two emulated devices, not one that builds
+      # inside the guest.
+      #
+      # Every pin here is deliberately equal to the ernic-rocjitsu variant's.
+      # They are one recipe -- provision_flavour points at that flavour's
+      # script and assets, so the amdgpu patches, the firmware gap set and the
+      # DKMS build exist in exactly one place and this variant cannot drift
+      # from them. Move the pins together or not at all.
+      #
+      # What the trim removes, and what that costs:
+      #
+      #   * The toolchain, the kernel headers and the /usr/src/amdgpu-* DKMS
+      #     source. The patched module is kept and is still what modprobe
+      #     picks, but **nothing can be compiled in this guest** and a kernel
+      #     installed inside it would have no driver. A lane that builds
+      #     ionic-ernic (which is what rocm-ernic's jobs exist to test) wants
+      #     the fat flavour.
+      #   * The release's own kernel, which this guest never boots, and
+      #     linux-firmware, which is microcode for hardware a virtio guest
+      #     does not have. The gfx1250 blobs come from amdgpu-dkms-firmware
+      #     and stay.
+      #   * ROCm's LLVM and headers. The HIP runtime stays; hipcc goes.
+      #   * cloud-init, disabled rather than purged -- so no seed ISO, no
+      #     userdata and no key injection at launch. The baked-in ubuntu login
+      #     and the keypair published beside the image are the way in.
+      #
+      # vm_packages stays ernic-rocjitsu.txt: the shared provision script needs
+      # that toolchain to build amdgpu, and the trim is what removes it
+      # afterwards. build-vm.sh skips its package-presence assertion for any
+      # flavour with a trim, and checks/ernic-rocjitsu-slim.sh asserts both
+      # what survived and what did not.
+      #
+      # vm_size stays 512: the ceiling is virtual and costs nothing in the
+      # payload, and a consumer's build tree has somewhere to go.
+      ernic-rocjitsu-slim:
+        suffix: "-ernic-rocjitsu-slim"
+        # Under Hub's 100-byte cap; see the rocjitsu note above.
+        description: >-
+          Runtime-only ernic-rocjitsu guest: same drivers, no toolchain, fast
+          to boot.
+        vars:
+          flavour: ernic-rocjitsu-slim
+          provision_flavour: ernic-rocjitsu
+          trim: slim.sh
+          vm_packages: ernic-rocjitsu.txt
+          probe_ssh_port: 2226
           release: resolute
           kernel_ref: v7.2.4
           amdgpu_driver_version: "31.60"

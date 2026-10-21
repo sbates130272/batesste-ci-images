@@ -257,3 +257,13 @@ buildkitd
 libguestfs
 Ctrl
 NFS
+LLVM
+bitcode
+fstrim
+hipcc
+microcode
+netplan
+prebuilt
+runtime-only
+snapd
+userdata

@@ -116,6 +116,26 @@ and then ship it in the payload anyway.
 | `ionic` | `-ionic` | For ROCm/rocm-ernic's ionic RDMA jobs. `drivers/infiniband/hw/ionic` merged in Linux 6.18; the toolchain and rdma-core build deps are pre-installed to save those jobs wall-clock, but the ionic-ernic DKMS modules are deliberately **not** built here -- building them from pinned upstream sources is what those jobs exist to test. rdma-core is **not** built: resolute packages 61.0, past the v61 that first shipped `providers/ionic`, so `libionic` comes from the archive with nothing overwritten and nothing held. The guest stamps the version for `ernic_guest_setup` to read -- see [consumers/rocm-ernic-ionic.md](consumers/rocm-ernic-ionic.md). |
 | `rocjitsu` | `-rocjitsu` | For ROCm/rocm-xio's rocjitsu emulated-GPU jobs. ROCm userspace from the `therock` stream and an `amdgpu-dkms` built against the guest kernel with the KFD atomics patch and the RAS vbios guard applied first, so those jobs stop doing it over SSH. The `amdgpu-probe` helper from `assets/shared/` is installed but never run -- autoload stays blacklisted. Pinned to `resolute` with `amdgpu_driver_version: 31.60`, the first driver tree that ships gfx1250 firmware; its `amdgpu-dkms` (7.1.9) still builds against the 7.0 kernel the guest boots. Most gfx1250 firmware is baked in as a consequence -- `amdgpu-dkms` depends on `amdgpu-dkms-firmware` -- but `gc_12_1_0_imu.bin` and `ip_discovery.bin` are not, and stay with the consumer's rocjitsu pin. `ROCM_PATH` and `PATH` are set from `/etc/profile.d/rocm.sh`. See [consumers/rocm-xio-rocjitsu.md](consumers/rocm-xio-rocjitsu.md). |
 | `ernic-rocjitsu` | `-ernic-rocjitsu` | For ROCm/hipObject's two-device jobs, which need one guest carrying both an emulated ionic RDMA NIC and an emulated gfx1250. Mainline **v7.2.4**, a hard floor rather than a preference: `ionic_rdma` calls `ib_umem_get_va`, which does not exist in 7.0 or 7.1.13. `ionic`/`ionic_rdma` are in-tree there, so the ionic half is the `ionic` flavour's rdma-core stamp and nothing else; the ROCm half is the `rocjitsu` flavour plus three amdgpu patches -- two from `assets/ernic-rocjitsu/`, without which DKMS 7.1.9 does not build against 7.2, and the RAS vbios guard from `assets/shared/` that every rocjitsu guest needs. The firmware gap set is baked in too -- its fixtures are static -- leaving only `ip_discovery.bin` with the consumer's rocjitsu pin. **One of the three patches changes a security check and has not been reviewed**; see [consumers/hipobject-ernic-rocjitsu.md](consumers/hipobject-ernic-rocjitsu.md). |
+| `ernic-rocjitsu-slim` | `-ernic-rocjitsu-slim` | The `ernic-rocjitsu` guest with everything a *runtime* consumer cannot use taken back out, for a lane that boots a prebuilt binary against the two emulated devices rather than building inside the guest. Same kernel, same patched `amdgpu`, same firmware, same ionic half -- it is built by that flavour's own provision script (`provision_flavour`), so the patches exist in one place and cannot drift. `trim/slim.sh` then removes the toolchain, the kernel headers, the `/usr/src/amdgpu-*` DKMS source, the release's unused kernel, `linux-firmware`, ROCm's LLVM and headers, snapd, docs and every cache, and finishes with `fstrim`; the build compacts the image afterwards. **Nothing can be compiled in this guest, and cloud-init is disabled** -- no seed ISO, no key injection at launch. `/etc/slim-trim.json` records what went. |
+
+## Trimmed flavours
+
+A flavour that sets `trim` in `images.yml` runs `trim/<file>` in a
+`PROBE_PERSIST` boot after provisioning and before the verification boot, so
+the checks see what ships and a trim that breaks the guest fails the build
+rather than a consumer's job. Two consequences worth knowing:
+
+- `build-vm.sh` **skips the package-presence assertion** for a trimmed
+  flavour. One of these installs a package manifest in order to build with it
+  and then purges most of it, so the assertion is guaranteed false. Its
+  `checks/<flavour>.sh` is what asserts the guest's contents instead, and it
+  has to carry negative assertions -- "no gcc", "one kernel", a ceiling on
+  used space -- or a trim step that silently stops working ships a fat guest
+  under a slim name with every other check still green.
+- `probe-guest.sh` attaches the disk with `discard=unmap`, so the trim's
+  `fstrim` reaches the qcow2; `build-vm.sh` then rewrites the image with
+  `qemu-img convert` to drop the slack. Uncompressed deliberately -- `-c`
+  would trade boot speed for payload size, which is the wrong way round here.
 
 ## Tags
 

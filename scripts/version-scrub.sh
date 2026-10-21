@@ -576,7 +576,8 @@ echo "==> Checking the pinned amdgpu driver trees still serve their release..."
 # bumping to the newest tree is precisely the wrong reflex: the newer trees are
 # the ones that dropped resolute, so an auto-bump would walk the pin straight
 # off a cliff. Warn, and let a human choose the replacement.
-for t in ubuntu-qcow2-gen@rocjitsu ubuntu-qcow2-gen@ernic-rocjitsu; do
+for t in ubuntu-qcow2-gen@rocjitsu ubuntu-qcow2-gen@ernic-rocjitsu \
+         ubuntu-qcow2-gen@ernic-rocjitsu-slim; do
     drv=$(current_pin "$t" amdgpu_driver_version)
     rel=$(current_pin "$t" release)
     [[ -z "$drv" || "$drv" == "none" ]] && continue

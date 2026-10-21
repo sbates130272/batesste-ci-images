@@ -20,6 +20,12 @@
 #                           with assets/<FLAVOUR>/ (when it exists) copied to
 #                           /tmp/payload for them to read
 #
+# PROVISION_FLAVOUR overrides which provision script and asset directory that
+# layer uses, so a flavour can build on another flavour's recipe rather than
+# copy it.  trim/<TRIM>, when set, is a fifth layer after it: a script that
+# takes things back *out* of the finished guest, in a boot of its own, before
+# the verification boot -- so the checks see what ships.
+#
 # KVM is mandatory.  It only works in a RUN --security=insecure step (the
 # device node has to be created and opened); anywhere else this script aborts
 # rather than fall back to TCG emulation, which is roughly 10x slower.
@@ -46,6 +52,14 @@ export VM_VCPUS="${FINAL_VM_VCPUS}"
 export VM_VMEM="${FINAL_VM_VMEM}"
 FINAL_PACKAGES="${VM_PACKAGES:-base.txt}"
 FINAL_PLAYBOOK="${VM_PLAYBOOK:-}"
+# Whose provision script and assets this flavour uses.  Empty means its own,
+# which is every flavour but the slim ones: those are another flavour's guest
+# with things removed, and a second copy of a 600-line provision script
+# carrying unreviewed kernel patches is the one thing worth avoiding here.
+FINAL_PROVISION_FLAVOUR="${PROVISION_FLAVOUR:-${FLAVOUR}}"
+# trim/<file>, run after provisioning to take things back out.  Empty for a
+# flavour that ships what it provisioned.
+FINAL_TRIM="${TRIM:-}"
 FINAL_KERNEL_REF="${KERNEL_REF:-}"
 # Only read by a provision script that installs the AMD kernel driver; inert
 # for every other flavour.
@@ -78,6 +92,8 @@ echo "VM_VCPUS: ${FINAL_VM_VCPUS} (build-time boots only)"
 echo "VM_VMEM: ${FINAL_VM_VMEM} MiB (build-time boots only)"
 echo "VM_PACKAGES: ${FINAL_PACKAGES}"
 echo "VM_PLAYBOOK: ${FINAL_PLAYBOOK:-none}"
+echo "PROVISION_FLAVOUR: ${FINAL_PROVISION_FLAVOUR}"
+echo "TRIM: ${FINAL_TRIM:-none (ships what it provisioned)}"
 echo "KERNEL_REF: ${FINAL_KERNEL_REF:-none (release kernel)}"
 echo "AMDGPU_DRIVER_VERSION: ${FINAL_AMDGPU_DRIVER_VERSION}"
 echo "ROCM_PATH: ${FINAL_ROCM_PATH:-none (no ROCm in the guest)}"
@@ -428,11 +444,15 @@ fi
 # /tmp/payload.  Same primitive the kernel layer above uses; the script does
 # not have to know whether it was given one, only that it is there when its
 # flavour ships one.
-PROVISION="/build/provision/${FLAVOUR}.sh"
+#
+# PROVISION_FLAVOUR names whose script and assets to use, defaulting to this
+# flavour's own.  A flavour that points at another one gets that recipe
+# verbatim -- which is the point: the patches and the DKMS handling exist once.
+PROVISION="/build/provision/${FINAL_PROVISION_FLAVOUR}.sh"
 PROVISION_NAME=none
 ASSETS_NAME=none
 if [ -f "${PROVISION}" ]; then
-    PROVISION_NAME="${FLAVOUR}.sh"
+    PROVISION_NAME="${FINAL_PROVISION_FLAVOUR}.sh"
     PROV=/tmp/provision.sh
     cat > "${PROV}" <<EOF
 set -eu
@@ -446,11 +466,11 @@ RDMA_CORE_VERSION='${FINAL_RDMA_CORE_VERSION}'
 FIO_COMMIT='${FINAL_FIO_COMMIT}'
 EOF
     cat "${PROVISION}" >> "${PROV}"
-    ASSETS="/build/assets/${FLAVOUR}"
+    ASSETS="/build/assets/${FINAL_PROVISION_FLAVOUR}"
     echo "Provisioning the guest with provision/${PROVISION_NAME}"
     if [ -d "${ASSETS}" ]; then
-        ASSETS_NAME="${FLAVOUR}"
-        echo "  with assets/${FLAVOUR} at /tmp/payload:"
+        ASSETS_NAME="${FINAL_PROVISION_FLAVOUR}"
+        echo "  with assets/${ASSETS_NAME} at /tmp/payload:"
         find "${ASSETS}" -type f | sed "s|^${ASSETS}/|    |"
         PROBE_PERSIST=1 probe-guest "/output/${FINAL_VM_NAME}.qcow2" \
             "${FINAL_USERNAME}" "${PROV}" "${ASSETS}"
@@ -458,6 +478,61 @@ EOF
         PROBE_PERSIST=1 probe-guest "/output/${FINAL_VM_NAME}.qcow2" \
             "${FINAL_USERNAME}" "${PROV}"
     fi
+fi
+
+# The trim layer: a script that takes things back out of the finished guest.
+#
+# A boot of its own, after provisioning and before the verification boot, so
+# the checks run against what actually ships -- a trim that breaks the guest
+# has to fail this build and not a consumer's job.  Same preamble as the
+# provision layer, because a trim script needs the same few build-side values
+# (ROCM_PATH to know what to delete under, USERNAME to write the guest's own
+# notes as the login user).
+#
+# It is flavour-agnostic machinery: trim/<file> is named by the flavour, so a
+# future flavour wanting a different subtraction adds a file rather than a
+# branch here.
+TRIM_NAME=none
+if [ -n "${FINAL_TRIM}" ]; then
+    TRIM_SCRIPT="/build/trim/${FINAL_TRIM}"
+    [ -f "${TRIM_SCRIPT}" ] || {
+        echo "Error: trim script ${TRIM_SCRIPT} does not exist!"
+        ls -la /build/trim/ 2>/dev/null || true
+        exit 1
+    }
+    TRIM_NAME="${FINAL_TRIM}"
+    TRIMSH=/tmp/trim.sh
+    cat > "${TRIMSH}" <<EOF
+set -eu
+FLAVOUR='${FLAVOUR}'
+RELEASE='${FINAL_RELEASE}'
+USERNAME='${FINAL_USERNAME}'
+ROCM_PATH='${FINAL_ROCM_PATH}'
+ROCM_VERSION='${FINAL_ROCM_VERSION}'
+KERNEL_REF='${FINAL_KERNEL_REF}'
+EOF
+    cat "${TRIM_SCRIPT}" >> "${TRIMSH}"
+    echo "Trimming the guest with trim/${TRIM_NAME}"
+    PROBE_PERSIST=1 probe-guest "/output/${FINAL_VM_NAME}.qcow2" \
+        "${FINAL_USERNAME}" "${TRIMSH}"
+
+    # The trim's fstrim punched holes in the qcow2 -- probe-guest attaches the
+    # disk with discard=unmap so it reaches the image rather than stopping at
+    # the guest filesystem -- but the file still carries the L2 slack and the
+    # cluster order of everything that has been written and deleted since the
+    # cloud image was copied.  A convert rewrites it compactly.
+    #
+    # Uncompressed on purpose: -c would make the payload smaller again and pay
+    # for it on every guest read, which is the opposite of what a slim flavour
+    # is for.
+    BEFORE=$(stat -c%s "/output/${FINAL_VM_NAME}.qcow2")
+    echo "Compacting the guest image (${BEFORE} bytes before)"
+    /opt/qemu/bin/qemu-img convert -O qcow2 \
+        "/output/${FINAL_VM_NAME}.qcow2" "/tmp/${FINAL_VM_NAME}.compact.qcow2"
+    mv "/tmp/${FINAL_VM_NAME}.compact.qcow2" \
+        "/output/${FINAL_VM_NAME}.qcow2"
+    AFTER=$(stat -c%s "/output/${FINAL_VM_NAME}.qcow2")
+    echo "Compacted: ${BEFORE} -> ${AFTER} bytes"
 fi
 
 # Boot the finished guest once, to read its kernel out of it and to run the
@@ -590,7 +665,17 @@ fi
 # a package that does not exist in the release ships a guest quietly missing
 # what it promised -- which is exactly how linux-modules-extra-generic, absent
 # from 26.04 entirely, survived a green build here.
-if [ -n "${FINAL_PACKAGES}" ] && [ "${FINAL_PACKAGES}" != "none" ]; then
+#
+# Not for a trimmed flavour.  One of those installs a manifest in order to
+# build with it and then purges most of it, so this assertion is guaranteed
+# false there and the guest is not missing anything it promised.  Said out
+# loud rather than quietly arranged: what the trimmed guest does carry is
+# asserted by its own checks file, including the negatives.
+if [ -n "${FINAL_TRIM}" ]; then
+    echo "Skipping the package-presence assertion: trim/${TRIM_NAME} removes" \
+         "packages ${FINAL_PACKAGES} asked for; checks/${FLAVOUR}.sh is what" \
+         "asserts this guest's contents"
+elif [ -n "${FINAL_PACKAGES}" ] && [ "${FINAL_PACKAGES}" != "none" ]; then
     REQUESTED=$(sed "s/\${KERNEL_VERSION}/${KERNEL_VERSION}/g" "${EXTRA}" |
         grep -v '^#' | grep -v '^$' | tr '\n' ' ')
     printf 'MISSING=""\n' >> "${PROBE}"
@@ -688,9 +773,16 @@ BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # version, the SSH key fingerprint, the checks script and the build-time boot
 # shape; 4 adds the provision script; 5 adds the assets directory that
 # provision script was given; 6 adds the unattended-upgrades state; 7 adds the
-# kernels block, dkms, rocm, os and the guest's SSH host keys.  Every earlier
-# key is kept, so a v1 through v6 consumer is unaffected -- read
-# schema_version before reaching for anything newer.
+# kernels block, dkms, rocm, os and the guest's SSH host keys; 8 adds the
+# provision flavour and the trim script.  Every earlier key is kept, so a v1
+# through v7 consumer is unaffected -- read schema_version before reaching for
+# anything newer.
+#
+# v8's two keys answer "is this the guest it looks like": provision_flavour
+# names whose recipe built it, which is not the flavour for a slim variant,
+# and trim names what was taken back out afterwards.  A consumer that needs a
+# toolchain in the guest should branch on trim being empty rather than on the
+# flavour name.
 #
 # v7 exists because kernel_release alone was not enough to describe a guest.
 # It is the kernel the verification boot happened to be running, and a release
@@ -709,7 +801,7 @@ BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # so "oras manifest fetch" answers the common questions without the referrer.
 cat > /output/vm-info.json <<EOF
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "vm_name": "${FINAL_VM_NAME}",
   "flavour": "${FLAVOUR}",
   "username": "${FINAL_USERNAME}",
@@ -754,7 +846,9 @@ cat > /output/vm-info.json <<EOF
     "kernel_ref": "${FINAL_KERNEL_REF}",
     "kernel_debs": "${KERNEL_DEBS}",
     "provision": "${PROVISION_NAME}",
+    "provision_flavour": "${FINAL_PROVISION_FLAVOUR}",
     "assets": "${ASSETS_NAME}",
+    "trim": "${TRIM_NAME}",
     "checks": "${CHECKS_NAME}",
     "unattended_upgrades": "purged"
   },
