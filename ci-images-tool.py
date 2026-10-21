@@ -1353,6 +1353,12 @@ def write_bake_spec(cfg: Config, spec: dict) -> Path:
 #: home is shared and the user plugin directory outranks /usr/libexec.
 MIN_BUILDX_MINOR = 17
 
+#: The --slurm* flags that take no argument. submit_slurm_build strips the
+#: slurm flags out of argv before handing the rest to the node, and has to
+#: know which ones consume the following item -- a boolean treated as valued
+#: eats the target, and a build with no target builds all sixteen.
+SLURM_BOOLEAN_FLAGS = frozenset({"--slurm", "--slurm-detach"})
+
 #: The body of the submitted job. Deliberately a shell script rather than a
 #: second Python entry point: everything here is docker and environment
 #: wrangling that has to happen *around* the tool, and the job's whole purpose
@@ -1458,6 +1464,40 @@ if [[ ! -e /dev/kvm ]]; then
     echo "Warning: this node has no /dev/kvm; guest targets will be" >&2
     echo "         emulated, which is roughly 10x slower." >&2
 fi
+
+# Size the guest to the node rather than to a GitHub runner.
+#
+# images.yml pins vm_vcpus: 4 and vm_vmem: 4096, which is right where it came
+# from -- a standard hosted runner has four cores and more would only add
+# scheduling overhead. On a compute node it leaves the machine idle: the guest
+# builds amdgpu-dkms, which is a straight compile, and one build measured 274
+# seconds on those four vCPUs.
+#
+# Capped at 32 rather than handed the whole allocation. The guest is a QEMU VM
+# doing a kernel-module build; past a couple of dozen cores the returns fall
+# off and the risk of thrashing the host rises, particularly with several
+# guest flavours building at once under bake.
+#
+# Memory scales with it, and that is not optional: -j32 against amdgpu's
+# translation units in 4 GB is an OOM, not a slow build. 1.5 GB per vCPU,
+# bounded so the guest cannot claim the whole job -- buildkitd, the qcow2 page
+# cache and any sibling guest all come out of the same allocation.
+# if/fi rather than `[ test ] && assign` throughout: the latter evaluates to
+# false whenever the test is false, and a failing AND-list inside `set -e` is
+# the kind of thing that ends a batch job at line 40 with nothing in the log.
+VM_VCPUS=$(nproc)
+if [ "$VM_VCPUS" -gt 32 ]; then VM_VCPUS=32; fi
+VM_VMEM=$((VM_VCPUS * 1536))
+SLURM_MEM_MB=$(( ${{SLURM_MEM_PER_NODE:-0}} ))
+if [ "$SLURM_MEM_MB" -gt 0 ]; then
+    MEM_CEILING=$((SLURM_MEM_MB / 2))
+    if [ "$VM_VMEM" -gt "$MEM_CEILING" ]; then VM_VMEM=$MEM_CEILING; fi
+fi
+# Never below the images.yml defaults, however small the allocation.
+if [ "$VM_VCPUS" -lt 4 ]; then VM_VCPUS=4; fi
+if [ "$VM_VMEM" -lt 4096 ]; then VM_VMEM=4096; fi
+export VM_VCPUS VM_VMEM
+echo "guest:   ${{VM_VCPUS}} vcpus, ${{VM_VMEM}} MB (images.yml default is 4 / 4096)"
 
 # bake picks this up as one of its own variables; see docker-bake.hcl.
 export CACHE_LOCAL={cache_local}
@@ -1650,8 +1690,13 @@ def submit_slurm_build(cfg: Config, args: argparse.Namespace, argv: list[str]) -
             skip_next = False
             continue
         if item == "--slurm" or item.startswith("--slurm-"):
-            # The valued ones take their argument with them.
-            if "=" not in item and item != "--slurm" and item != "--slurm-wait":
+            # The valued ones take their argument with them; the boolean ones
+            # must not, or they swallow whatever follows. When that is the
+            # target, the node builds *everything* -- which is what happened
+            # after --slurm-wait was renamed to --slurm-detach and this test
+            # was left naming the old flag. It fails silently and expensively,
+            # so the booleans are named in one place rather than inline.
+            if "=" not in item and item not in SLURM_BOOLEAN_FLAGS:
                 skip_next = True
             continue
         inner.append(shlex.quote(item))
@@ -4524,12 +4569,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     slurm.add_argument(
         "--slurm-constraint",
-        default="CPUONLY",
-        metavar="FEATURE",
+        default="CPUONLY&MARKHAM",
+        metavar="EXPR",
         help=(
-            "Node feature (default: CPUONLY). Applied inconsistently in this "
-            "cluster -- some nodes advertise it with GPUs present -- so it "
-            "narrows the pool without guaranteeing a GPU-free node"
+            "Node feature expression (default: CPUONLY&MARKHAM). The site "
+            "half is not optional: CPUONLY alone is advertised by nodes in "
+            "other sites, and a job that lands on one dies in four seconds "
+            "with no log at all, because the shared home this repo builds "
+            "from is not mounted there and slurm cannot even create the "
+            "output file. CPUONLY is also applied inconsistently -- some "
+            "nodes advertise it with GPUs present -- so it narrows the pool "
+            "without guaranteeing a GPU-free node"
         ),
     )
     slurm.add_argument(
