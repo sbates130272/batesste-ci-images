@@ -1478,7 +1478,7 @@ the dpkg lock during the build, and stops a long-lived guest replacing the
 pinned kernel or `amdgpu-dkms` underneath a module the image was built to ship.
 The verification boot asserts it for every flavour.
 
-`vm-info.json` is `schema_version` 6 here, and every earlier key is unchanged —
+`vm-info.json` is `schema_version` 9 here, and every earlier key is unchanged —
 read `schema_version` before reaching for anything newer:
 
 - **v2** added `flavour`, `kernel_release` and a `provisioning` object
@@ -1494,6 +1494,17 @@ read `schema_version` before reaching for anything newer:
 - **v5** adds `provisioning.assets`, naming the assets directory that script
   was given.
 - **v6** adds `provisioning.unattended_upgrades`, always `purged`.
+- **v7** adds the `kernels` block (what is installed, and which one grub
+  takes next — `kernel_release` alone is only what the verification boot
+  happened to run), plus `dkms`, `rocm`, `os` and the guest's SSH host keys.
+- **v8** adds `provisioning.provision_flavour` and `provisioning.trim`:
+  whose recipe built the guest, which is not the flavour for a slim variant,
+  and what was taken back out afterwards. Branch on `trim` being empty
+  rather than on the flavour name to decide whether a guest has a toolchain.
+- **v9** adds `provisioning.post_playbook`, the qemu-minimal playbook run
+  against the provisioned guest. For the `ernic-rocjitsu` flavours that is
+  what replaces the in-tree ionic drivers with SRQ-capable ones; the guest's
+  own `/etc/ionic-srq.json` records what they were built from.
 
 Most of this is hoisted into the pushed artifact's annotations as well, so
 `oras manifest fetch` answers the common questions without the referrer — see

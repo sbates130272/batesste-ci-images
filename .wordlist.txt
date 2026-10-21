@@ -267,3 +267,14 @@ prebuilt
 runtime-only
 snapd
 userdata
+SRQ
+UCX
+UCX's
+UD
+BTF
+NIXL
+NIXL's
+LIF
+MORI
+rebased
+vendored

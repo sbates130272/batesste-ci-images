@@ -39,6 +39,38 @@ command -v ibv_devinfo
 modinfo ionic_rdma > /dev/null
 ldconfig -p | grep -q libibverbs
 
+# The SRQ stack, and this is the flavour where it matters most: there is no
+# compiler here, so a consumer who finds max_srq = 0 cannot fix it in the
+# guest.  It has to be right in the image or not at all.
+#
+# Asserted on the artefacts rather than on the symbol table, unlike the fat
+# flavour: binutils went with the toolchain, so there is no nm to run.  The
+# symbol check belongs to the build -- it ran before the trim, while a
+# compiler still existed -- and this asserts what survived it.
+test -s /etc/ionic-srq.json
+python3 -c 'import json; json.load(open("/etc/ionic-srq.json"))'
+IONIC_KO=$(modinfo -n ionic_rdma)
+case "${IONIC_KO}" in
+    */updates/dkms/*) ;;
+    *)
+        echo "ERROR: modprobe would load ${IONIC_KO}, not the SRQ-capable" \
+             "DKMS module; /etc/ionic-srq.json says this guest has one" >&2
+        exit 1
+        ;;
+esac
+ls /usr/local/lib/libibverbs/libionic-rdmav*.so
+ldd "$(command -v ibv_devinfo)" | grep -q '/usr/local/lib/libibverbs'
+# Resolution, not presence -- the same reason the ROCm assertions below use
+# ldd.  An autoremove that took a dependency out from under the /usr/local
+# libibverbs leaves a guest where the file is on disk and every verbs tool is
+# broken.
+if ldd "$(command -v ibv_devinfo)" 2>&1 | grep -q 'not found'; then
+    echo "ERROR: ibv_devinfo has unresolved dependencies:" >&2
+    ldd "$(command -v ibv_devinfo)" 2>&1 | grep 'not found' >&2
+    exit 1
+fi
+python3 -c 'import json; d = json.load(open("/etc/slim-trim.json")); assert d["ionic_srq_stack_kept"] is True, d'
+
 # providers/ionic, from the archive's ibverbs-providers.  The provider carries
 # the ABI suffix rather than a bare name -- libionic-rdmav59.so at 61.0 -- so
 # match on the prefix.
@@ -55,6 +87,15 @@ test "${STAMP%%:*}" = "${INSTALLED%%-*}"
 # Traffic generators.  Kept through the trim on purpose: they are runtime
 # tools, and a guest with no compiler cannot install them later.
 command -v ib_send_bw ib_write_bw ib_read_bw ib_send_lat
+
+# Locked memory, for the fat flavour's reason -- RDMA pins memory and this
+# release defaults to 8192 KB, which surfaces as every ibv_reg_mr() failing
+# with "Cannot allocate memory" a long way from anything saying memlock.
+# This boot is a fresh login on a booted guest, which is the only place the
+# PAM limit and the systemd drop-in can both be observed.
+test "$(ulimit -l)" = unlimited
+grep -q 'DefaultLimitMEMLOCK=infinity' /etc/systemd/system.conf.d/*.conf
+systemctl show -p DefaultLimitMEMLOCK | grep -q 'infinity$'
 
 # --- the rocjitsu half ---------------------------------------------------
 
@@ -213,6 +254,12 @@ for fw in $(python3 -c \
     test -s "/lib/firmware/updates/amdgpu/${fw}"
 done
 test ! -e /lib/firmware/updates/amdgpu/ip_discovery.bin
+
+# The staging directory for the one firmware file the consumer supplies.  See
+# the fat flavour's note: the directory has to exist for the documented copy
+# to land, and must not already hold a blob from somebody else's rocjitsu pin.
+test -d /lib/firmware/amdgpu
+test ! -e /lib/firmware/amdgpu/ip_discovery.bin
 
 # --- what the trim removed -----------------------------------------------
 #
