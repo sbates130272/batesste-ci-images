@@ -222,6 +222,19 @@ PREREQ=""
 prereqs() { echo "${PREREQ}"; }
 case "${1}" in prereqs) prereqs; exit 0 ;; esac
 [ -n "${DESTDIR}" ] || exit 0
+# The queue, not the staging tree. At the time a ${CONFDIR}/hooks script runs
+# the module has not been copied yet -- it is pending in __MODULES_TO_ADD as
+# the bare name "amdgpu", and the apply_add_modules *after* the hooks is what
+# copies it. A find/-delete here sees nothing and achieves nothing, which is
+# how two flavours shipped with amdgpu.ko in every initramfs.
+#
+# __MODULES_TO_ADD is mkinitramfs' own variable rather than a published
+# interface; if a future version renames it this guard does nothing and the
+# assert after update-initramfs is what catches it.
+if [ -n "${__MODULES_TO_ADD:-}" ] && [ -f "${__MODULES_TO_ADD}" ]; then
+    grep -vx 'amdgpu' "${__MODULES_TO_ADD}" > "${__MODULES_TO_ADD}.keep" || true
+    mv "${__MODULES_TO_ADD}.keep" "${__MODULES_TO_ADD}"
+fi
 find "${DESTDIR}" -name 'amdgpu.ko*' -delete
 HOOK
 sudo chmod 0755 /etc/initramfs-tools/hooks/amdgpu-exclude
