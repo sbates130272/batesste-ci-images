@@ -360,12 +360,60 @@ then point the `qemu` service at `/tmp/vfio-sockets/nvme/cntrl` and add
 `spdk-nvme` to its `depends_on`. Per the one-socket limit above, that replaces
 the rocjitsu attachment rather than joining it.
 
+## Variants
+
+| Variant | Repository suffix | What differs |
+| --- | --- | --- |
+| *(default)* | *(none)* | `--with-vfio-user --without-nvme-cuse --target-arch=corei7`; `-DNDEBUG -O2`, `SPDK_DEBUGLOG` compiled out |
+| `debug` | `-debug` | Adds `--enable-debug` to the same configure line |
+
+`--enable-debug` sets `CONFIG[DEBUG]=y`, which `mk/spdk.common.mk` turns into
+`COMMON_CFLAGS := -DDEBUG -g3 -O0 -fno-omit-frame-pointer` in place of the
+release build's `-DNDEBUG -O2`, and which `include/spdk/log.h` uses to compile
+`SPDK_DEBUGLOG`/`SPDK_DEBUGLOG_FLAG_ENABLED` as real calls instead of no-ops.
+It also turns SPDK's own `assert()`s on. The tradeoff is real, not cosmetic:
+`-O0` is markedly slower and the extra logging is voluminous, so `debug` is
+for chasing a stuck dispatch or a KV fault, not for anything that cares about
+throughput or log volume. The default image is unaffected — `SPDK_DEBUG` is
+`false` unless the variant sets it to `true`, so the release `configure`
+invocation is byte-for-byte unchanged. The label reads `spdk.debug=false` on
+the default image rather than an empty string, and `spdk.debug=true` on the
+`debug` variant.
+
+Debug logging is off by default even in the `debug` image; `SPDK_DEBUGLOG`
+being compiled in is necessary but not sufficient. Enable it per component at
+runtime over the same RPC socket the rest of this README already uses:
+
+```bash
+docker exec <container> rpc.py log_set_print_level ERROR
+docker exec <container> rpc.py log_set_flag nvmf
+docker exec <container> rpc.py log_set_flag nvmf_vfio
+docker exec <container> rpc.py log_set_flag vfio_user_db
+docker exec <container> rpc.py log_set_flag nvme
+docker exec <container> rpc.py log_get_flags
+```
+
+Component names come from each module's own
+`SPDK_LOG_REGISTER_COMPONENT(...)` call, not from the transport's public name
+— this fork's vfio-user transport registers as `nvmf_vfio` and
+`vfio_user_db`, not `vfio_user` (verified against the pinned commit's
+`lib/nvmf/vfio_user.c`). `log_set_flag` and `log_set_print_level` both work
+against an already-running target (`SPDK_RPC_RUNTIME` in
+`lib/event/log_rpc.c`), so there is no `-L` CLI flag to pass in — the
+entrypoint has no passthrough for one — and none is needed; set flags after
+`docker run` instead. Output appears on the container's stdout/stderr, so
+`docker logs -f <container>` is where it shows up.
+
 ## Pins
 
-`spdk_repo`, `spdk_branch` and `spdk_commit` in [`images.yml`](../images.yml).
-libvfio-user is not pinned here — it comes from SPDK's submodule, as above.
+`spdk_repo`, `spdk_branch`, `spdk_commit` and `spdk_debug` in
+[`images.yml`](../images.yml). libvfio-user is not pinned here — it comes
+from SPDK's submodule, as above.
 
 ## Tags
 
 The tag variant is the abbreviated SPDK commit, for example `spdk.18d1d8d`.
-See the repository [README](../README.md) for the full tag scheme.
+`debug` does not change this — the build flag is not part of the tag, only
+the `-debug` repository suffix and the `…spdk.debug` label, matching how
+`ubuntu-rocm-rocjitsu`'s log-group variant is likewise suffix/label-only. See
+the repository [README](../README.md) for the full tag scheme.
