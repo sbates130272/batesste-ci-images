@@ -143,7 +143,17 @@ if [ -n "${FINAL_PACKAGES}" ] && [ "${FINAL_PACKAGES}" != "none" ]; then
     PACKAGES_DIGEST=$(sha256sum "${EXTRA}" | cut -d' ' -f1)
     COMBINED=/tmp/packages-combined
     if [ -f "${PACKAGES_FILE}" ]; then
-        cat "${PACKAGES_FILE}" > "${COMBINED}"
+        # qemu-minimal's packages-default names linux-generic, which drags in
+        # the newest kernel in the archive. On a flavour that pins KERNEL_REF
+        # that is a third kernel nothing boots -- the cloud image's, the
+        # archive's, and the pinned one -- and dkms autoinstall builds for all
+        # three.
+        if [ -n "${FINAL_KERNEL_REF}" ]; then
+            grep -vE '^[[:space:]]*-[[:space:]]*linux-generic[[:space:]]*$' \
+                "${PACKAGES_FILE}" > "${COMBINED}"
+        else
+            cat "${PACKAGES_FILE}" > "${COMBINED}"
+        fi
     else
         echo "# Packages for the ${FLAVOUR} guest" > "${COMBINED}"
     fi

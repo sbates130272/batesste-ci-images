@@ -717,7 +717,10 @@ images:
       # upstream sources is what those jobs exist to test.
       #
       # The kernel is mainline v7.2.3, the build rocm-ernic's self-hosted
-      # guests are already passing on, stamp 202609030700. No Ubuntu release
+      # guests are already passing on, stamp 202609030700. Moving it was tried
+      # -- to 7.2.6 and then 7.2.4, to put the mainline flavours on one
+      # kernel -- and reverted, because nothing downstream had been rebuilt
+      # against either. No Ubuntu release
       # ships it -- resolute GA is 7.0.0-31 -- so kernel_ref installs it on top
       # and the release only decides how painful that is. resolute makes it a
       # plain dpkg operation; noble needs a run-parts shim, because its
@@ -726,10 +729,12 @@ images:
       # noble's gcc-13 cannot provide. Both are hand-modifications invisible to
       # dpkg -V, and both are how the existing guests were built.
       #
-      # Do not move either pin without a green ionic-ernic DKMS build against
-      # it: v7.2.4 sources call ib_umem_get_va, which 7.0 does not have. The
-      # two are pinned separately here and in rocm-ernic, with nothing
-      # asserting they stay compatible beyond checks/ionic.sh.
+      # Do not move this without a green ionic-ernic DKMS build against it:
+      # ionic_rdma calls ib_umem_get_va, which exists from 7.2.4 and not in
+      # 7.0 or 7.1.13. The
+      # not the same as being tested. This pin and rocm-ernic's are still
+      # separate, with nothing asserting they stay compatible beyond
+      # checks/ionic.sh.
       #
       # vm_playbook stays empty until vm-ionic.yml lands in qemu-minimal, and
       # the pre-seeded /opt/ionic-src checkout waits on it.
@@ -829,6 +834,13 @@ images:
           vm_packages: rocjitsu.txt
           probe_ssh_port: 2224
           release: resolute
+          # No kernel_ref: this flavour runs the release's own 7.0 kernel,
+          # which is what amdgpu-dkms 7.1.9 builds against unaided. Pinning it
+          # to mainline 7.2.x was tried and reverted -- it needs the 7.2 amdgpu
+          # patch series, and with that in place the build still ended with
+          # amdgpu.ko in the initramfs, which the assert in provisioning
+          # correctly refuses to ship. Reinstating it means solving that first;
+          # see the note beside the exclude hook.
           amdgpu_driver_version: "31.60"
           guest_rocm_version: "10.1"
           fio_commit: "d2dcd7e053d1902d2420f151c83990e6acdd9f8c"
@@ -842,9 +854,9 @@ images:
       #
       # It is a third flavour rather than a change to either of the two above,
       # because both of those are consumed today and neither wants what this
-      # one needs. The kernel is the reason: mainline v7.2.4, where ionic ->
-      # the 7.2 floor and rocjitsu -> the release kernel pull in opposite
-      # directions.
+      # one needs -- though the kernel is no longer one of those reasons.
+      # The kernel is the reason: mainline v7.2.4, where ionic -> the 7.2
+      # floor and rocjitsu -> the release kernel pull in opposite directions.
       #
       #   kernel_ref: v7.2.4 is a floor, not a preference. ionic_rdma calls
       #     ib_umem_get_va, a static inline that exists in 7.2.4 and does not
@@ -953,8 +965,8 @@ badges:
           link: https://cloud-images.ubuntu.com/
         # Two flavours install a kernel of their own, so these read the variant
         # rather than the default target. They are pinned separately on
-        # purpose: ionic's is the build rocm-ernic is passing on, and
-        # ernic-rocjitsu's is the floor ib_umem_get_va sets.
+        # purpose -- they are equal today only because all three were moved
+        # to v7.2.4 together, and nothing asserts they stay that way.
         - label: guest kernel (ionic)
           target: ubuntu-qcow2-gen@ionic
           var: kernel_ref

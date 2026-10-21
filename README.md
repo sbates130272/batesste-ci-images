@@ -613,10 +613,17 @@ Three cluster facts the script encodes:
   `~/.docker/cli-plugins`, is picked up on every node because home is shared
   and the user plugin directory outranks `/usr/libexec`. The job asserts the
   version rather than assuming it.
-- `CPUONLY` is applied inconsistently — `ctr-cx66-mi300x-01` and `hpe-rack-13`
-  advertise it while reporting MI300X and MI210X GRES — so the constraint
-  narrows the pool without guaranteeing a GPU-free node. Harmless for a
-  container build; use `EXCLUDE` if it ever matters.
+- **The site half of the constraint is not optional.** The default is
+  `CPUONLY&MARKHAM`, and `MARKHAM` is what keeps the job on a node where your
+  home directory exists. `CPUONLY` alone is advertised in other sites too —
+  `blr-vir-mleco-sr01` is tagged `BANGALORE` — and a job that lands there dies
+  in four seconds having written *nothing at all*, because Slurm cannot create
+  the log file on a filesystem that is not mounted. That failure looks
+  identical to a broken build script, so it is worth recognising.
+- `CPUONLY` is also applied inconsistently — `ctr-cx66-mi300x-01` and
+  `hpe-rack-13` advertise it while reporting MI300X and MI210X GRES — so the
+  constraint narrows the pool without guaranteeing a GPU-free node. Harmless
+  for a container build; use `--slurm-exclude` if it ever matters.
 
 Setting `CACHE_REGISTRY` is worth it: a compute node's Docker daemon is
 per-node, so a build on a node you have not used before otherwise starts
