@@ -1944,6 +1944,52 @@ def cmd_build(args: argparse.Namespace) -> None:
         password_file=args.password_file,
     )
 
+    # --no-push is what --push used to be called, inverted, back when
+    # publishing was the default. It is hidden from --help and accepted as a
+    # no-op so that a saved command line, a script or muscle memory keeps doing
+    # what it has always done -- which is now simply what happens anyway.
+    # Everything in this block is checked before the Slurm dispatch below, not
+    # after: the job re-invokes this command on a node, so anything rejected
+    # down there costs a submission, a queue wait and a node before saying so.
+    if args.no_push:
+        if args.push:
+            # Not a no-op in this combination: one of the two is a mistake and
+            # guessing which would mean guessing whether to publish. --no-push
+            # is suppressed in --help, so a wrapper carrying it gives the user
+            # no way to discover what overrode it.
+            console.print(
+                "[red]Error:[/] --push and --no-push contradict each other. "
+                "--no-push is the default now and does nothing; drop it."
+            )
+            sys.exit(2)
+        console.print("[dim]--no-push is the default now; pass --push to publish[/]")
+    if args.describe and not args.push:
+        console.print(
+            "[red]Error:[/] --describe syncs Docker Hub metadata for images "
+            "this run publishes, so it needs --push. To update the pages "
+            "without building, use the `describe` subcommand."
+        )
+        sys.exit(2)
+    # The Hub sync talks to hub.docker.com, which a batch node is not supposed
+    # to do, and cmd_describe exits non-zero when the Hub rejects an update --
+    # which would turn a completed multi-hour publish into a failed job.  Run
+    # `describe` from the submitting host once the job lands instead.
+    if args.describe and args.slurm:
+        console.print(
+            "[red]Error:[/] --describe cannot run on a Slurm node. Submit the "
+            "build, then run `describe` here once it completes."
+        )
+        sys.exit(2)
+    # Fail here rather than after an hour of building: a --push that cannot
+    # authenticate used to print one dim line under a green "Build complete"
+    # rule and exit 0, which looks exactly like a successful publish.
+    if args.push and not has_credentials(cfg):
+        console.print(
+            "[red]Error:[/] --push needs registry credentials; none were "
+            "found. Set them in .env or pass --password-file."
+        )
+        sys.exit(2)
+
     # Hand the whole build to a compute node and return. Everything below runs
     # unchanged there -- the job re-invokes this command without --slurm -- so
     # there is one build path, not a cluster one and a local one.
@@ -1953,10 +1999,16 @@ def cmd_build(args: argparse.Namespace) -> None:
 
     targets = resolve_targets(cfg, args.image)
     dry_run: bool = args.dry_run
-    # --no-push governs what this run *writes*, not what it may read: the login
+
+    # --push governs what this run *writes*, not what it may read: the login
     # below still happens, so base pulls stay authenticated rather than
     # dropping onto Docker Hub's anonymous rate limit for a multi-GB base.
-    pushing = has_credentials(cfg) and not args.no_push
+    #
+    # Credentials are not a conjunct here any more. They are asserted in the
+    # pre-flight above, so "asked to push" and "will push" cannot diverge --
+    # which is what let a credential-less --push build for an hour and then
+    # quietly publish nothing.
+    pushing = args.push
 
     insecure_ok = True
     if not dry_run:
@@ -2064,12 +2116,33 @@ def cmd_build(args: argparse.Namespace) -> None:
                     payload_dir(cfg, target),
                     [f"{t}{DEFAULT_ARTIFACT_TAG_SUFFIX}" for t in tag_set(cfg, target)],
                 )
-        elif args.no_push:
-            console.print("[dim]--no-push given, skipping push and artifact publish[/]")
         else:
-            console.print("[dim]Registry credentials not provided, skipping push[/]")
+            # The only way to be here now: --push was not given. A --push
+            # without credentials never reaches the build at all.
+            console.print("[dim]Built locally; pass --push to publish this target[/]")
 
         console.rule(f"[bold green]Build complete: {target.key}[/]")
+
+    # Hub metadata last, once, for every target this run published -- not per
+    # target inside the loop, because it is one authenticated pass over the
+    # same list and because a half-synced set of pages is worse than an
+    # unsynced one.
+    #
+    # It is a separate step from the push for a structural reason worth
+    # knowing: `build` has never touched Hub page metadata, so a repository
+    # published for the first time by hand comes up with an empty description
+    # until someone runs `describe`. That is exactly what happened to the
+    # ernic-rocjitsu-slim repository on its first release.
+    #
+    # cmd_describe exits non-zero when the Hub rejects an update, which is
+    # deliberate: the token has lacked the scope for this before, and a
+    # silently skipped description is how that went unnoticed.
+    # Gated on the flag alone: --describe already implies --push, and --push
+    # already implies credentials, both asserted in the pre-flight. The
+    # dry-run branch returns long before this.
+    if args.describe:
+        console.rule("[bold]Syncing Docker Hub metadata[/]")
+        cmd_describe(args)
 
 
 def _print_build_summary(
@@ -2110,13 +2183,17 @@ def _print_build_summary(
         table.add_row("Cache Bust", args.cache_bust)
     if args.no_cache:
         table.add_row("No Cache", "true")
-    if args.no_push:
-        table.add_row("Push", "false (--no-push)")
+    # Stated either way round, unlike the old table which mentioned pushing
+    # only when it was suppressed: publishing is now the exceptional case, and
+    # the table is where you check that before a build runs for an hour.
+    table.add_row("Push", "true (--push)" if args.push else "false (local build)")
+    if args.describe:
+        table.add_row("Describe", "true (--describe)")
     console.print(table)
 
 
 def cmd_push(args: argparse.Namespace) -> None:
-    """Push already-built images to the OCI registry."""
+    """Push already-built images, and guest qcow2 artifacts, to the registry."""
 
     cfg = load_config(
         env_file=args.env_file,
@@ -2126,14 +2203,103 @@ def cmd_push(args: argparse.Namespace) -> None:
         console.print("[red]Error:[/] registry credentials are required for push")
         sys.exit(1)
 
-    docker_login(cfg)
+    targets = resolve_targets(cfg, args.image)
 
-    for target in resolve_targets(cfg, args.image):
+    # Which targets this run would publish a qcow2 for, decided before anything
+    # is pushed.
+    #
+    # This subcommand is now the second half of a `build` that published
+    # nothing, so it has to publish what that build produced: a guest whose
+    # image tags are on Hub while its artifact is not is the half-published
+    # state a consumer meets as a referrer that does not exist.
+    #
+    # Everything the artifact push needs is therefore checked up front, for
+    # every target, rather than discovered partway down the list. push_artifact
+    # exits on a missing oras or zstd and load_vm_info exits on a payload
+    # without a manifest, and both of those land *after* earlier targets' tags
+    # are already public -- a half-published run with no summary of which half.
+    artifact_targets = [
+        t for t in targets if publishes_artifact(cfg, t) and not args.no_artifact
+    ]
+    if artifact_targets:
+        if args.image is None:
+            # nargs="?" means a bare `push` resolves to every target, which now
+            # means uploading a multi-GB disk per guest flavour. That is not
+            # something to discover by watching it happen.
+            console.print(
+                "[red]Error:[/] a bare `push` would publish the qcow2 "
+                "artifact for every guest target "
+                f"({', '.join(t.key for t in artifact_targets)}). Name a "
+                "target, or pass --no-artifact for tags only."
+            )
+            sys.exit(2)
+        missing_tools = [t for t in ("oras", "zstd") if shutil.which(t) is None]
+        if missing_tools:
+            console.print(
+                f"[red]Error:[/] {', '.join(missing_tools)} not on PATH, and "
+                "an artifact push needs them. Install them, or pass "
+                "--no-artifact to push image tags only."
+            )
+            sys.exit(2)
+        for target in artifact_targets:
+            payload = payload_dir(cfg, target)
+            if not payload.is_dir() or not (payload / "vm-info.json").is_file():
+                console.print(
+                    f"[red]Error:[/] {target.key} has no exported payload at "
+                    f"{payload}. Build it first, or pass --no-artifact to "
+                    "push image tags only."
+                )
+                sys.exit(2)
+
+    dry_run: bool = args.dry_run
+    if not dry_run:
+        docker_login(cfg)
+
+    for target in targets:
         console.rule(f"[bold]Pushing {target.key}[/]")
         for tag in tag_set(cfg, target):
             ref = tagged_ref(cfg, target, tag=tag)
-            subprocess.run(["docker", "push", ref], check=True)
+            if dry_run:
+                console.print(f"[yellow]Would push[/] {ref}")
+                continue
+            # Reported rather than raised. The common failure here is pushing
+            # a target this machine never built -- the tags are computed from
+            # images.yml and the local git state, so they exist whether or not
+            # the image does -- and a CalledProcessError traceback says that
+            # far less clearly than the one line docker already printed.
+            if subprocess.run(["docker", "push", ref], check=False).returncode:
+                console.print(
+                    f"[red]Error:[/] could not push {ref}. If the image was "
+                    "built elsewhere, or the tag fingerprint has moved since "
+                    "it was built, build it here first."
+                )
+                sys.exit(1)
             console.print(f"[green]Pushed[/] {ref}")
+
+        if target in artifact_targets:
+            payload = payload_dir(cfg, target)
+            # Which disk is about to be published, and when it was built.
+            # Nothing correlates output/<scope>/ with the tags computed just
+            # now -- it is a gitignored directory any earlier build on this
+            # machine may have written -- so the one defence against
+            # republishing a stale guest under fresh tags is saying out loud
+            # what is being pushed.
+            info = json.loads((payload / "vm-info.json").read_text())
+            built = (info.get("build_info") or {}).get("build_timestamp", "unknown")
+            console.print(f"[dim]Payload {payload} built {built}[/]")
+            push_artifact(
+                cfg,
+                target,
+                payload,
+                [f"{t}{DEFAULT_ARTIFACT_TAG_SUFFIX}" for t in tag_set(cfg, target)],
+                dry_run=dry_run,
+            )
+
+    # Same step `build --describe` runs, for the same reason: a repository
+    # published for the first time has an empty Hub description until it does.
+    if args.describe:
+        console.rule("[bold]Syncing Docker Hub metadata[/]")
+        cmd_describe(args)
 
 
 def extract_vm_payload(image_ref: str, dest: Path) -> dict:
@@ -4381,7 +4547,12 @@ def cmd_describe(args: argparse.Namespace) -> None:
     )
     targets = resolve_targets(cfg, args.image)
 
-    token = "" if args.dry_run else _hub_token(cfg)
+    # getattr, because this is called both as its own subcommand and from the
+    # tail of `build --describe` / `push --describe`, and not every one of
+    # those parsers declares --dry-run.
+    dry_run = getattr(args, "dry_run", False)
+
+    token = "" if dry_run else _hub_token(cfg)
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
     table = Table(title="Docker Hub metadata")
@@ -4436,7 +4607,7 @@ def cmd_describe(args: argparse.Namespace) -> None:
             tag, image_size, pushed = "[dim]none[/]", "[dim]-[/]", "[dim]-[/]"
         row = (target.key, repository, size, tag, image_size, pushed)
 
-        if args.dry_run:
+        if dry_run:
             table.add_row(*row, "[yellow]dry-run[/]")
             continue
 
@@ -4461,7 +4632,7 @@ def cmd_describe(args: argparse.Namespace) -> None:
             failed = True
 
     console.print(table)
-    if args.dry_run:
+    if dry_run:
         for key, short in previews:
             console.print(f"[dim]{key}[/] ({len(short.encode())}B): {short}")
     if failed:
@@ -4521,13 +4692,37 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="File containing registry password",
     )
+    # Publishing is opt-in.  It used to be the default with --no-push to
+    # suppress it, which meant the dangerous thing happened when you forgot a
+    # flag rather than when you asked for it -- and `build` moves `latest` and
+    # publishes a multi-GB qcow2 artifact, so forgetting it once is public.
+    # No workflow calls this subcommand (CI drives build-push-action and
+    # push-artifact directly), so the flip is otherwise confined to a
+    # terminal. The one exception is systemd/build-vm.service, the nightly
+    # rebuild, which exists to refresh the registry and carries --push
+    # explicitly for that reason -- it would otherwise have gone on exiting 0
+    # every night while publishing nothing.
+    p_build.add_argument(
+        "--push",
+        action="store_true",
+        help=(
+            "Publish after building: push every tag, move the rolling "
+            "aliases, and push the qcow2 artifact for a guest target. "
+            "Omitted, the build stays local"
+        ),
+    )
+    p_build.add_argument(
+        "--describe",
+        action="store_true",
+        help=(
+            "After pushing, sync each target's Docker Hub description and "
+            "README, as the `describe` subcommand does. Requires --push"
+        ),
+    )
     p_build.add_argument(
         "--no-push",
         action="store_true",
-        help=(
-            "Build and tag locally without pushing anything: no image push, "
-            "no qcow2 artifact, and no move of the rolling aliases"
-        ),
+        help=argparse.SUPPRESS,
     )
     p_build.add_argument(
         "--base-from-registry",
@@ -4698,7 +4893,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ── push ──
     p_push = sub.add_parser(
         "push",
-        help="Push images to OCI registry",
+        help="Push already-built images, and guest artifacts, to the registry",
     )
     p_push.add_argument(
         "image",
@@ -4706,6 +4901,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="TARGET",
         help=f"{TARGET_HELP} (pushes all if omitted)",
+    )
+    p_push.add_argument(
+        "--no-artifact",
+        action="store_true",
+        help=(
+            "Push image tags only, leaving a guest target's qcow2 artifact unpublished"
+        ),
+    )
+    p_push.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would be pushed without contacting the registry",
+    )
+    p_push.add_argument(
+        "--describe",
+        action="store_true",
+        help="Also sync each target's Docker Hub description and README",
     )
     p_push.add_argument(
         "--password-file",

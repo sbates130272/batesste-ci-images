@@ -467,13 +467,40 @@ Preview the docker commands without executing them:
 ./ci-images-tool.py build --dry-run
 ```
 
-A build with registry credentials set pushes every tag as soon as the image is
-built, rolling aliases and qcow2 artifacts included. `--no-push` builds and tags
-locally and publishes nothing, which is what a throwaway test build wants:
+**A build publishes nothing unless you ask it to.** `--push` pushes every tag
+as each image is built, rolling aliases and qcow2 artifacts included; without
+it the build stays local however the credentials are set:
 
 ```bash
-./ci-images-tool.py build ubuntu-qcow2-gen@rocjitsu --no-push
+./ci-images-tool.py build ubuntu-qcow2-gen@rocjitsu          # local
+./ci-images-tool.py build ubuntu-qcow2-gen@rocjitsu --push   # published
 ```
+
+`--describe` adds the Docker Hub metadata sync — the same pass the `describe`
+subcommand makes — after the push. It needs `--push`, because it exists to
+finish a release rather than to edit a page for an image that was never
+published; `describe` on its own is the way to do that. A repository
+published for the first time has an empty description until one or the other
+runs:
+
+```bash
+./ci-images-tool.py build --push --describe
+```
+
+This default is the opposite way round from how it used to be, and the flip is
+deliberate: `build` moves `latest` and uploads multi-GB guest artifacts, so the
+irreversible thing should happen when you ask for it rather than when you
+forget `--no-push`. That flag is still accepted and now does nothing, since it
+describes the default.
+
+Two callers depend on that, and only two. No workflow runs this subcommand —
+the workflows drive `build-push-action`, `push-artifact` and `describe`
+directly — so the change is otherwise confined to a terminal. The exception is
+`systemd/build-vm.service`, the nightly rebuild, which exists to keep the
+registry refreshed and therefore passes `--push` explicitly.
+
+`--push` without credentials is an error before anything builds, rather than a
+dim line under a green "Build complete" an hour later.
 
 Specify a password file for registry authentication:
 
@@ -487,7 +514,7 @@ Several targets can be named at once; they are reordered so a base is never
 scheduled after something that layers on it:
 
 ```bash
-./ci-images-tool.py build --no-push ubuntu-base ubuntu-libvfio-user
+./ci-images-tool.py build ubuntu-base ubuntu-libvfio-user
 ```
 
 #### How a build runs: docker buildx bake
@@ -529,17 +556,22 @@ therefore cannot be used on its own.
 workstation:
 
 ```bash
-./ci-images-tool.py build --slurm --no-push ubuntu-base ubuntu-libvfio-user
+./ci-images-tool.py build --slurm ubuntu-base ubuntu-libvfio-user
 ./ci-images-tool.py build --slurm --slurm-cpus 192 --slurm-mem 512G
 ./ci-images-tool.py build --slurm --slurm-time 12:00:00 ubuntu-qcow2-gen@rocjitsu
 ```
 
 The job re-invokes this same command without `--slurm`, so every other flag
 means what it means locally and there is one build path rather than a cluster
-one and a local one. A cluster run therefore does what a local run does: bake
-the images, export each guest payload to `output/`, push every tag, and push
-the qcow2 ORAS artifact. `oras` and `zstd` come from the shared home, like
-buildx. The spec is generated before submitting, so an `images.yml` that
+one and a local one — `--push` included:
+
+```bash
+./ci-images-tool.py build --slurm --push ubuntu-qcow2-gen@rocjitsu
+```
+
+A cluster run therefore does what a local run does: bake the images, export
+each guest payload to `output/`, and — given `--push` — push every tag and the
+qcow2 ORAS artifact. `oras` and `zstd` come from the shared home, like buildx. The spec is generated before submitting, so an `images.yml` that
 cannot render fails before a job is ever queued.
 
 `--slurm` stays attached and streams the job's log, so it reads like an
@@ -590,8 +622,11 @@ Only `build` takes these flags. Nothing else here wants a big machine: `verify`
 runs libguestfs in a container, and `describe`, `status`, `prune` and
 `push-artifact` are API or network calls a compute node would not speed up.
 
-Descriptions are likewise not pushed by the build, on the cluster or off it.
-Run them after it, from wherever you are:
+Descriptions are not pushed by a cluster build at all: `--describe` is refused
+with `--slurm`, because the Hub sync is an API call a batch node should not be
+making and because its failure would turn a completed multi-hour publish into a
+failed job. Locally, `build --push --describe` runs it at the end; otherwise run
+it after the job, from wherever you are:
 
 ```bash
 ./ci-images-tool.py describe --dry-run    # check what would change
@@ -718,12 +753,36 @@ building it:
 
 ### 1b. Push Images Separately
 
-Build first, then push as a separate step:
+Build first, look at what you got, then publish — which is the shape a build
+that no longer pushes by default encourages:
 
 ```bash
 ./ci-images-tool.py build ubuntu-qemu-libvfio-user
 ./ci-images-tool.py push ubuntu-qemu-libvfio-user
 ```
+
+`push` publishes a guest target's qcow2 ORAS artifact as well as its image
+tags, so that `build` then `push` lands the same thing `build --push` would.
+Tags on the registry with no artifact beside them is a half-published state a
+consumer discovers as a referrer that does not exist.
+
+That means `push` on a guest target needs what the artifact push needs, and it
+checks all of it before pushing anything rather than failing partway down a
+list with some tags already public:
+
+- the payload exported in `output/<scope>/`, `vm-info.json` included — build it
+  first,
+- `oras` and `zstd` on `PATH`,
+- an explicitly named target. A bare `push` would otherwise upload a multi-GB
+  disk for every guest flavour.
+
+`--no-artifact` opts out of all of that and pushes image tags only.
+`--describe` adds the Docker Hub metadata sync, as on `build`.
+
+Nothing correlates `output/<scope>/` with the tags being computed now — it is a
+gitignored directory any earlier build on the machine may have written — so
+`push` prints which payload it is publishing and when it was built. Read that
+line before trusting a disk you did not just build.
 
 You can also build images directly with Docker:
 
@@ -1210,9 +1269,10 @@ For Docker Hub, you can use a Personal Access Token instead of your password:
 
 Edit `/etc/systemd/system/build-vm.service` to match your system paths if
 needed. The service will:
-1. Build the Docker image(s) using `ci-images-tool.py`
-2. Push the image(s) to the configured registry (if
-   credentials are provided)
+1. Build the Docker image(s) using `ci-images-tool.py build --push`
+2. Push the image(s) to the configured registry. `--push` is what makes that
+   happen — a plain `build` publishes nothing — and the credentials in
+   `/etc/batesste-ci-images/.env` are what it needs to succeed
 3. Optionally run containers or build artifacts
    (image-specific)
 
