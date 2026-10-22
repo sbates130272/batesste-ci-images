@@ -1611,12 +1611,20 @@ def follow_slurm_job(job_id: str, log_path: Path) -> int:
             # silent terminal.
             if handle is None:
                 if _log_appeared(log_path):
-                    handle = log_path.open("r")
+                    handle = log_path.open("r", errors="replace")
                     say(f"[dim]--- {log_path} ---[/]")
                 elif state and state != last_state:
                     say(f"[dim]{job_id}: {state}[/]")
                     last_state = state
 
+            # errors="replace" on the open above, because this reads a file
+            # that is still being written: a line caught mid-write splits a
+            # multi-byte character, and strict decoding raises rather than
+            # waiting for the rest of it. The guest targets stream a booting
+            # VM's systemd console, which is full of them -- the ellipsis in
+            # "Starting systemd-journal-catalog-u…ervice" is the e2 80 a6 that
+            # killed a follow. Dropping the view of a running build over one
+            # byte is the worse failure; the log on disk is unaffected.
             if handle is not None:
                 while chunk := handle.readline():
                     sys.stdout.write(chunk)
@@ -1642,7 +1650,7 @@ def follow_slurm_job(job_id: str, log_path: Path) -> int:
         if handle is None:
             for _ in range(10):
                 if _log_appeared(log_path):
-                    handle = log_path.open("r")
+                    handle = log_path.open("r", errors="replace")
                     say(f"[dim]--- {log_path} ---[/]")
                     break
                 time.sleep(1)
