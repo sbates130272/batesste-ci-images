@@ -22,7 +22,7 @@ ARG ROCJITSU_BRANCH=develop
 # bdc4aea25 "harden PCI and VFIO compute transport" and d5927b503 "qualify the
 # QEMU VFIO compute workflow", and then deleted, so the old pin is not an
 # ancestor of anything that still exists.
-ARG ROCJITSU_COMMIT=84fb06bc970a0049091a0fa7a7dbf2b925e488ee
+ARG ROCJITSU_COMMIT=98f6a72dcc49a5f809593deacbe5c9df89cde3b3
 # Which config the vfio-user probe below and the default CMD serve. A build
 # variant pinned to a different upstream ref can point at a renamed or newly
 # added profile from images.yml without editing this file.
@@ -31,14 +31,43 @@ ARG ROCJITSU_CONFIG=gfx1250_mi455x.json
 # a group named here prints for every event it covers.
 ARG ROCJITSU_LOG_GROUPS=OFF
 
+# Optional, and empty by default: build against a libvfio-user of our choosing
+# instead of the one emulation/rocjitsu/cmake/rj_libvfio_user.cmake pins
+# (nutanix/libvfio-user at v0.8). Set only by the -sbates-fork variant, to pick
+# up VFIO_USER_HOST_DOORBELL_FD (opcode 19) and vfu_setup_host_doorbell_cb().
+# See images.yml.
+#
+# Both or neither: a commit with no repo has nothing to fetch it from, and a
+# repo with no commit would track a force-pushed branch.
+#
+# The upstream tree is still built unmodified -- this goes in through
+# FETCHCONTENT_SOURCE_DIR_LIBVFIO-USER below, CMake's own escape hatch, rather
+# than by patching the cmake that declares the pin.
+ARG LIBVFIO_USER_REPO=
+ARG LIBVFIO_USER_COMMIT=
+
 WORKDIR /build
 
+# The libvfio-user fetch is folded into this RUN rather than given one of its
+# own: a new layer here would invalidate every layer below it on the default
+# path too, where these ARGs are empty and nothing is fetched.
 RUN git init /build/rocm-systems && \
     git -C /build/rocm-systems remote add origin "${ROCJITSU_REPO}" && \
     git -C /build/rocm-systems fetch --depth 1 origin "${ROCJITSU_COMMIT}" && \
     git -C /build/rocm-systems checkout FETCH_HEAD && \
     git -C /build/rocm-systems rev-parse HEAD \
-        > /build/rocjitsu-commit.txt
+        > /build/rocjitsu-commit.txt && \
+    if [ -n "${LIBVFIO_USER_REPO}" ] && [ -n "${LIBVFIO_USER_COMMIT}" ]; then \
+        git init /build/libvfio-user && \
+        git -C /build/libvfio-user \
+            fetch --depth 1 "${LIBVFIO_USER_REPO}" "${LIBVFIO_USER_COMMIT}" && \
+        git -C /build/libvfio-user checkout FETCH_HEAD && \
+        git -C /build/libvfio-user rev-parse HEAD \
+            > /build/libvfio-user-commit.txt && \
+        echo "${LIBVFIO_USER_REPO}" > /build/libvfio-user-source.txt; \
+    else \
+        echo rocjitsu-cmake > /build/libvfio-user-source.txt; \
+    fi
 
 # This tree is built unmodified. It used to carry a five-patch series against
 # ROCJITSU_COMMIT without which the served device could not boot a guest, let
@@ -49,7 +78,20 @@ RUN git init /build/rocm-systems && \
 # _Static_assert is a C11 keyword with no C++ spelling, and libvfio-user v0.8's
 # pci_caps/{common,msix}.h use it; rocjitsu includes those from C++ in
 # lib/rocjitsu/src/rocjitsu/vmm/vfu/vfio_device_host.cpp, so the VFIO build does
-# not compile without this define.
+# not compile without this define. It is load-bearing for the default build and
+# inert for the -sbates-fork variant: upstream 8039244 added include/compiler.h
+# and replaced those assertions with VFU_STATIC_ASSERT, which already spells
+# itself static_assert under __cplusplus. Inert rather than removable, because
+# the flag is shared by both and the default still needs it. It reaches only
+# CMAKE_CXX_FLAGS, never the C compile of lib/*.c, so it cannot collide with
+# glibc's own static_assert macro either way.
+#
+# FETCHCONTENT_SOURCE_DIR_LIBVFIO-USER is CMake's documented per-dependency
+# override: FetchContent upper-cases the declared name (`libvfio-user`) and
+# consults this variable before downloading, so a non-empty value makes it use
+# that tree and fetch nothing. The hyphen is legal in a CMake variable name.
+# Empty is exactly equivalent to not passing the flag, which is what keeps the
+# default path byte-identical to what it was before this hook existed.
 RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     cmake \
     -B /build/rocm-systems/build \
@@ -66,6 +108,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     "-DCMAKE_EXE_LINKER_FLAGS=-static-libstdc++" \
     -DCMAKE_INSTALL_PREFIX=/usr/local \
     -DFETCHCONTENT_BASE_DIR=/tmp/deps \
+    "-DFETCHCONTENT_SOURCE_DIR_LIBVFIO-USER=${LIBVFIO_USER_COMMIT:+/build/libvfio-user}" \
     -DROCJITSU_ENABLE_VFIO=ON \
     "-DRJ_LOG_GROUPS=${ROCJITSU_LOG_GROUPS}" \
     -DBUILD_TESTING=OFF && \
@@ -73,6 +116,29 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
           --parallel "$(nproc)" && \
     cmake --install /build/rocm-systems/build && \
     ldconfig
+
+# Prove the override actually took, because every way it can fail is silent: an
+# ignored variable, a misspelled name or a stale cache would all fall back to
+# downloading v0.8 and produce a perfectly green build of the wrong library.
+# Asserted against the CMakeCache -- what cmake resolved -- rather than against
+# the flag we passed.
+#
+# `test ! -e` says FetchContent created no -src for THIS dependency; /tmp/deps
+# itself exists either way, because json-c, googletest and flatbuffers land
+# there too. The grep for the new symbol is the positive half: it is what the
+# variant exists for, and it is absent from v0.8.
+RUN set -eu; \
+    if [ -n "${LIBVFIO_USER_COMMIT}" ]; then \
+        grep -q 'FETCHCONTENT_SOURCE_DIR_LIBVFIO-USER:.*=/build/libvfio-user' \
+            /build/rocm-systems/build/CMakeCache.txt; \
+        test ! -e /tmp/deps/libvfio-user-src; \
+        grep -q 'vfu_setup_host_doorbell_cb' \
+            /build/libvfio-user/include/libvfio-user.h; \
+        grep -q 'VFIO_USER_HOST_DOORBELL_FD' \
+            /build/libvfio-user/include/vfio-user.h; \
+    else \
+        test -d /tmp/deps/libvfio-user-src; \
+    fi
 
 # rj-ip-discovery generates the ip_discovery.bin that amdgpu.discovery=2 reads
 # instead of polling BAR registers; without it the driver stalls in
@@ -134,22 +200,45 @@ ENV ROCJITSU_CONFIG_PATH=${ROCJITSU_CONFIG_DIR}/${ROCJITSU_CONFIG}
 # restated here, so a bump upstream cannot leave this metadata lying about what
 # the vfio-user transport was built against.
 #
+# read_pin walks the whole FetchContent_Declare block and takes its GIT_TAG,
+# rather than assuming the tag is on the line after the repository URL. The
+# naive version printed the first word of whatever followed, so a comment
+# between GIT_REPOSITORY and GIT_TAG -- which the doorbell branch adds -- made
+# it emit "Rebased" and sail past the `test -n` below. Order-independent and
+# comment-proof, and still empty for a dependency that is not there, which is
+# what that test is for.
+#
+# That awk reads the *recipe*, not what was fetched, so on its own it would
+# report v0.8 for a -sbates-fork build that actually linked the fork -- a green
+# build whose own provenance lies. So it now names both: libvfio_user_upstream_tag
+# is what the tree declares, libvfio_user_tag is what was really built, and
+# libvfio_user_source says which of the two supplied it.
+#
 # local_patches stays in the schema and stays empty. Consumers grew a habit of
 # reading it to tell a patched build from an unpatched one, and an absent key
 # reads the same as an unpatched image to a careless `.get()`; an explicit []
-# says the tree was built unmodified.
+# says the tree was built unmodified -- which stays true under the override,
+# because FETCHCONTENT_SOURCE_DIR redirects the fetch without touching the
+# rocm-systems checkout.
 RUN set -eu; \
     cmake_pins=/build/rocm-systems/emulation/rocjitsu/cmake/rj_libvfio_user.cmake; \
-    libvfio_user_tag="$(awk '/libvfio-user.git/{getline; print $2}' "${cmake_pins}")"; \
-    json_c_tag="$(awk '/json-c.git/{getline; print $2}' "${cmake_pins}")"; \
+    read_pin() { awk -v url="$1" '/FetchContent_Declare\(/{inblk=1;tag="";hit=0;next} inblk{ if(index($0,url)) hit=1; if($1=="GIT_TAG") tag=$2; if($0 ~ /^[[:space:]]*\)/){ if(hit && tag!=""){print tag; exit} inblk=0 } }' "$2"; }; \
+    libvfio_user_tag="$(read_pin libvfio-user.git "${cmake_pins}")"; \
+    json_c_tag="$(read_pin json-c.git "${cmake_pins}")"; \
     test -n "${libvfio_user_tag}"; \
     test -n "${json_c_tag}"; \
+    libvfio_user_upstream_tag="${libvfio_user_tag}"; \
+    if [ -s /build/libvfio-user-commit.txt ]; then \
+        libvfio_user_tag="$(cat /build/libvfio-user-commit.txt)"; \
+    fi; \
     cp /build/rocjitsu-commit.txt /usr/local/share/rocjitsu-commit.txt; \
     printf '{\n\
   "rocjitsu_repo": "%s",\n\
   "rocjitsu_branch": "%s",\n\
   "rocjitsu_commit": "%s",\n\
   "local_patches": [],\n\
+  "libvfio_user_source": "%s",\n\
+  "libvfio_user_upstream_tag": "%s",\n\
   "libvfio_user_tag": "%s",\n\
   "json_c_tag": "%s",\n\
   "vfio_enabled": true,\n\
@@ -162,6 +251,8 @@ RUN set -eu; \
         "${ROCJITSU_REPO}" \
         "${ROCJITSU_BRANCH}" \
         "$(cat /build/rocjitsu-commit.txt)" \
+        "$(cat /build/libvfio-user-source.txt)" \
+        "${libvfio_user_upstream_tag}" \
         "${libvfio_user_tag}" \
         "${json_c_tag}" \
         "${ROCJITSU_LOG_GROUPS}" \
@@ -292,7 +383,7 @@ RUN set -eux; \
         "${src}/tests/pci/gpu_pci_device_test.cpp"; \
     grep -q 'request_dynamic_scratch' "${vm}/command_processor.cpp"
 
-RUN rm -rf /build/rocm-systems /tmp/deps
+RUN rm -rf /build/rocm-systems /build/libvfio-user /tmp/deps
 
 ENV PATH=/usr/local/bin:${PATH}
 

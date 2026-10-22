@@ -61,6 +61,23 @@ docker run --rm -v /run/ernic:/run/ernic \
 `libvfio_user_commit` inherited from `defaults.vars`. Both appear in the tag,
 so a build that differs only in a pin gets its own tag.
 
+## Variants
+
+| Variant | Repository suffix | What differs |
+| --- | --- | --- |
+| *(default)* | *(none)* | Built against the pinned upstream libvfio-user |
+| `sbates-fork` | `-sbates-fork` | Same rocm-ernic, built against the `sbates130272` libvfio-user fork carrying the host MMIO doorbell fd protocol |
+
+The variant layers on `ubuntu-libvfio-user@sbates-fork` through
+`base_variant`, so it is the same rocm-ernic commit against a different
+vfio-user library — use it with `ubuntu-qemu-libvfio-user-sbates-fork`, which
+is the QEMU that speaks the opcode. Both pins are already in the tag, so the
+two cannot collide: `ernic.<sha>-vfu.8039244` against `ernic.<sha>-vfu.3719c3a`.
+
+Making the ERNIC server actually take doorbell fds — calling
+`vfu_setup_host_doorbell_cb()` rather than sending a `REGION_WRITE` per ring —
+is a change in rocm-ernic itself. This variant only makes the API reachable.
+
 ## Tags
 
 The tag variant is the two abbreviated commits, for example

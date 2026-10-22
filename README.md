@@ -34,8 +34,8 @@ adding an image or a variant adds its row.
 
 [![libvfio-user 8039244](https://img.shields.io/badge/libvfio--user-8039244-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/803924493a7c787b2ba358751f55f07d5dba64b2)
 [![qemu-minimal c079195](https://img.shields.io/badge/qemu--minimal-c079195-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/c0791954aec508bfd3f26d11d6960f279d4b175a)
-[![rocm-ernic 31d3114](https://img.shields.io/badge/rocm--ernic-31d3114-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/31d311417ff74e914f1f4c3b08833c2fe98a2117)
-[![rocjitsu 84fb06b](https://img.shields.io/badge/rocjitsu-84fb06b-ED1C24)](https://github.com/ROCm/rocm-systems/commit/84fb06bc970a0049091a0fa7a7dbf2b925e488ee)
+[![rocm-ernic 151379b](https://img.shields.io/badge/rocm--ernic-151379b-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/151379b0184b917d18ce367c40942aa5d663e696)
+[![rocjitsu 98f6a72](https://img.shields.io/badge/rocjitsu-98f6a72-ED1C24)](https://github.com/ROCm/rocm-systems/commit/98f6a72dcc49a5f809593deacbe5c9df89cde3b3)
 [![spdk 18d1d8d](https://img.shields.io/badge/spdk-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
 [![fio d2dcd7e](https://img.shields.io/badge/fio-d2dcd7e-4B8BBE)](https://github.com/axboe/fio/commit/d2dcd7e053d1902d2420f151c83990e6acdd9f8c)
 [![ucx 8094f69](https://img.shields.io/badge/ucx-8094f69-4B8BBE)](https://github.com/openucx/ucx/commit/8094f699daa0d53ea84d11b6cefd7dffa9c9eb46)
@@ -49,15 +49,18 @@ adding an image or a variant adds its row.
 
 | Artifact | main |
 | --- | --- |
-| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-base + ubuntu-libvfio-user (shared base job) | [![ubuntu-base + ubuntu-libvfio-user main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20Base%20Images)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-base + ubuntu-libvfio-user + ubuntu-libvfio-user (shared base job) | [![ubuntu-base + ubuntu-libvfio-user + ubuntu-libvfio-user main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20Base%20Images)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-kernel-build | [![ubuntu-kernel-build main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-kernel-build)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-cuda-rocm | [![ubuntu-cuda-rocm main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-cuda-rocm)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-cuda-rocm-fio | [![ubuntu-cuda-rocm-fio main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-cuda-rocm-fio)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-cuda-rocm-fio-async-hipfile (job: ubuntu-cuda-rocm-fio@async-hipfile) | [![ubuntu-cuda-rocm-fio-async-hipfile main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-cuda-rocm-fio%40async-hipfile)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-rocm-nixl | [![ubuntu-rocm-nixl main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-rocm-nixl)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-rocm-ernic | [![ubuntu-rocm-ernic main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-rocm-ernic)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-rocm-ernic-sbates-fork (job: ubuntu-rocm-ernic@sbates-fork) | [![ubuntu-rocm-ernic-sbates-fork main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-rocm-ernic%40sbates-fork)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-rocm-rocjitsu | [![ubuntu-rocm-rocjitsu main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-rocm-rocjitsu)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-rocm-rocjitsu-sbates-fork (job: ubuntu-rocm-rocjitsu@sbates-fork) | [![ubuntu-rocm-rocjitsu-sbates-fork main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-rocm-rocjitsu%40sbates-fork)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-spdk-libvfio-user | [![ubuntu-spdk-libvfio-user main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-spdk-libvfio-user)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-spdk-libvfio-user-sbates-fork (job: ubuntu-spdk-libvfio-user@sbates-fork) | [![ubuntu-spdk-libvfio-user-sbates-fork main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-spdk-libvfio-user%40sbates-fork)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-qemu-libvfio-user | [![ubuntu-qemu-libvfio-user main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qemu-libvfio-user)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![container](https://img.shields.io/badge/type-container-1f6feb)] ubuntu-qemu-libvfio-user-sbates-fork (job: ubuntu-qemu-libvfio-user@sbates-fork) | [![ubuntu-qemu-libvfio-user-sbates-fork main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qemu-libvfio-user%40sbates-fork)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | [![qcow2](https://img.shields.io/badge/type-qcow2-8957e5)] ubuntu-qcow2-gen | [![ubuntu-qcow2-gen main](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&event=push&job=Build%20ubuntu-qcow2-gen)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
@@ -1186,6 +1189,37 @@ racing the default build for them.
 | `ubuntu-cuda-rocm-fio@async-hipfile` | `…-ubuntu-cuda-rocm-fio-async-hipfile` |
 | `ubuntu-qemu-libvfio-user` | `…-ubuntu-qemu-libvfio-user` |
 | `ubuntu-qemu-libvfio-user@sbates-fork` | `…-ubuntu-qemu-libvfio-user-sbates-fork` |
+| `ubuntu-libvfio-user` | `…-ubuntu-libvfio-user` |
+| `ubuntu-libvfio-user@sbates-fork` | `…-ubuntu-libvfio-user-sbates-fork` |
+| `ubuntu-rocm-ernic` | `…-ubuntu-rocm-ernic` |
+| `ubuntu-rocm-ernic@sbates-fork` | `…-ubuntu-rocm-ernic-sbates-fork` |
+| `ubuntu-spdk-libvfio-user` | `…-ubuntu-spdk-libvfio-user` |
+| `ubuntu-spdk-libvfio-user@sbates-fork` | `…-ubuntu-spdk-libvfio-user-sbates-fork` |
+| `ubuntu-rocm-rocjitsu` | `…-ubuntu-rocm-rocjitsu` |
+| `ubuntu-rocm-rocjitsu@sbates-fork` | `…-ubuntu-rocm-rocjitsu-sbates-fork` |
+
+The five `sbates-fork` targets are one set and are meant to be used together:
+they carry the libvfio-user fork that adds `VFIO_USER_HOST_DOORBELL_FD`
+(opcode 19) and `vfu_mmio_write()`, and a server built against either can only
+negotiate it with a QEMU that also speaks it. With rocjitsu included, all three vfio-user servers in
+this repo — rocm-ernic's NIC, rocjitsu's GPU and SPDK's NVMe controller — can be
+built against one libvfio-user, alongside the library image itself and the QEMU
+that talks to them.
+
+They reach it three different ways, because the images are layered differently.
+`ubuntu-rocm-ernic@sbates-fork` and `ubuntu-qemu-libvfio-user@sbates-fork` use
+`base_variant: sbates-fork` to layer on the forked library image.
+`ubuntu-spdk-libvfio-user@sbates-fork` builds no such base and checks SPDK's own
+libvfio-user submodule out at the same SHA.
+`ubuntu-rocm-rocjitsu@sbates-fork` builds neither: its libvfio-user is pinned by
+upstream ROCm's own cmake, so the Dockerfile redirects that fetch with CMake's
+`FETCHCONTENT_SOURCE_DIR_<NAME>` escape hatch, leaving the rocm-systems tree
+unmodified.
+
+The default targets stay on the pinned upstream libvfio-user, which is what
+`scripts/version-scrub.sh` tracks and what the qcow2 guests build against. The
+fork pin is repeated in each variant — a variant can only override `vars:`, and
+those are literal — so `version-scrub.sh` warns if the five ever disagree.
 
 Refer to one on the command line as `<image>@<variant>`; every subcommand that
 takes an image takes a target:

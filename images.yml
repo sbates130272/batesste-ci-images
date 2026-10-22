@@ -78,6 +78,7 @@ defaults:
 
   # Shared by more than one image, so they cannot be owned by any single one.
   vars:
+    libvfio_user_repo: https://gitlab.com/qemu-project/libvfio-user.git
     libvfio_user_commit: 803924493a7c787b2ba358751f55f07d5dba64b2
     # The Ubuntu cloud image every guest qcow2 is built from. Ubuntu 26.04 LTS
     # "resolute" ships Linux 7.0. This chooses the *userspace* only: the guest
@@ -164,10 +165,58 @@ images:
       library consumers link against.
     base: ubuntu-base
     build_args:
+      LIBVFIO_USER_REPO: "{libvfio_user_repo}"
       LIBVFIO_USER_COMMIT: "{libvfio_user_commit}"
     variant: "vfu.{libvfio_user_commit|short}"
     labels:
+      "{ns}.libvfio-user.repo": "{libvfio_user_repo}"
       "{ns}.libvfio-user.commit": "{libvfio_user_commit}"
+    variants:
+      # The fork every host-doorbell consumer layers on. It exists as a variant
+      # of this image rather than as a bumped default so the qcow2 guests --
+      # which reach this image only through ubuntu-qemu-libvfio-user's default
+      # target -- keep building against upstream, and so version-scrub.sh can go
+      # on tracking qemu-project master in the default.
+      #
+      # Downstream images pick it up with `base_variant: sbates-fork`; see
+      # ubuntu-qemu-libvfio-user and ubuntu-rocm-ernic below.
+      #
+      # The pin is repeated in ubuntu-rocm-ernic@sbates-fork,
+      # ubuntu-spdk-libvfio-user@sbates-fork and
+      # ubuntu-rocm-rocjitsu@sbates-fork, because a variant may only override
+      # `vars:` and those are taken literally -- build_args and labels are read
+      # from the image, so there is no var indirection to share. All five
+      # must agree: they exist to be built against the same libvfio-user
+      # as the QEMU that talks to them. version-scrub.sh warns when they
+      # diverge, the way it already does for the guest fio pin.
+      sbates-fork:
+        suffix: "-sbates-fork"
+        description: >-
+          libvfio-user from the sbates130272 fork, adding the host MMIO
+          doorbell fd protocol (opcode 19) and vfu_mmio_write() on top of the
+          pinned upstream commit.
+        # feat/host-doorbell-fd, rebased onto the libvfio_user_commit above:
+        # this is that tree plus four commits, not a divergent one. Two paths
+        # for a server to reach host MMIO without a REGION_WRITE round trip:
+        #
+        #   VFIO_USER_HOST_DOORBELL_FD (opcode 19) and
+        #   vfu_setup_host_doorbell_cb() -- the client pushes an eventfd per
+        #   doorbell up front, and ringing one is a single eventfd_write().
+        #
+        #   vfu_mmio_write() -- DMA_WRITE to an MMIO GPA with no prior
+        #   registration, for writes that have no dedicated doorbell fd.
+        #
+        # The QEMU side of both is the sbates-fork variant of
+        # ubuntu-qemu-libvfio-user; the two move together.
+        #
+        # A SHA, not the branch: the branch is force-pushed as the series is
+        # reworked. version-scrub.sh tracks libvfio_user_commit against
+        # qemu-project master and skips variants, which is right -- this is not
+        # an upstream ref. Move it by hand, and move the default to the new
+        # rebase base in the same commit.
+        vars:
+          libvfio_user_repo: https://github.com/sbates130272/libvfio-user.git
+          libvfio_user_commit: 3719c3a852820502a7adc9c0c363fd64d48addf0
 
   ubuntu-kernel-build:
     job: matrix
@@ -356,7 +405,7 @@ images:
     base: ubuntu-libvfio-user
     artifact: true
     vars:
-      rocm_ernic_commit: 31d311417ff74e914f1f4c3b08833c2fe98a2117
+      rocm_ernic_commit: 151379b0184b917d18ce367c40942aa5d663e696
     build_args:
       ROCM_ERNIC_COMMIT: "{rocm_ernic_commit}"
     # This image links against libvfio-user, so that pin belongs in the tag:
@@ -365,6 +414,26 @@ images:
     labels:
       "{ns}.ernic.commit": "{rocm_ernic_commit}"
       "{ns}.libvfio-user.commit": "{libvfio_user_commit}"
+    variants:
+      # Same rocm-ernic, built against the host-doorbell-fd libvfio-user, for
+      # pairing with ubuntu-qemu-libvfio-user-sbates-fork. The ERNIC server can
+      # then take host MMIO doorbell fds via vfu_setup_host_doorbell_cb()
+      # instead of sending a REGION_WRITE per ring -- but nothing in this image
+      # forces it to: adopting the callback is a change in rocm-ernic, and this
+      # variant only makes the API available to a build that wants it.
+      #
+      # The tag already carries both pins, so the default and this one cannot
+      # collide: ernic.<sha>-vfu.8039244 against ernic.<sha>-vfu.3719c3a.
+      sbates-fork:
+        suffix: "-sbates-fork"
+        description: >-
+          rocm-ernic built against the sbates130272 libvfio-user fork, with the
+          host MMIO doorbell fd protocol available to the vfio-user server.
+        base_variant: sbates-fork
+        # Must equal ubuntu-libvfio-user@sbates-fork; see the note there.
+        vars:
+          libvfio_user_repo: https://github.com/sbates130272/libvfio-user.git
+          libvfio_user_commit: 3719c3a852820502a7adc9c0c363fd64d48addf0
 
   ubuntu-rocm-rocjitsu:
     job: matrix
@@ -408,7 +477,7 @@ images:
       # over a thousand commits ahead of it. Pinning the tag would drop the
       # capability this image exists for.
       rocjitsu_commit:
-        value: 84fb06bc970a0049091a0fa7a7dbf2b925e488ee
+        value: 98f6a72dcc49a5f809593deacbe5c9df89cde3b3
         env: ROCM_ROCJITSU_COMMIT
       # Compile-time log groups (emulation/rocjitsu/cmake/rj_log.cmake): OFF,
       # ALL, a comma-separated subset of VM, CP, DBT_HOOKS, PLUGINS, DRIVER, or
@@ -433,17 +502,112 @@ images:
       rocjitsu_config:
         value: gfx1250_mi455x.json
         env: ROCM_ROCJITSU_CONFIG
+      # Empty means "whatever emulation/rocjitsu/cmake/rj_libvfio_user.cmake
+      # pins", which is nutanix/libvfio-user at v0.8. The sbates-fork variant
+      # below fills these in and the Dockerfile redirects the fetch through
+      # FETCHCONTENT_SOURCE_DIR_LIBVFIO-USER.
+      #
+      # Named _override_ and deliberately *not* the shared libvfio_user_repo /
+      # libvfio_user_commit: those always hold a real upstream SHA, so reusing
+      # them would silently repoint every default rocjitsu build off the ref
+      # upstream chose. An override has to be asked for by name. Same reasoning
+      # as ubuntu-spdk-libvfio-user, which has the same shape for the same
+      # reason -- neither image layers on ubuntu-libvfio-user.
+      libvfio_user_override_repo:
+        value: ""
+        env: ROCM_ROCJITSU_LIBVFIO_USER_REPO
+      libvfio_user_override_commit:
+        value: ""
+        env: ROCM_ROCJITSU_LIBVFIO_USER_COMMIT
     build_args:
       ROCJITSU_REPO: "{rocjitsu_repo}"
       ROCJITSU_BRANCH: "{rocjitsu_branch}"
       ROCJITSU_COMMIT: "{rocjitsu_commit}"
       ROCJITSU_CONFIG: "{rocjitsu_config}"
       ROCJITSU_LOG_GROUPS: "{rocjitsu_log_groups}"
+      LIBVFIO_USER_REPO: "{libvfio_user_override_repo}"
+      LIBVFIO_USER_COMMIT: "{libvfio_user_override_commit}"
     variant: "rocjitsu.{rocjitsu_commit|short}"
     labels:
       "{ns}.rocjitsu.branch": "{rocjitsu_branch}"
       "{ns}.rocjitsu.commit": "{rocjitsu_commit}"
       "{ns}.rocjitsu.log-groups": "{rocjitsu_log_groups}"
+      # Empty label values are dropped, so the default image carries neither of
+      # these and only the variant advertises a libvfio-user of its own.
+      "{ns}.libvfio-user.repo": "{libvfio_user_override_repo}"
+      "{ns}.libvfio-user.commit": "{libvfio_user_override_commit}"
+    variants:
+      # rocjitsu built against the host-doorbell-fd fork rather than the v0.8
+      # its own cmake declares, completing the set: with this, all four
+      # vfio-user servers and the QEMU that talks to them can be built against
+      # one libvfio-user.
+      #
+      # Buildable because this is a short forward step on the very tree
+      # rocjitsu already pins, not a cross-tree swap: nutanix v0.8 is commit
+      # 37491ed, the fork base 8039244 is five commits later, and the fork adds
+      # two more. The only public-header change is additive --
+      # vfu_host_doorbell_cb_t and vfu_setup_host_doorbell_cb() -- so every
+      # vfu_* symbol vfio_device_host.cpp uses is declared identically in both,
+      # and lib/'s source list is unchanged, which matters because
+      # rj_libvfio_user.cmake hand-lists those files.
+      #
+      # Unlike the ernic and spdk variants, this one is not just "the same
+      # source against a newer library": it pins a different rocjitsu as well.
+      # users/stebates/rocjitsu-vfio-doorbell is the first consumer of the
+      # protocol anywhere -- vfio_device_host.cpp calls
+      # vfu_setup_host_doorbell_cb() once and vfu_mmio_write() three times --
+      # so this is the image where the doorbell path is actually exercised
+      # rather than merely linkable.
+      #
+      # It is diverged from develop, not ahead: three commits on, fifteen
+      # behind the rocjitsu_commit the default target carries. Only the top
+      # commit is the doorbell work. The two below it are Tony Gutierrez's,
+      # unmerged, and they are the reason this variant matters beyond the
+      # doorbell: feb387ca36 "validate multi-GPU topology and NET launch" (PR
+      # #13851) and 6eceac0e01 "model stock-driver peer fabric traffic" (PR
+      # #13852). 6eceac0e01 is the head of users/agutierr/pod-peer-hardware-02
+      # itself, so this image is where that stack gets built at all -- nothing
+      # else here pins it, and no upstream CI enables ROCJITSU_ENABLE_VFIO.
+      # The third PR on that stack, #13854 (users/agutierr/pod-qualification-03),
+      # is docs only and deliberately not carried.
+      #
+      # So the variant is older than the default everywhere except those three
+      # commits, and the two are not comparable builds. Repin it to a rebase,
+      # or to develop once all three land, rather than letting the gap grow.
+      # Watch both branches, not just this one: Tony rebases his stack, and a
+      # force-push there strands this pin the way it stranded the c46f6fce937
+      # SHA an earlier note recommended.
+      #
+      # The doorbell commit also carries a one-line fix to Tony's
+      # vfio_target_grants.cpp, and one to his line in vfio_device_host.cpp:
+      # both wrote (void)::read/::write to discard a warn_unused_result, which
+      # clang accepts and gcc does not, so his stack does not compile under the
+      # -Wall -Wextra -Wpedantic -Werror that rocjitsu's own CMakeLists sets
+      # for the gcc-14 this image builds with. Reported upstream. When he fixes
+      # it there, those two lines conflict on the next rebase -- take his.
+      sbates-fork:
+        suffix: "-sbates-fork"
+        description: >-
+          rocjitsu from the vfio-doorbell branch, built against the sbates130272
+          libvfio-user fork, calling the host MMIO doorbell and vfu_mmio_write
+          paths rather than only linking against them.
+        vars:
+          # A branch head, so a force-push rebuilds something different under
+          # the same tag. Pinned by SHA for that reason, like every other fork
+          # pin here. version-scrub.sh skips variants, so it will not move.
+          rocjitsu_commit: 3141e64ee3b76a44c13726f0d08995c035f70f4e
+          # This branch already points its own rj_libvfio_user.cmake at the
+          # fork at exactly this SHA, so the override below is belt-and-braces
+          # rather than the mechanism. Kept deliberately: it pins the library
+          # from here even if the branch's cmake drifts, and it is what the
+          # build-time assert checks. Must equal ubuntu-libvfio-user@sbates-fork;
+          # see the note there.
+          libvfio_user_override_repo: https://github.com/sbates130272/libvfio-user.git
+          libvfio_user_override_commit: 3719c3a852820502a7adc9c0c363fd64d48addf0
+        # The default tag names rocjitsu alone, because upstream's libvfio-user
+        # pin is not a var here. This one must name both, or it collides with
+        # the default on the same rocjitsu_commit.
+        variant: "rocjitsu.{rocjitsu_commit|short}-vfu.{libvfio_user_override_commit|short}"
 
   # The storage device server, completing the set: rocm-ernic serves a NIC,
   # rocjitsu serves a GPU, this serves an NVMe controller.
@@ -483,15 +647,60 @@ images:
       spdk_commit:
         value: 18d1d8dab4f2020e10349009e69f94d47de100f9
         env: SPDK_COMMIT
+      # Empty means "use the submodule", which is the default and the whole
+      # reason this image does not layer on ubuntu-libvfio-user. The
+      # sbates-fork variant below fills these in to check the submodule out at
+      # a different ref after `submodule update --init`.
+      #
+      # Deliberately *not* the shared libvfio_user_repo/libvfio_user_commit:
+      # those always hold a real upstream SHA, so reusing them here would make
+      # every default build silently override the submodule. An override has to
+      # be asked for by name.
+      libvfio_user_override_repo:
+        value: ""
+        env: SPDK_LIBVFIO_USER_REPO
+      libvfio_user_override_commit:
+        value: ""
+        env: SPDK_LIBVFIO_USER_COMMIT
     build_args:
       SPDK_REPO: "{spdk_repo}"
       SPDK_BRANCH: "{spdk_branch}"
       SPDK_COMMIT: "{spdk_commit}"
+      LIBVFIO_USER_REPO: "{libvfio_user_override_repo}"
+      LIBVFIO_USER_COMMIT: "{libvfio_user_override_commit}"
     variant: "spdk.{spdk_commit|short}"
     labels:
       "{ns}.spdk.repo": "{spdk_repo}"
       "{ns}.spdk.branch": "{spdk_branch}"
       "{ns}.spdk.commit": "{spdk_commit}"
+    variants:
+      # SPDK's NVMe-oF target built against the host-doorbell-fd fork instead of
+      # the submodule, so its vfio-user server can call
+      # vfu_setup_host_doorbell_cb() and ring a host MMIO doorbell with one
+      # eventfd_write() rather than a REGION_WRITE per doorbell. As with the
+      # ernic variant, this only makes the API reachable; calling it is a change
+      # in SPDK's target.
+      #
+      # This is a forward move on the submodule's own tree, not a cross-tree
+      # swap -- which is what makes it buildable at all. The submodule is plain
+      # nutanix/libvfio-user (.gitmodules), pinned at f922ada, and the fork
+      # branch is 35 commits further along the same master plus the doorbell
+      # series. The header comment above says SPDK builds only against
+      # libvfio-user's spdk branch; that is why this is a variant and not a bump
+      # of the default, and why the variant is allowed to fail on its own.
+      sbates-fork:
+        suffix: "-sbates-fork"
+        description: >-
+          SPDK's NVMe-oF target built against the sbates130272 libvfio-user
+          fork, with the host MMIO doorbell fd protocol available to the target.
+        # Must equal ubuntu-libvfio-user@sbates-fork; see the note there.
+        vars:
+          libvfio_user_override_repo: https://github.com/sbates130272/libvfio-user.git
+          libvfio_user_override_commit: 3719c3a852820502a7adc9c0c363fd64d48addf0
+        # The submodule SHA is not knowable until build time, so the default
+        # tag names SPDK alone. This one can name both, and must: otherwise it
+        # collides with the default on the same spdk_commit.
+        variant: "spdk.{spdk_commit|short}-vfu.{libvfio_user_override_commit|short}"
 
   # The builder/runner toolchain, and only that: QEMU, the qemu-tool CLI,
   # ansible-core, libvfio-user. It builds no guest of its own -- ubuntu-qcow2-gen
@@ -538,17 +747,34 @@ images:
         description: >-
           QEMU from the sbates130272 fork, not the pinned upstream tag, adding
           unmerged PCI MMIO bridge work.
+        # Layered on the matching libvfio-user fork, not the default base: this
+        # QEMU speaks VFIO_USER_HOST_DOORBELL_FD (opcode 19) and serves the
+        # DMA_WRITE-to-MMIO path behind vfu_mmio_write(), neither of which the
+        # pinned upstream libvfio-user implements. The two move together or the
+        # negotiation fails at connect.
+        base_variant: sbates-fork
         # A SHA, not the branch name: the branch is rebased and force-pushed as
         # the series is reworked upstream, so a branch pin silently rebuilds a
         # different QEMU and the tag it publishes never changes. This commit is
-        # the head of dev/stephen/pci-mmio-bridge-submit as of 2026-10-20,
-        # "hw/pci: fix vfio-user write path and override GPA commit trigger".
+        # the head of dev/stephen/pci-mmio-bridge-submit as of 2026-10-22,
+        # "docs/vfio-user: document vfu_mmio_write and Option A DMA_WRITE
+        # extension". It carries the pci-mmio-bridge device (a shared ring for
+        # peer-device -> host MMIO writes, with a memfd-backed shadow_gpa and
+        # E820 reservation), assigns the region fd to the RAMBlock so vfio-user
+        # P2P DMA carries it in DMA_MAP, and adds the host doorbell fd opcode.
+        # Over the previous pin it extends DMA_WRITE to dispatch MMIO GPAs --
+        # the server side of vfu_mmio_write() -- and fixes an invalid-pointer
+        # free() in doorbell teardown.
         # version-scrub.sh must not touch it -- it tracks QEMU releases, and
         # this is not one.
         vars:
           qemu_repo: https://github.com/sbates130272/qemu.git
-          qemu_commit: aa4344e5131f25eb4240a61da8c5cd1e3b242cd4
+          qemu_commit: f91f12068854848cdb248f2a4636ddfe41f3283b
           qemu_branch: dev/stephen/pci-mmio-bridge-submit
+          # Restated so the tag and the labels name what the image actually
+          # carries; base_variant alone only changes which base it builds FROM.
+          libvfio_user_repo: https://github.com/sbates130272/libvfio-user.git
+          libvfio_user_commit: 3719c3a852820502a7adc9c0c363fd64d48addf0
 
   # Guest qcow2 images. One parameterised Dockerfile, one repository per
   # flavour: adding a guest is packages/<name>.txt, checks/<name>.sh, an
