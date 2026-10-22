@@ -100,6 +100,26 @@ cannot drift from the ones that image's own self-test exercises.
 `rj-ip-discovery gfx1250` and must match the rocjitsu pin hipObject runs, not
 this image's. `checks/ernic-rocjitsu.sh` asserts it is absent.
 
+Stage it into `/lib/firmware/amdgpu/`, which the image now creates empty with
+a README in it. It used not to exist at all, and nothing installs it —
+`linux-firmware` is pulled in neither by `linux-image-virtual` nor by the
+mainline `.debs` — so the instruction to copy a file there landed in a
+missing directory. Without the file, probe ends:
+
+```text
+amdgpu 0000:02:00.0: can't load firmware "amdgpu/ip_discovery.bin"
+amdgpu 0000:02:00.0: [drm] *ERROR* discovery failed: -2
+amdgpu 0000:02:00.0: probe with driver amdgpu failed with error -2
+```
+
+**Open:** a working guest was produced by copying the whole 672-file
+`/lib/firmware/amdgpu` tree from an earlier image, which is a wider fix than
+the one file that failure names, and upstream `linux-firmware` ships no
+`ip_discovery.bin` at all. Whether anything else in that tree is actually
+needed here has not been established; the directory is created empty and the
+question is left open rather than answered by installing half a gigabyte of
+microcode for hardware a virtio guest does not have.
+
 ## Device node groups
 
 `/dev/kfd` and `/dev/dri/render*` are `root:render` 0660, and the login user was
@@ -147,6 +167,12 @@ The helper also refuses, loudly, when amdgpu is already resident with the wrong
 parameters — `modprobe` returns 0 in that case and discards everything you
 passed it, which is the single most expensive way to lose an afternoon here.
 
+**And that state costs a reboot to leave.** A bare `modprobe amdgpu` binds
+nothing, and `rmmod amdgpu` then segfaults, so there is no way back to a clean
+load in the running guest. Treat `amdgpu-probe` as mandatory rather than as a
+convenience: "offered, not imposed" is about the parameters being readable and
+overridable, not about the bare `modprobe` being a usable alternative.
+
 ## The ionic half
 
 Nothing is installed. resolute packages rdma-core 61.0 and its
@@ -159,6 +185,65 @@ format the `ernic_guest_setup` role compares against.
 apply to it unmodified; the device reaches `PORT_ACTIVE` / `LinkUp`. Building
 `ionic-ernic` as a DKMS module stays with the consumer — this image supplies
 the kernel, the headers and the toolchain for it.
+
+### SRQ, which the image now carries
+
+The in-tree driver is not sufficient for UCX, and the way it fails names
+nothing. Stock 7.2.4 has no SRQ in `drivers/infiniband/hw/ionic`, so
+`ibv_devinfo -v` reports `max_srq: 0`; UCX's `rc_verbs` transport is built on
+a shared receive queue, so it declines the device —
+`failed to query rc_verbs resources: No such device` — and offers only
+`ud_verbs`, which has no one-sided RDMA READ/WRITE. Measured on two guests
+over one emulated NIC at 1 MiB: UCX 0.064 GB/s on UD against `MORI_IO`'s 0.355
+on RC, with `ib_write_bw` reaching 594 MB/s on the same device. The symptom
+that reaches a user is "UCX is 5x slower than MORI".
+
+So both halves are built into the image, by `post_playbook: vm-ernic-srq.yml`
+in qemu-minimal:
+
+- **Kernel.** rocm-ernic's `patches/srq` — nine patches rebased onto the same
+  v7.2.4 the guest boots — built and installed as the `ionic-ernic` DKMS
+  package into `updates/dkms`. `ionic.ko` is replaced as well as
+  `ionic_rdma.ko`: the LIF-identity patch is in the Ethernet driver.
+- **Userspace.** rocm-ernic's `patches/rdma-core` on a pinned master SHA,
+  built into `/usr/local`. The archive's `rdma-core` is left installed and
+  untouched; `ld.so` searches `/usr/local/lib` first, so the patched provider
+  wins at run time and backing it out is removing a prefix.
+
+Neither alone is any use. With only the kernel half the device advertises
+`max_srq` and `ibv_create_srq()` returns `EOPNOTSUPP`, because libibverbs
+dispatches into a provider with no `create_srq` op — no rdma-core release, nor
+`master`, has one ([`linux-rdma/rdma-core#1799`][pr] is still open).
+
+`/etc/ionic-srq.json` records both pins. Three things to know:
+
+1. **Rebuilding `ionic-ernic` here silently removes SRQ** unless you pass
+   `fetch-ionic-sources.sh --patches-dir .../patches/srq`. A stock rebuild
+   installs under the same DKMS package name and takes the guest back to
+   `max_srq: 0` with nothing to show it changed.
+2. **The device half is not in this image.** It is the rocm-ernic server
+   container; a guest ahead of its server still reports `max_srq: 0`. The
+   support merged there at `ernic.3fb74d1`.
+3. **Check with `nm`, never `strings`.**
+   `strings ionic_rdma.ko | grep -i srq` returns around a dozen hits on a
+   module with no SRQ support whatsoever — `IB_USER_VERBS_CMD_CREATE_SRQ`,
+   `IONIC_QPT_SRQ`, `rq_tbl_index_srq_id` are BTF enumerator and structure
+   field names — and a build carrying no BTF returns zero for the same grep, so the
+   two read as a difference that is not there.
+   `nm $(modinfo -n ionic_rdma) | grep ionic_create_srq` is the question.
+
+The flavour's checks assert all of this at build time, including the `nm` one.
+
+[pr]: https://github.com/linux-rdma/rdma-core/pull/1799
+
+### Locked memory
+
+`memlock` is unlimited, through `/etc/security/limits.d/99-rdma-memlock.conf`
+for PAM logins and `DefaultLimitMEMLOCK=infinity` for units. The release
+default is 8192 KB, at which every `ibv_reg_mr()` fails with "Cannot allocate
+memory" — reported as a UCX `ud_recv_skb` memory-pool failure, or as NIXL's
+`libfabric` plugin saying "Failed to initialize control request pool for rail
+0", neither of which mentions `memlock`.
 
 ## What is not the image's fault
 

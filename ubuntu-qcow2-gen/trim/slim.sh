@@ -384,6 +384,63 @@ for _lib in libamdhip64 libhsa-runtime64; do
     fi
 done
 
+# --- 4b. the ionic SRQ stack ---------------------------------------------
+#
+# Nothing above sets out to remove any of this, which is exactly why it is
+# checked here.  The SRQ stack is two artefacts with two different owners --
+# the ionic-ernic DKMS modules under updates/dkms, and a whole rdma-core in
+# /usr/local -- and both sit in the blast radius of steps aimed at something
+# else: section 1 deletes /var/lib/dkms wholesale, section 3 purges the
+# toolchain and lets autoremove take what is then unreferenced, and either
+# could plausibly grow to take these.
+#
+# A guest that loses them does not look broken.  It boots, ibv_devinfo works,
+# every other assertion in this script passes, and the only symptom is
+# max_srq = 0 in a consumer's job days later, where it reads as a device or a
+# server-version problem rather than as a trim.  This is the cheap place to
+# find out.
+#
+# No nm here, unlike the playbook that built it: binutils went with the
+# toolchain in section 3.  The symbol check belongs to the build, which ran
+# while a compiler still existed; this asserts the artefacts survived.
+SRQ_STAMP=/etc/ionic-srq.json
+if [ -f "${SRQ_STAMP}" ]; then
+    IONIC_KO=$(modinfo -n ionic_rdma)
+    case "${IONIC_KO}" in
+        */updates/dkms/*) ;;
+        *)
+            echo "Error: after the trim, modprobe resolves ionic_rdma to" \
+                 "${IONIC_KO:-<nothing>} rather than the SRQ-capable DKMS" \
+                 "module. ${SRQ_STAMP} says this guest has one." >&2
+            exit 1
+            ;;
+    esac
+    # The userspace half.  Presence and resolution both: a /usr/local
+    # libibverbs whose NEEDED entries went with an autoremove leaves every
+    # verbs tool broken in a guest where the file is still there.
+    ls /usr/local/lib/libibverbs/libionic-rdmav*.so > /dev/null
+    IBV=$(command -v ibv_devinfo)
+    if ! ldd "${IBV}" | grep -q '/usr/local/lib/libibverbs'; then
+        echo "Error: ${IBV} no longer resolves the /usr/local libibverbs;" \
+             "the SRQ provider is installed but not the one that loads." >&2
+        ldd "${IBV}" >&2
+        exit 1
+    fi
+    if ldd "${IBV}" 2>&1 | grep -q 'not found'; then
+        echo "Error: ${IBV} has unresolved dependencies after the trim:" >&2
+        ldd "${IBV}" 2>&1 | grep 'not found' >&2
+        exit 1
+    fi
+    SRQ_KEPT=true
+    echo "ionic SRQ stack: ${IONIC_KO}, provider in /usr/local"
+else
+    # Not an error.  trim/slim.sh is flavour-agnostic machinery and a future
+    # flavour may run it over a guest with no SRQ stack at all; what must not
+    # happen is a guest that had one and lost it, which is the branch above.
+    SRQ_KEPT=false
+    echo "no ${SRQ_STAMP}; this guest was built without the SRQ stack"
+fi
+
 # --- 5. boot speed -------------------------------------------------------
 #
 # cloud-init is disabled rather than purged.  Its job here is done -- the user,
@@ -509,6 +566,7 @@ sudo tee /etc/slim-trim.json > /dev/null <<EOF
                            "amdrocm-runtime-dev${ROCM_VERSION}",
                            "amdrocm-llvm-dev${ROCM_VERSION}"],
   "linux_firmware_removed": ${FW_REMOVED},
+  "ionic_srq_stack_kept": ${SRQ_KEPT},
   "snapd_removed": true,
   "root_used_mib_before": ${USED_BEFORE},
   "root_used_mib_after": ${USED_AFTER}
@@ -544,6 +602,14 @@ half are identical. What is gone:
   \`qemu-img resize\`, run \`sudo growpart /dev/vda 1 && sudo resize2fs
   /dev/vda1\` once inside the guest.
 - linux-firmware, snapd, docs, man pages and every apt cache.
+
+What is **not** gone, and is worth knowing because it cannot be rebuilt here:
+the ionic SRQ stack. The \`ionic-ernic\` DKMS modules under \`updates/dkms\`
+and the patched rdma-core in \`/usr/local\` both survive the trim, and
+\`/etc/ionic-srq.json\` still records what they were built from. The DKMS
+*source* and the compiler are gone, so a kernel installed in this guest would
+have neither a GPU driver nor an SRQ-capable ionic -- use the fat
+\`ernic-rocjitsu\` flavour for any lane that needs to rebuild either.
 
 \`/etc/slim-trim.json\` is the machine-readable version of this list.
 EOF

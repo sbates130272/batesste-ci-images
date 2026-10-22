@@ -33,6 +33,9 @@ ARG VM_VCPUS=4
 ARG VM_VMEM=4096
 ARG VM_PACKAGES=base.txt
 ARG VM_PLAYBOOK=
+# A second playbook, run against the provisioned guest rather than during
+# gen-vm; see the layer's note in build-vm.sh.
+ARG POST_PLAYBOOK=
 ARG KERNEL_REF=
 ARG AMDGPU_DRIVER_VERSION=latest
 ARG ROCM_PATH=
@@ -147,6 +150,9 @@ ARG VM_VCPUS=4
 ARG VM_VMEM=4096
 ARG VM_PACKAGES=base.txt
 ARG VM_PLAYBOOK=
+# A second playbook, run against the provisioned guest rather than during
+# gen-vm; see the layer's note in build-vm.sh.
+ARG POST_PLAYBOOK=
 ARG KERNEL_REF=
 ARG AMDGPU_DRIVER_VERSION=latest
 ARG ROCM_PATH=

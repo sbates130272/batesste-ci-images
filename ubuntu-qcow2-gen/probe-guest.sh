@@ -19,6 +19,14 @@
 # steps cloud-init cannot express, and never for the verification boot, which
 # has to see the image a consumer will get.
 #
+# PROBE_ANSIBLE=1 makes <script> an Ansible playbook on the builder, run from
+# here against the booted guest instead of piped into "bash -s".  The boot,
+# the SSH wait, the serial capture and the poweroff are identical and are the
+# reason this is a mode rather than a second script: a playbook pass that
+# boots the guest differently from every other pass is one that can succeed
+# where the real thing fails.  The caller installs whatever collections the
+# playbook needs; this only runs it.
+#
 # payload-dir, if given, is copied to /tmp/payload in the guest before the
 # script runs.  Fetching on the host rather than in the guest keeps proxy and
 # CA handling in one place and puts the download in the build log.
@@ -40,6 +48,7 @@ SCRIPT=$3
 PAYLOAD="${4:-}"
 
 PERSIST="${PROBE_PERSIST:-0}"
+ANSIBLE="${PROBE_ANSIBLE:-0}"
 PORT="${PROBE_SSH_PORT:-2222}"
 BOOT_TIMEOUT="${PROBE_BOOT_TIMEOUT:-300}"
 # Matched to the gen-vm boot rather than fixed here, so one knob sizes every
@@ -113,8 +122,49 @@ if [ -n "${PAYLOAD}" ]; then
 fi
 
 status=0
-# shellcheck disable=SC2086
-ssh ${SSH_OPTS} "${GUEST_USER}@127.0.0.1" 'bash -s' < "${SCRIPT}" || status=$?
+if [ "${ANSIBLE}" = "1" ]; then
+    # 127.0.0.1 and a forwarded port, not the guest's own address: the guest
+    # is behind SLIRP and has no address reachable from here.  The same key
+    # and the same host-key handling the SSH path above uses, because it is
+    # the same connection -- ansible just drives it.
+    #
+    # ANSIBLE_HOST_KEY_CHECKING is off for the reason StrictHostKeyChecking is
+    # off above: every probe boot is a new guest on the same port, so a known
+    # host is a stale one.
+    # The host is named, and ansible_host carries the address.  Writing
+    # "127.0.0.1" as the inventory host name instead looks equivalent and is
+    # not: ansible resolves "localhost" to an inventory host called 127.0.0.1
+    # when one exists, so every "delegate_to: localhost" task in a playbook
+    # inherits this host's ansible_port and ansible_user and runs *inside the
+    # guest* over the forwarded port.
+    #
+    # That is not a theoretical hazard.  It silently moved a role's entire
+    # controller-side half -- a git clone, a patch series, a tarball -- into
+    # the guest, where each step succeeded, and surfaced two tasks later as
+    # "Could not find or access /tmp/.../v7.2.4.tar.gz on the Ansible
+    # Controller" with nothing pointing at the inventory.  A role that fetches
+    # on the controller precisely because the guest's network is not to be
+    # depended on would quietly be doing the opposite.
+    #
+    # localhost is deliberately NOT given a line of its own here: that would
+    # make it a real inventory host, and a playbook with "hosts: all" would
+    # then run against the builder as well as the guest.  With no match,
+    # ansible's implicit localhost is used, which is connection=local.
+    INVENTORY=/tmp/probe-inventory.ini
+    cat > "${INVENTORY}" <<EOF
+[guest]
+probe-guest ansible_host=127.0.0.1 ansible_port=${PORT} ansible_user=${GUEST_USER} ansible_ssh_private_key_file=/root/.ssh/id_rsa ansible_python_interpreter=/usr/bin/python3
+EOF
+    echo "probe-guest: running playbook ${SCRIPT}" >&2
+    ANSIBLE_HOST_KEY_CHECKING=False \
+    ANSIBLE_SSH_ARGS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
+    ANSIBLE_FORCE_COLOR=0 \
+        ansible-playbook -i "${INVENTORY}" "${SCRIPT}" || status=$?
+    rm -f "${INVENTORY}"
+else
+    # shellcheck disable=SC2086
+    ssh ${SSH_OPTS} "${GUEST_USER}@127.0.0.1" 'bash -s' < "${SCRIPT}" || status=$?
+fi
 
 # shellcheck disable=SC2086
 ssh ${SSH_OPTS} "${GUEST_USER}@127.0.0.1" 'sudo -n poweroff' 2>/dev/null || true
@@ -126,6 +176,10 @@ while [ -f "${PIDFILE}" ] && kill -0 "$(cat "${PIDFILE}")" 2>/dev/null; do
 done
 
 if [ "${status}" -ne 0 ]; then
-    echo "probe-guest: script failed with status ${status}" >&2
+    if [ "${ANSIBLE}" = "1" ]; then
+        echo "probe-guest: playbook failed with status ${status}" >&2
+    else
+        echo "probe-guest: script failed with status ${status}" >&2
+    fi
 fi
 exit "${status}"

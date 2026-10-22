@@ -514,7 +514,7 @@ images:
       # ubuntu-qcow2-gen -- the ansible/ tree its guest builds are driven by, so
       # the CLI and the playbooks always come from one commit.
       qemu_minimal_repo: https://github.com/sbates130272/qemu-minimal.git
-      qemu_minimal_commit: b4eb552841c6ade51e48ac9f40d900cda889ee81
+      qemu_minimal_commit: c0791954aec508bfd3f26d11d6960f279d4b175a
       # Provenance only, and empty here: the default target builds a release
       # tag, which belongs to no branch. A fork variant fills it in and the
       # label appears only there.
@@ -607,6 +607,22 @@ images:
       trim: ""
       # qemu-minimal ansible/playbooks/<file>; empty means cloud-init only.
       vm_playbook: ""
+      # A second qemu-minimal ansible/playbooks/<file>, run against the guest
+      # *after* the kernel layer and provision/<flavour>.sh, in a boot of its
+      # own. Empty for a flavour that needs none.
+      #
+      # Separate from vm_playbook because of when each one runs, not because
+      # of what it contains: gen-vm runs vm_playbook while it is creating the
+      # VM, which is before a pinned kernel is installed, so a playbook that
+      # compiles anything against the guest's kernel builds it against the
+      # release's instead and installs it for a kernel the guest never boots.
+      #
+      # It is also how a flavour reaches a pin this repo deliberately does not
+      # hold: the qemu-minimal checkout's requirements.yml pins rocm-ernic's
+      # ansible collection to a SHA, and the ionic SRQ series is reached
+      # through that collection rather than copied here. One nine-patch kernel
+      # series, in one repository.
+      post_playbook: ""
       # An Ubuntu mainline build tag (kernel.ubuntu.com/mainline/<ref>/), or
       # empty to keep the kernel the release ships. Set it when a flavour needs
       # a kernel no Ubuntu archive has: the mainline .debs depend only on a
@@ -693,6 +709,7 @@ images:
       VM_VMEM: "{vm_vmem}"
       VM_PACKAGES: "{vm_packages}"
       VM_PLAYBOOK: "{vm_playbook}"
+      POST_PLAYBOOK: "{post_playbook}"
       PROVISION_FLAVOUR: "{provision_flavour}"
       TRIM: "{trim}"
       KERNEL_REF: "{kernel_ref}"
@@ -909,6 +926,15 @@ images:
         vars:
           flavour: ernic-rocjitsu
           vm_packages: ernic-rocjitsu.txt
+          # The ionic SRQ series, built into the guest after the kernel layer
+          # and the provision script. Without it the in-tree ionic_rdma from
+          # 7.2.4 reports max_srq = 0, UCX declines rc_verbs and offers only
+          # ud_verbs, and NIXL runs about 5.5x slower on a device where RC is
+          # available and much faster -- with nothing in the failure naming
+          # SRQ. Both halves are built: the kernel modules and the rdma-core
+          # provider, because the kernel half alone advertises an SRQ that
+          # ibv_create_srq() then refuses with EOPNOTSUPP.
+          post_playbook: vm-ernic-srq.yml
           probe_ssh_port: 2225
           release: resolute
           kernel_ref: v7.2.4
@@ -964,6 +990,11 @@ images:
           provision_flavour: ernic-rocjitsu
           trim: slim.sh
           vm_packages: ernic-rocjitsu.txt
+          # Equal to the fat flavour's, and load-bearing here in a way it is
+          # not there: this guest has no toolchain, so a consumer cannot build
+          # the SRQ stack itself afterwards. The playbook runs before the
+          # trim, while the compiler it needs is still installed.
+          post_playbook: vm-ernic-srq.yml
           probe_ssh_port: 2226
           release: resolute
           kernel_ref: v7.2.4

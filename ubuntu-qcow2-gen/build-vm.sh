@@ -6,7 +6,7 @@
 # Run from the Dockerfile; configuration comes from the build ARGs, which reach
 # us as environment variables.
 #
-# Four provisioning layers, matching how the container images work:
+# Five provisioning layers, matching how the container images work:
 #   packages/<VM_PACKAGES>  cloud-init packages, appended to qemu-minimal's
 #                           default manifest
 #   <VM_PLAYBOOK>           an Ansible playbook from the qemu-minimal checkout,
@@ -19,6 +19,10 @@
 #                           own, after the kernel layer and before the checks,
 #                           with assets/<FLAVOUR>/ (when it exists) copied to
 #                           /tmp/payload for them to read
+#   <POST_PLAYBOOK>         a second qemu-minimal playbook, run against the
+#                           provisioned guest -- for anything that has to
+#                           build against the kernel the guest actually boots,
+#                           which VM_PLAYBOOK runs far too early to do
 #
 # PROVISION_FLAVOUR overrides which provision script and asset directory that
 # layer uses, so a flavour can build on another flavour's recipe rather than
@@ -52,6 +56,11 @@ export VM_VCPUS="${FINAL_VM_VCPUS}"
 export VM_VMEM="${FINAL_VM_VMEM}"
 FINAL_PACKAGES="${VM_PACKAGES:-base.txt}"
 FINAL_PLAYBOOK="${VM_PLAYBOOK:-}"
+# A second qemu-minimal playbook, run against the *provisioned* guest rather
+# than during gen-vm.  Empty for a flavour that needs none.  See the layer's
+# own note below for why a playbook that builds against the guest's kernel
+# cannot be VM_PLAYBOOK.
+FINAL_POST_PLAYBOOK="${POST_PLAYBOOK:-}"
 # Whose provision script and assets this flavour uses.  Empty means its own,
 # which is every flavour but the slim ones: those are another flavour's guest
 # with things removed, and a second copy of a 600-line provision script
@@ -92,6 +101,7 @@ echo "VM_VCPUS: ${FINAL_VM_VCPUS} (build-time boots only)"
 echo "VM_VMEM: ${FINAL_VM_VMEM} MiB (build-time boots only)"
 echo "VM_PACKAGES: ${FINAL_PACKAGES}"
 echo "VM_PLAYBOOK: ${FINAL_PLAYBOOK:-none}"
+echo "POST_PLAYBOOK: ${FINAL_POST_PLAYBOOK:-none}"
 echo "PROVISION_FLAVOUR: ${FINAL_PROVISION_FLAVOUR}"
 echo "TRIM: ${FINAL_TRIM:-none (ships what it provisioned)}"
 echo "KERNEL_REF: ${FINAL_KERNEL_REF:-none (release kernel)}"
@@ -480,6 +490,44 @@ EOF
     fi
 fi
 
+# The post-provision playbook layer: a qemu-minimal playbook run against the
+# guest after everything above has happened.
+#
+# VM_PLAYBOOK cannot do this job, and the difference is the whole reason this
+# layer exists.  gen-vm runs that one while it is creating the VM -- before
+# the kernel layer and before provision/<FLAVOUR>.sh -- so a playbook that
+# builds a module against the guest's kernel would build it against the
+# release's 7.0 and install it for a kernel the guest never boots.  Anything
+# that compiles has to run here instead.
+#
+# Driven by the same probe-guest primitive as every other layer, in
+# PROBE_ANSIBLE mode: same boot, same SSH wait, same serial capture on a
+# failure, so a playbook pass cannot succeed in a guest that is booted
+# differently from the one that ships.
+#
+# The collections come from the qemu-minimal checkout's requirements.yml,
+# installed here rather than in the Dockerfile: it pins rocm-ernic's ansible
+# collection to a SHA, and that pin is the whole supply chain for the ionic
+# SRQ series -- the patches are reached through it rather than copied into
+# this repo, where a nine-patch kernel series would immediately start to
+# drift.  --no-deps for requirements.yml's own stated reason.
+POST_PLAYBOOK_NAME=none
+if [ -n "${FINAL_POST_PLAYBOOK}" ]; then
+    POST_PB="${QM}/ansible/playbooks/${FINAL_POST_PLAYBOOK}"
+    [ -f "${POST_PB}" ] || {
+        echo "Error: post-provision playbook ${POST_PB} does not exist!"
+        ls -la "${QM}/ansible/playbooks/" 2>/dev/null || true
+        exit 1
+    }
+    POST_PLAYBOOK_NAME="${FINAL_POST_PLAYBOOK}"
+    echo "Installing Ansible collections for ${POST_PLAYBOOK_NAME}"
+    ansible-galaxy collection install --pre --no-deps \
+        -r "${QM}/ansible/requirements.yml"
+    echo "Running ${POST_PLAYBOOK_NAME} against the provisioned guest"
+    PROBE_PERSIST=1 PROBE_ANSIBLE=1 probe-guest \
+        "/output/${FINAL_VM_NAME}.qcow2" "${FINAL_USERNAME}" "${POST_PB}"
+fi
+
 # The trim layer: a script that takes things back out of the finished guest.
 #
 # A boot of its own, after provisioning and before the verification boot, so
@@ -782,9 +830,17 @@ BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # shape; 4 adds the provision script; 5 adds the assets directory that
 # provision script was given; 6 adds the unattended-upgrades state; 7 adds the
 # kernels block, dkms, rocm, os and the guest's SSH host keys; 8 adds the
-# provision flavour and the trim script.  Every earlier key is kept, so a v1
-# through v7 consumer is unaffected -- read schema_version before reaching for
-# anything newer.
+# provision flavour and the trim script; 9 adds the post-provision playbook.
+# Every earlier key is kept, so a v1 through v8 consumer is unaffected -- read
+# schema_version before reaching for anything newer.
+#
+# v9's key is there because a guest can now differ from the flavour's own
+# recipe in a way nothing else records: post_playbook names a qemu-minimal
+# playbook run against the provisioned guest, and for ernic-rocjitsu that is
+# what replaces the in-tree ionic drivers with SRQ-capable ones. A consumer
+# asking "does this guest do SRQ" should read the guest's own
+# /etc/ionic-srq.json; this field is how the manifest says the step ran at
+# all.
 #
 # v8's two keys answer "is this the guest it looks like": provision_flavour
 # names whose recipe built it, which is not the flavour for a slim variant,
@@ -809,7 +865,7 @@ BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # so "oras manifest fetch" answers the common questions without the referrer.
 cat > /output/vm-info.json <<EOF
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "vm_name": "${FINAL_VM_NAME}",
   "flavour": "${FLAVOUR}",
   "username": "${FINAL_USERNAME}",
@@ -855,6 +911,7 @@ cat > /output/vm-info.json <<EOF
     "kernel_debs": "${KERNEL_DEBS}",
     "provision": "${PROVISION_NAME}",
     "provision_flavour": "${FINAL_PROVISION_FLAVOUR}",
+    "post_playbook": "${POST_PLAYBOOK_NAME}",
     "assets": "${ASSETS_NAME}",
     "trim": "${TRIM_NAME}",
     "checks": "${CHECKS_NAME}",

@@ -33,7 +33,7 @@ adding an image or a variant adds its row.
 **Pinned commits**
 
 [![libvfio-user 8039244](https://img.shields.io/badge/libvfio--user-8039244-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/803924493a7c787b2ba358751f55f07d5dba64b2)
-[![qemu-minimal b4eb552](https://img.shields.io/badge/qemu--minimal-b4eb552-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/b4eb552841c6ade51e48ac9f40d900cda889ee81)
+[![qemu-minimal c079195](https://img.shields.io/badge/qemu--minimal-c079195-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/c0791954aec508bfd3f26d11d6960f279d4b175a)
 [![rocm-ernic 31d3114](https://img.shields.io/badge/rocm--ernic-31d3114-ED1C24)](https://github.com/ROCm/rocm-ernic/commit/31d311417ff74e914f1f4c3b08833c2fe98a2117)
 [![rocjitsu 84fb06b](https://img.shields.io/badge/rocjitsu-84fb06b-ED1C24)](https://github.com/ROCm/rocm-systems/commit/84fb06bc970a0049091a0fa7a7dbf2b925e488ee)
 [![spdk 18d1d8d](https://img.shields.io/badge/spdk-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
@@ -1478,7 +1478,7 @@ the dpkg lock during the build, and stops a long-lived guest replacing the
 pinned kernel or `amdgpu-dkms` underneath a module the image was built to ship.
 The verification boot asserts it for every flavour.
 
-`vm-info.json` is `schema_version` 6 here, and every earlier key is unchanged —
+`vm-info.json` is `schema_version` 9 here, and every earlier key is unchanged —
 read `schema_version` before reaching for anything newer:
 
 - **v2** added `flavour`, `kernel_release` and a `provisioning` object
@@ -1494,6 +1494,17 @@ read `schema_version` before reaching for anything newer:
 - **v5** adds `provisioning.assets`, naming the assets directory that script
   was given.
 - **v6** adds `provisioning.unattended_upgrades`, always `purged`.
+- **v7** adds the `kernels` block (what is installed, and which one grub
+  takes next — `kernel_release` alone is only what the verification boot
+  happened to run), plus `dkms`, `rocm`, `os` and the guest's SSH host keys.
+- **v8** adds `provisioning.provision_flavour` and `provisioning.trim`:
+  whose recipe built the guest, which is not the flavour for a slim variant,
+  and what was taken back out afterwards. Branch on `trim` being empty
+  rather than on the flavour name to decide whether a guest has a toolchain.
+- **v9** adds `provisioning.post_playbook`, the qemu-minimal playbook run
+  against the provisioned guest. For the `ernic-rocjitsu` flavours that is
+  what replaces the in-tree ionic drivers with SRQ-capable ones; the guest's
+  own `/etc/ionic-srq.json` records what they were built from.
 
 Most of this is hoisted into the pushed artifact's annotations as well, so
 `oras manifest fetch` answers the common questions without the referrer — see
