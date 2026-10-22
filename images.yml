@@ -514,7 +514,7 @@ images:
       # ubuntu-qcow2-gen -- the ansible/ tree its guest builds are driven by, so
       # the CLI and the playbooks always come from one commit.
       qemu_minimal_repo: https://github.com/sbates130272/qemu-minimal.git
-      qemu_minimal_commit: f7a0e002e5bd4b21b9dc4dda9ee5b105497f1a6b
+      qemu_minimal_commit: c0791954aec508bfd3f26d11d6960f279d4b175a
       # Provenance only, and empty here: the default target builds a release
       # tag, which belongs to no branch. A fork variant fills it in and the
       # label appears only there.
