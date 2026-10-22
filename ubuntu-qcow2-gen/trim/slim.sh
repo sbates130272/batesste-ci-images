@@ -272,8 +272,15 @@ fi
 # the assertion after it is there because an autoremove that quietly took
 # amdrocm-runtime would leave a guest that passes every ldconfig check in the
 # checks file and runs nothing.
+#
+# amdsmi is in the keep list rather than merely surviving by accident.  It was
+# installed by hand so it is already apt-mark manual and autoremove cannot take
+# it today -- but it is the only per-device health tool the image has, it is
+# runtime rather than toolchain, and the checks assert it, so it belongs where
+# a future edit to this section will see it.
 ROCM_KEEP="amdrocm-sysdeps${ROCM_VERSION} amdrocm-base${ROCM_VERSION} \
-amdrocm-llvm${ROCM_VERSION} amdrocm-runtime${ROCM_VERSION}"
+amdrocm-llvm${ROCM_VERSION} amdrocm-runtime${ROCM_VERSION} \
+amdrocm-amdsmi${ROCM_VERSION}"
 # Guarded one at a time rather than in one apt-mark: a name that has moved
 # should fail at the assertion below, which says what is missing and why it
 # matters, and not at an exit code from apt-mark.

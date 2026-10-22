@@ -62,6 +62,23 @@ test "${STAMP%%:*}" = "${INSTALLED%%-*}"
 # is the failure worth catching here.
 command -v ib_send_bw ib_write_bw ib_read_bw ib_send_lat
 
+# Locked memory, which RDMA needs and this release defaults to 8192 KB.
+# Asserted here rather than in provisioning because this is the only boot that
+# can: the limits file takes effect at the next login and the systemd drop-in
+# at the next boot, so the script that wrote them is running in the one
+# session where they do not apply.
+#
+# This is the shape a consumer gets -- a fresh SSH login on a booted guest --
+# and the failure it prevents is an unprivileged ib_send_bw refusing every
+# message over about 4 MiB with "Couldn't create CQ", which names nothing
+# about limits.
+test "$(ulimit -l)" = unlimited
+grep -q 'DefaultLimitMEMLOCK=infinity' /etc/systemd/system.conf.d/*.conf
+# And the unit side of it, which the PAM limit above does not cover: read the
+# value systemd is actually running with rather than the file that asked for
+# it.  "infinity" is reported as the string, not as a number.
+systemctl show -p DefaultLimitMEMLOCK | grep -q 'infinity$'
+
 # Headroom for a kernel tree, rdma-core and the DKMS builds.
 test "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 20
 

@@ -131,6 +131,28 @@ test -n "${LOGIN_ROCM_PATH}"
 test -d "${LOGIN_ROCM_PATH}"
 bash -lc 'case ":${PATH}:" in *":${ROCM_PATH}/bin:"*) ;; *) exit 1 ;; esac'
 echo "note: login-shell ROCM_PATH=${LOGIN_ROCM_PATH}"
+
+# And the same two values in the shell shape consumers actually use. This probe
+# runs over "ssh ... 'bash -s'" -- non-login and non-interactive -- which is
+# precisely the session /etc/profile.d does not reach. /etc/environment, through
+# pam_env, is what covers it; the login assertions above do not imply it.
+test -n "${ROCM_PATH:-}"
+test "${ROCM_PATH}" = "${LOGIN_ROCM_PATH}"
+case ":${PATH}:" in *":${ROCM_PATH}/bin:"*) ;; *) exit 1 ;; esac
+test -d /opt/rocm/bin
+test -d /opt/rocm/lib
+test "$(readlink -f /opt/rocm/bin)" = "$(readlink -f "${ROCM_PATH}/bin")"
+
+# amd-smi survives the trim, and that is a decision rather than an oversight:
+# it is the only per-device health and utilisation tool in the image, it is
+# runtime rather than toolchain, and it is 31 MB. The trim prunes
+# ${ROCM_PATH}/bin by name and sweeps dangling symlinks, and amd-smi is a live
+# symlink into libexec, so neither takes it -- which is worth asserting here
+# rather than assuming, since the sweep is what the hipcc assertions below
+# rely on too.
+command -v amd-smi > /dev/null
+python3 -c 'import amdsmi'
+
 # The device bitcode the runtime loads at dispatch.  Deleting it along with
 # LLVM would leave a guest that links and then fails to launch a kernel, which
 # is a far more expensive failure than a missing compiler.
