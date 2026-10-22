@@ -123,10 +123,17 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get update
 # symlink resolving to exactly one of them, and a bare name follows whichever
 # is newest -- so a line appearing upstream installs packages the guest's own
 # ROCM_PATH cannot see.
+#
+# amdsmi is in the set for a reason the other two are not: it is the only
+# per-device health and utilisation tool this guest has any way of getting.
+# rocm-smi is deprecated upstream and the therock stream ships no package for
+# it at all, so a guest without amdsmi has rocminfo -- which enumerates agents
+# and reports nothing about them -- and nothing else.  31 MB.
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     libstdc++-14-dev \
     "amdrocm-runtime-dev${ROCM_VERSION}" \
-    "amdrocm-blas-dev${ROCM_VERSION}"
+    "amdrocm-blas-dev${ROCM_VERSION}" \
+    "amdrocm-amdsmi${ROCM_VERSION}"
 
 # Distro copies of the same runtime, if anything pulled them in before the pin
 # above was in place.  Harmless when absent.
@@ -164,6 +171,105 @@ export ROCM_PATH=${ROCM_PATH}
 export PATH=${ROCM_PATH}/bin:\$PATH
 EOF
 sudo chmod 0644 /etc/profile.d/rocm.sh
+
+# And the same two values again, somewhere a *non-login* shell can see them.
+#
+# /etc/profile.d is sourced by login shells only, which is not the shape most
+# consumers of this guest actually use: "ssh guest hipcc ..." is non-login and
+# non-interactive, so it sources neither /etc/profile nor ~/.bashrc -- the
+# stock ~/.bashrc returns early when non-interactive.  Measured on the
+# published image, "ssh guest 'echo $PATH'" had no ROCm entry in it while
+# "ssh guest 'bash -lc ...'" did.  That covers every CI step, every Ansible
+# command/shell task and every systemd unit, each of which otherwise has to
+# know to force a login shell.
+#
+# /etc/environment is read by pam_env, which runs for an SSH session whether
+# or not a login shell follows, so it reaches exactly the callers profile.d
+# misses.  It is not a shell script -- no expansion, no $PATH reference -- so
+# the whole value has to be written out.  Built from the line the image
+# already has rather than from a default spelled here, so a release that picks
+# a different PATH keeps the one it picked.
+ENV_PATH=$(sed -n 's/^PATH="\?\([^"]*\)"\?$/\1/p' /etc/environment | head -1)
+if [ -z "${ENV_PATH}" ]; then
+    echo "Error: /etc/environment has no PATH line to prepend to; this" \
+         "release does not ship the one the cloud image has always had" >&2
+    exit 1
+fi
+# Any existing ROCm entry comes out first, so a re-run cannot stack a second
+# copy on the front.
+ENV_PATH=$(printf '%s' "${ENV_PATH}" | tr ':' '\n' | grep -v '^/opt/rocm' |
+    paste -sd:)
+test -n "${ENV_PATH}"
+sudo sed -i '/^ROCM_PATH=/d' /etc/environment
+sudo sed -i "s|^PATH=.*|PATH=\"${ROCM_PATH}/bin:${ENV_PATH}\"|" /etc/environment
+printf 'ROCM_PATH=%s\n' "${ROCM_PATH}" |
+    sudo tee -a /etc/environment > /dev/null
+grep -q "^PATH=\"${ROCM_PATH}/bin:" /etc/environment
+
+# Versionless /opt/rocm/bin and /opt/rocm/lib.  A great deal of third-party
+# tooling and most ROCm documentation spells those paths literally, and the
+# therock layout has neither -- there is only ${ROCM_PATH} -- so a consumer
+# following any of it finds nothing.  The symlinks also insulate whatever they
+# are written into from the version string itself.
+#
+# Created only where nothing holds the path already: update-alternatives owns
+# some of the names directly under /opt/rocm on this stream, and a hand-made
+# symlink over an alternatives slot is a conflict that surfaces at the next
+# ROCm upgrade rather than here.
+for sub in bin lib; do
+    if [ -e "/opt/rocm/${sub}" ] || [ -L "/opt/rocm/${sub}" ]; then
+        echo "note: /opt/rocm/${sub} exists already, left alone"
+    elif update-alternatives --query "rocm-${sub}" > /dev/null 2>&1; then
+        echo "note: update-alternatives owns rocm-${sub}, left alone"
+    else
+        sudo ln -s "${ROCM_PATH}/${sub}" "/opt/rocm/${sub}"
+        echo "linked /opt/rocm/${sub} -> ${ROCM_PATH}/${sub}"
+    fi
+done
+
+# The amdsmi Python bindings, which the package installs under
+# ${ROCM_PATH}/share/amd_smi and puts on no import path, so "import amdsmi"
+# fails in a guest that has both the library and the CLI.
+#
+# A .pth in the system site directory rather than PYTHONPATH in the two files
+# above: it works for every python3 however the process was started, and it
+# cannot shadow anything, because the directory it adds holds the amdsmi
+# package and nothing else.
+AMDSMI_PY="${ROCM_PATH}/share/amd_smi"
+if [ ! -d "${AMDSMI_PY}/amdsmi" ]; then
+    echo "Error: amdrocm-amdsmi${ROCM_VERSION} installed no" \
+         "${AMDSMI_PY}/amdsmi; the therock stream has moved the bindings" >&2
+    exit 1
+fi
+# Resolved rather than spelled: the system python's site directory is
+# /usr/local/lib/pythonX.Y/dist-packages on Ubuntu today, but which of
+# sysconfig's schemes answers for it has moved between releases and the
+# obvious one-liner can name a directory that does not exist.  Take the first
+# candidate that is actually on disk.
+PY_SITE=$(python3 - <<'PYEOF'
+import os
+import site
+import sysconfig
+
+for d in [sysconfig.get_paths()["purelib"], *site.getsitepackages()]:
+    if os.path.isdir(d):
+        print(d)
+        break
+PYEOF
+)
+if [ -z "${PY_SITE}" ]; then
+    echo "Error: no python3 site directory exists to drop amdsmi.pth into" >&2
+    exit 1
+fi
+printf '%s\n' "${AMDSMI_PY}" | sudo tee "${PY_SITE}/amdsmi.pth" > /dev/null
+sudo chmod 0644 "${PY_SITE}/amdsmi.pth"
+python3 -c 'import amdsmi'
+# The CLI is a symlink into libexec rather than a real binary, so name it
+# rather than relying on the bin/ sweep any trim does.  Not run here: this
+# guest has no GPU until a vfio-user server provides one, and amd-smi with
+# nothing to enumerate is not a useful assertion.
+test -x "${ROCM_PATH}/bin/amd-smi"
+
 # The PCI ID database, refreshed rather than taken from the archive.
 #
 # Not guarded.  rocm-ernic's guest verification asserts from 9e4cb55 that the
@@ -550,6 +656,12 @@ sudo tee /etc/ernic-rocjitsu-guest.json > /dev/null <<EOF
   "amdgpu_dkms_built_for_kernels": "${KVER}",
   "amdrocm_runtime_dev_version": "${ROCM_PKG}",
   "rocm_stream": "therock",
+  "rocm_path": "${ROCM_PATH}",
+  "rocm_on_non_login_path": true,
+  "rocm_versionless_symlinks": ["/opt/rocm/bin", "/opt/rocm/lib"],
+  "amd_smi": "${ROCM_PATH}/bin/amd-smi",
+  "amd_smi_python_bindings": true,
+  "rocm_smi": "absent -- deprecated upstream and not packaged in this stream",
   "kfd_atomics_patched": true,
   "amdgpu_patches": [${PATCHES}],
   "kfd_ptrace_gate_reviewed": false,
@@ -671,11 +783,34 @@ Expect the device to reach \`PORT_ACTIVE\` / \`LinkUp\` once attached.
   guest's limits, keep it: every \`ibv_reg_mr()\` past the 8192 KB default
   fails with "Cannot allocate memory", reported far from the cause -- UCX
   calls it a \`ud_recv_skb\` mpool failure, NIXL's libfabric plugin calls it
-  "Failed to initialize control request pool for rail 0".
+  "Failed to initialize control request pool for rail 0". Unprivileged
+  \`ib_send_bw\` above about 4 MiB is the same limit wearing a different hat:
+  it reports \`Couldn't create CQ\`, and it passes as root because
+  \`CAP_IPC_LOCK\` bypasses the rlimit -- note \`ulimit -l\` still *reads*
+  8192 under \`sudo\`, so the limit is easy to rule out incorrectly.
 - **One of the amdgpu patches in this image is unreviewed.** It changes a KFD
   ptrace check to make the build pass on 7.2. The guest records
   \`"kfd_ptrace_gate_reviewed": false\`. Do not put anything here that you
   would mind a local user reading.
+
+## ROCm is on PATH for non-login shells too
+
+\`ssh guest 'hipcc ...'\` works. That is worth saying because it did not use
+to: ROCm was exported from \`/etc/profile.d/rocm.sh\`, which only a *login*
+shell sources, so \`ssh guest 'echo \$PATH'\` had no ROCm in it while
+\`ssh guest 'bash -lc ...'\` did -- and every CI step, Ansible \`command\` task
+and systemd unit landed on the first shape. \`ROCM_PATH\` and the \`bin\` entry
+are now in \`/etc/environment\` as well, which \`pam_env\` applies to any SSH
+session.
+
+\`/opt/rocm/bin\` and \`/opt/rocm/lib\` exist as symlinks to
+\`${ROCM_PATH}\`, so documentation and third-party tooling that spells those
+paths literally resolves here.
+
+\`amd-smi\` is installed, with its Python bindings importable as \`amdsmi\`.
+\`rocm-smi\` is **not** here and is not coming: it is deprecated upstream and
+this ROCm stream ships no package for it. \`rocminfo\` enumerates agents;
+\`amd-smi\` is what reports per-device health and utilisation.
 
 ## More
 

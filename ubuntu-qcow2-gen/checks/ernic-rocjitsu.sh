@@ -154,6 +154,33 @@ test -d "${LOGIN_ROCM_PATH}"
 bash -lc 'case ":${PATH}:" in *":${ROCM_PATH}/bin:"*) ;; *) exit 1 ;; esac'
 echo "note: login-shell ROCM_PATH=${LOGIN_ROCM_PATH}"
 
+# And the same two values in the shell shape consumers actually use. This probe
+# runs over "ssh ... 'bash -s'" -- non-login and non-interactive -- which is
+# precisely the session /etc/profile.d does not reach, so what follows asserts
+# the published failure rather than a reconstruction of it: ROCm was on the
+# login PATH only, and every CI step, Ansible command task and systemd unit saw
+# a guest with no ROCm in it. /etc/environment, through pam_env, is what covers
+# this; the login assertions above do not imply it.
+test -n "${ROCM_PATH:-}"
+test "${ROCM_PATH}" = "${LOGIN_ROCM_PATH}"
+case ":${PATH}:" in *":${ROCM_PATH}/bin:"*) ;; *) exit 1 ;; esac
+
+# The versionless paths, which third-party tooling and most ROCm documentation
+# spell literally and which the therock layout does not otherwise provide.
+# Resolution rather than presence: a symlink left pointing at a component
+# directory the stream has since renamed satisfies "test -L" and leads nowhere.
+test -d /opt/rocm/bin
+test -d /opt/rocm/lib
+test "$(readlink -f /opt/rocm/bin)" = "$(readlink -f "${ROCM_PATH}/bin")"
+
+# amd-smi, resolved through the non-login PATH above rather than by its path:
+# both halves of this are new, and a check that names the file would pass on a
+# guest where nothing can find it. rocm-smi is deprecated upstream and absent
+# from this stream, so this is the only per-device health tool here.
+command -v amd-smi > /dev/null
+# Its Python bindings ship outside every import path; provisioning adds a .pth.
+python3 -c 'import amdsmi'
+
 # BLAS is asserted by its headers, not by a library: amdrocm-blas-dev is
 # headers-only in the therock stream and does not depend on the runtime
 # amdrocm-blas, so there is no librocblas.so here.

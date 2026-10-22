@@ -63,6 +63,47 @@ ls /usr/lib/*/libibverbs/libionic*.so
 # that is the image build failing where the cause is still visible.
 sudo update-pciids
 
+# RDMA pins memory, and this guest's default ceiling is 8192 KB.  The same two
+# files provision/ernic-rocjitsu.sh writes, for the same reason and with the
+# same wording: this flavour serves the same emulated ionic NIC, so it has the
+# same ceiling, and it was simply missed when that one was fixed.
+#
+# What the limit costs is not obvious from the failure.  An unprivileged
+# ib_send_bw above about 4 MiB dies with "Couldn't create CQ" -- two buffers
+# plus the queue memory crossing 8 MiB -- and nothing in the message says
+# memlock.  Past it every ibv_reg_mr() fails with "Cannot allocate memory",
+# which UCX surfaces as a ud_recv_skb mpool failure and NIXL's libfabric
+# plugin as "Failed to initialize control request pool for rail 0".  Running
+# as root hides it, because CAP_IPC_LOCK bypasses RLIMIT_MEMLOCK -- and
+# "ulimit -l" still reads 8192 under sudo, so the limit is easy to rule out
+# incorrectly.
+#
+# Both files, because they cover callers the other cannot.  limits.d is PAM,
+# so it reaches an SSH login and anything started from one; a systemd unit
+# never goes through PAM's limits and takes DefaultLimitMEMLOCK instead.  A
+# consumer running their RDMA binary from a unit file is the case that fails
+# with only the first.
+sudo install -d -m 0755 /etc/security/limits.d
+sudo tee /etc/security/limits.d/99-rdma-memlock.conf > /dev/null <<'EOF'
+# Unlimited locked memory for RDMA.  See provision/ionic.sh in
+# batesste-ci-images.
+*       soft    memlock     unlimited
+*       hard    memlock     unlimited
+root    soft    memlock     unlimited
+root    hard    memlock     unlimited
+EOF
+sudo chmod 0644 /etc/security/limits.d/99-rdma-memlock.conf
+sudo install -d -m 0755 /etc/systemd/system.conf.d
+sudo tee /etc/systemd/system.conf.d/99-rdma-memlock.conf > /dev/null <<'EOF'
+[Manager]
+DefaultLimitMEMLOCK=infinity
+EOF
+sudo chmod 0644 /etc/systemd/system.conf.d/99-rdma-memlock.conf
+# Not asserted here: both take effect at the next login and the next boot
+# respectively, and this script is running inside the session they do not
+# apply to.  checks/ionic.sh asserts "ulimit -l" in the verification boot,
+# which is a fresh login on a rebooted guest -- the shape a consumer gets.
+
 # Format is <version>:<gda-patch-hash>, with the literal string "none" when no
 # GDA patches were applied.  The role applies its ionic GDA direct-verbs series
 # only for GPU-passthrough guests and folds a hash of it in here in place of
