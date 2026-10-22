@@ -338,6 +338,30 @@ if [[ -n "$GUEST_FIO" && "$GUEST_FIO" != "$(current_pin ubuntu-cuda-rocm-fio fio
          "so align it by hand."
 fi
 
+# The five -sbates-fork variants carry the host-doorbell-fd libvfio-user, and
+# they exist to be built against the *same* one as the QEMU that talks to them:
+# a server on one side of VFIO_USER_HOST_DOORBELL_FD and a client on the other
+# have to agree on the opcode. The pin is repeated in each variant because a
+# variant may only override `vars:`, which are taken literally -- there is no
+# var indirection to share, so nothing but this check stops them drifting.
+#
+# Warned about rather than rewritten, exactly like the guest fio pin above:
+# these live inside variants: blocks, which replace_in_yaml skips on purpose.
+FORK_VFU=$(current_pin ubuntu-libvfio-user@sbates-fork libvfio_user_commit)
+for peer in ubuntu-rocm-ernic@sbates-fork:libvfio_user_commit \
+            ubuntu-qemu-libvfio-user@sbates-fork:libvfio_user_commit \
+            ubuntu-spdk-libvfio-user@sbates-fork:libvfio_user_override_commit \
+            ubuntu-rocm-rocjitsu@sbates-fork:libvfio_user_override_commit; do
+    peer_target=${peer%%:*}
+    peer_var=${peer##*:}
+    peer_pin=$(current_pin "$peer_target" "$peer_var")
+    if [[ -n "$FORK_VFU" && -n "$peer_pin" && "$peer_pin" != "$FORK_VFU" ]]; then
+        echo "  WARNING: $peer_target pins libvfio-user ${peer_pin:0:7} but" \
+             "ubuntu-libvfio-user@sbates-fork pins ${FORK_VFU:0:7}." \
+             "These must agree; both are variants, so align them by hand."
+    fi
+done
+
 echo "==> Fetching latest NIXL release tag..."
 # NIXL tracks tagged releases, not master: releases/latest already excludes
 # drafts and pre-releases, so an -rc never lands here. A version string can

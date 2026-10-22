@@ -57,6 +57,33 @@ The commit is pinned in [`images.yml`](../images.yml) as
 it. `scripts/version-scrub.sh` advances it, and the README badge that
 advertises it is generated from the same value.
 
+`libvfio_user_repo` sits beside it, so a variant can point the build at a
+different tree without touching the Dockerfile.
+
+## Variants
+
+| Variant | Repository suffix | What differs |
+| --- | --- | --- |
+| *(default)* | *(none)* | Upstream libvfio-user from `qemu-project`, at the pinned commit |
+| `sbates-fork` | `-sbates-fork` | The `sbates130272` fork's `feat/host-doorbell-fd`, adding `VFIO_USER_HOST_DOORBELL_FD` (opcode 19), `vfu_setup_host_doorbell_cb()` and `vfu_mmio_write()` |
+
+The fork branch is rebased onto the commit `libvfio_user_commit` names, so the
+variant is that tree plus the doorbell series rather than a divergent one. It
+is force-pushed as the series is reworked, so the variant pins a SHA and
+`version-scrub.sh` — which tracks `qemu-project` master — deliberately cannot
+see it.
+
+It offers two ways to reach host MMIO without a `REGION_WRITE` round trip: a
+per-doorbell eventfd pushed up front by the client, rung with a single
+`eventfd_write()`; and `vfu_mmio_write()`, a `DMA_WRITE` to an MMIO GPA needing
+no prior registration, for writes with no dedicated doorbell fd. Both only help
+a server that calls them; this image just makes them available. `ubuntu-qemu-libvfio-user@sbates-fork` and
+`ubuntu-rocm-ernic@sbates-fork` layer on this variant via `base_variant`;
+`ubuntu-spdk-libvfio-user@sbates-fork` pins the same SHA in its submodule; and
+`ubuntu-rocm-rocjitsu@sbates-fork` redirects the `FetchContent` in upstream
+ROCm's cmake to it. All five must agree — `scripts/version-scrub.sh` warns when
+they drift.
+
 ## Tags
 
 The tag variant is the abbreviated commit, for example `vfu.8039244`. See the

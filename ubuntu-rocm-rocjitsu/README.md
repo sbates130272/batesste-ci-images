@@ -44,6 +44,13 @@ transport has to be the one upstream tested against.
   time rather than restated, so an upstream bump cannot leave them lying.
   `local_patches` is present and empty -- see [Local patches](#local-patches).
 
+  Three fields describe libvfio-user, because the cmake states what upstream
+  *declares* and the `sbates-fork` variant builds something else:
+  `libvfio_user_upstream_tag` is the declared pin (`v0.8`),
+  `libvfio_user_tag` is what was actually built, and `libvfio_user_source` is
+  `rocjitsu-cmake` on a default build or the fork's repository URL on the
+  variant. On a default build the first two are equal.
+
 ## Local patches
 
 None. The tree is built unmodified.
@@ -336,9 +343,59 @@ and the Dockerfile `ARG` together. Nothing upstream exercises this path, so a
 scrubbed bump is not self-evidently safe -- re-prove it against a guest before
 a consumer takes it, per [Verifying an image](#verifying-an-image).
 
+## Variants
+
+| Variant | Repository suffix | What differs |
+| --- | --- | --- |
+| *(default)* | *(none)* | `develop`, with libvfio-user as upstream's own cmake pins it: `nutanix/libvfio-user` at `v0.8` |
+| `sbates-fork` | `-sbates-fork` | `users/stebates/rocjitsu-vfio-doorbell`, built against the `sbates130272` libvfio-user fork and **calling** the doorbell and `vfu_mmio_write` paths |
+
+Unlike the other `sbates-fork` variants, this one cannot simply layer on a
+different base: rocjitsu's libvfio-user is pinned inside upstream ROCm's
+`emulation/rocjitsu/cmake/rj_libvfio_user.cmake`, not by anything this repo
+owns. So the Dockerfile clones the fork itself and redirects upstream's
+`FetchContent_Declare` with CMake's documented per-dependency escape hatch,
+`-DFETCHCONTENT_SOURCE_DIR_LIBVFIO-USER=…`. The rocm-systems tree is still built
+unmodified, so [Local patches](#local-patches) stays accurate and
+`local_patches` stays `[]`.
+
+`libvfio_user_override_repo` and `libvfio_user_override_commit` in
+[images.yml](../images.yml) are empty by default, and the override only engages
+when both are set. They are deliberately *not* the shared
+`libvfio_user_repo`/`libvfio_user_commit`, which always hold a real upstream SHA
+and would therefore repoint every default build.
+
+This is a short forward step on the tree rocjitsu already pins rather than a
+cross-tree swap, which is what makes it buildable: `v0.8` is commit `37491ed`,
+the fork's base is five commits later, and the fork adds two more. The only
+public-header change is additive, so every `vfu_*` symbol rocjitsu's
+`vfio_device_host.cpp` uses is declared identically in both — and `lib/`'s
+source list is unchanged, which matters because `rj_libvfio_user.cmake`
+hand-lists those files.
+
+Unlike the ernic and SPDK variants, this one does not merely make the API
+reachable — it pins a rocjitsu that uses it. On
+`users/stebates/rocjitsu-vfio-doorbell`, `vfio_device_host.cpp` calls
+`vfu_setup_host_doorbell_cb()` once and `vfu_mmio_write()` three times, making
+this the one image where the doorbell path is actually exercised. That branch
+also points its own `rj_libvfio_user.cmake` at the fork, at the same SHA, so
+the `FETCHCONTENT_SOURCE_DIR` override is belt-and-braces here rather than the
+mechanism. It is kept because it pins the library from this repo even if the
+branch's cmake drifts, and because it is what the build-time assert checks — a
+misspelled or ignored variable would otherwise fall back to `v0.8` and produce
+a green build of the wrong library.
+
+The branch is **diverged from `develop`, not ahead**: three commits on, fifteen
+behind the commit the default target carries. The variant is therefore older
+than the default in everything except the doorbell work, and the two are not
+comparable builds. Repin it to a rebase, or to `develop`, once the work lands.
+
 ## Tags
 
-The tag variant is the abbreviated commit, for example `rocjitsu.8e01a5a`. The
+The tag variant is the abbreviated commit, for example `rocjitsu.98f6a72`; the
+`sbates-fork` variant appends the libvfio-user commit and carries its own
+rocjitsu pin, `rocjitsu.faacfb0-vfu.3719c3a`, because upstream's libvfio-user
+pin is not a var here and the two would otherwise collide. The
 full tag also carries `g<sha7>` of this repository, so a change to the wrapper
 or the Dockerfile moves the tag even when the upstream pin has not. See the
 repository [README](../README.md) for the full tag scheme.

@@ -8,6 +8,11 @@
 # qemu-project tree that QEMU and rocm-ernic want. Pairing them would break on
 # the next bump of either, so SPDK uses its submodule and the resolved SHA is
 # recorded below for provenance instead of being pinned from images.yml.
+#
+# LIBVFIO_USER_REPO/COMMIT below are the one deliberate exception, and empty
+# unless asked for: the -sbates-fork variant sets them to move the submodule
+# forward onto the host-doorbell-fd branch. That is a variant precisely so this
+# default keeps the decoupling the paragraph above describes.
 ARG BASE_IMAGE=docker.io/sbates130272/batesste-ci-images-ubuntu-base:latest
 # hadolint ignore=DL3006
 FROM ${BASE_IMAGE}
@@ -51,6 +56,16 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 ARG SPDK_REPO=https://github.com/mmgaggle/spdk.git
 ARG SPDK_BRANCH=rados-nkv
 ARG SPDK_COMMIT=18d1d8dab4f2020e10349009e69f94d47de100f9
+
+# Optional, and empty by default: check the libvfio-user submodule out at a ref
+# of its own instead of the one SPDK pins. Set only by the -sbates-fork variant,
+# to build the target against the fork carrying VFIO_USER_HOST_DOORBELL_FD
+# (opcode 19) so it can call vfu_setup_host_doorbell_cb(). See images.yml.
+#
+# Both or neither: a commit with no repo would be fetched from whatever the
+# submodule points at, which is a different build than the one asked for.
+ARG LIBVFIO_USER_REPO=
+ARG LIBVFIO_USER_COMMIT=
 ARG CACHE_BUST=
 
 RUN echo "Cache bust: ${CACHE_BUST:-none}" > /tmp/spdk_cache_bust.txt
@@ -64,6 +79,14 @@ RUN git clone --branch "${SPDK_BRANCH}" "${SPDK_REPO}" "${SPDK_DIR}" && \
     git -C "${SPDK_DIR}" checkout "${SPDK_COMMIT}" && \
     git -C "${SPDK_DIR}" submodule update --init && \
     git -C "${SPDK_DIR}" rev-parse HEAD > /build/spdk-commit.txt && \
+    if [ -n "${LIBVFIO_USER_REPO}" ] && [ -n "${LIBVFIO_USER_COMMIT}" ]; then \
+        git -C "${SPDK_DIR}/libvfio-user" \
+            fetch --depth=1 "${LIBVFIO_USER_REPO}" "${LIBVFIO_USER_COMMIT}" && \
+        git -C "${SPDK_DIR}/libvfio-user" checkout --detach FETCH_HEAD && \
+        echo "${LIBVFIO_USER_REPO}" > /build/libvfio-user-source.txt; \
+    else \
+        echo spdk-submodule > /build/libvfio-user-source.txt; \
+    fi && \
     git -C "${SPDK_DIR}/libvfio-user" rev-parse HEAD \
         > /build/libvfio-user-commit.txt
 
@@ -92,9 +115,32 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # PATH rather than CC="ccache gcc": SPDK's makefiles re-exec the compiler by
 # name, so a recorded "ccache gcc" is not preserved the way QEMU's configure
 # preserves it.
+# Applied only under the override, because it exists to reconcile SPDK with a
+# libvfio-user newer than the one its submodule pins. vfu_setup_device_dma()
+# grew a max_regions parameter between SPDK's submodule and the fork, so the
+# two call sites SPDK has -- lib/nvmf/vfio_user.c (the NVMe-oF target this
+# image is for) and lib/vfu_tgt/tgt_endpoint.c (the virtio target) -- no longer
+# compile. The patch passes LIBVFIO_USER_MAX_DMA_REGIONS, which is the default
+# the header documents for exactly this.
+#
+# Those are the only two sites affected. vfu_sgl_read and vfu_sgl_write also
+# gained an argument over the same range, but SPDK calls neither -- it uses
+# vfu_addr_to_sgl/vfu_sgl_get/vfu_sgl_put, which are unchanged.
+#
+# `git apply` and not sed: it fails loudly when a future spdk_commit moves
+# those lines, which is the signal to re-check the whole API surface rather
+# than silently build something that no longer matches.
+COPY ubuntu-spdk-libvfio-user/vfu-max-dma-regions.patch \
+     /build/vfu-max-dma-regions.patch
 # hadolint ignore=DL3003
 RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     cd "${SPDK_DIR}" && \
+    if [ -n "${LIBVFIO_USER_COMMIT}" ]; then \
+        git apply /build/vfu-max-dma-regions.patch && \
+        printf '"vfu-max-dma-regions.patch"' > /build/local-patches.txt; \
+    else \
+        : > /build/local-patches.txt; \
+    fi && \
     PATH=/usr/lib/ccache:${PATH} ./configure \
         --with-vfio-user \
         --without-nvme-cuse \
@@ -117,6 +163,9 @@ COPY ubuntu-spdk-libvfio-user/kv-host-no-huge.patch /build/kv-host-no-huge.patch
 RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     cd "${SPDK_DIR}" && \
     git apply /build/kv-host-no-huge.patch && \
+    { [ -s /build/local-patches.txt ] && \
+        printf ', ' >> /build/local-patches.txt || true; } && \
+    printf '"kv-host-no-huge.patch"' >> /build/local-patches.txt && \
     PATH=/usr/lib/ccache:${PATH} make -C test/nvmf/kv && \
     test -x "${SPDK_DIR}/test/nvmf/kv/kv_host"
 
@@ -134,7 +183,8 @@ RUN ln -sf "${SPDK_DIR}/build/bin/nvmf_tgt" /usr/local/bin/nvmf_tgt && \
   "spdk_branch": "%s",\n\
   "spdk_commit": "%s",\n\
   "libvfio_user_commit": "%s",\n\
-  "libvfio_user_source": "spdk-submodule",\n\
+  "libvfio_user_source": "%s",\n\
+  "local_patches": [%s],\n\
   "configure_flags": ["--with-vfio-user", "--without-nvme-cuse",\n\
                       "--target-arch=corei7"],\n\
   "rbd_enabled": false,\n\
@@ -145,6 +195,8 @@ RUN ln -sf "${SPDK_DIR}/build/bin/nvmf_tgt" /usr/local/bin/nvmf_tgt && \
         "${SPDK_BRANCH}" \
         "$(cat /build/spdk-commit.txt)" \
         "$(cat /build/libvfio-user-commit.txt)" \
+        "$(cat /build/libvfio-user-source.txt)" \
+        "$(cat /build/local-patches.txt)" \
         > /usr/local/share/spdk-build.json
 
 ENV NVME_NAMESPACES="lba:malloc:512M,kv:mem" \

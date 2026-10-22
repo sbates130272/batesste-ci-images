@@ -365,7 +365,54 @@ the rocjitsu attachment rather than joining it.
 `spdk_repo`, `spdk_branch` and `spdk_commit` in [`images.yml`](../images.yml).
 libvfio-user is not pinned here — it comes from SPDK's submodule, as above.
 
+## Variants
+
+| Variant | Repository suffix | What differs |
+| --- | --- | --- |
+| *(default)* | *(none)* | libvfio-user from SPDK's own submodule, at whatever `spdk_commit` pins |
+| `sbates-fork` | `-sbates-fork` | The submodule checked out at the `sbates130272` fork's `feat/host-doorbell-fd` instead |
+
+This is the one place the decoupling described in [Why a fork](#why-a-fork) is
+set aside, and only when asked for: `libvfio_user_override_repo` and
+`libvfio_user_override_commit` are empty by default, and the Dockerfile
+re-checks-out the submodule only when both are set. They are deliberately
+*not* the shared `libvfio_user_repo`/`libvfio_user_commit`, which always hold a
+real upstream SHA and would therefore override the submodule on every build.
+
+It is a forward move on the submodule's own tree rather than a cross-tree swap:
+the submodule is plain `nutanix/libvfio-user` and the fork branch is 35 commits
+further along the same master, plus the doorbell series. That is still a
+different libvfio-user than SPDK pins, so this variant is allowed to fail on its
+own without taking the default with it.
+
+Being a forward move was not sufficient on its own. Three public functions
+changed signature over those 35 commits, and SPDK calls one of them:
+`vfu_setup_device_dma()` gained a `max_regions` parameter, which broke both its
+call sites — `lib/nvmf/vfio_user.c` (the NVMe-oF target this image exists for)
+and `lib/vfu_tgt/tgt_endpoint.c` (the virtio target). `vfu-max-dma-regions.patch`
+passes `LIBVFIO_USER_MAX_DMA_REGIONS`, the default the header documents for
+exactly this, and is applied *only* when the override is active. The other two,
+`vfu_sgl_read()` and `vfu_sgl_write()`, SPDK does not call — it uses
+`vfu_addr_to_sgl`/`vfu_sgl_get`/`vfu_sgl_put`, which are unchanged.
+
+The patch is applied with `git apply` rather than `sed` so that a future
+`spdk_commit` moving those lines fails the build loudly. That is the signal to
+re-check the whole API surface, not just to refresh the context lines.
+`spdk-build.json` lists what was applied in `local_patches`.
+
+With it, SPDK's vfio-user target can call `vfu_setup_host_doorbell_cb()` and
+ring a host MMIO doorbell with one `eventfd_write()` rather than sending a
+`REGION_WRITE` per doorbell — a change in SPDK's target, which this variant
+only makes possible.
+
+`/usr/local/share/spdk-build.json` records which tree was used:
+`libvfio_user_source` is `spdk-submodule` on the default and the fork's repo
+URL on the variant.
+
 ## Tags
 
 The tag variant is the abbreviated SPDK commit, for example `spdk.18d1d8d`.
-See the repository [README](../README.md) for the full tag scheme.
+The `sbates-fork` variant appends the libvfio-user commit —
+`spdk.18d1d8d-vfu.3719c3a` — because the submodule SHA is not knowable until
+build time, so the default tag cannot name it and the two would otherwise
+collide. See the repository [README](../README.md) for the full tag scheme.
