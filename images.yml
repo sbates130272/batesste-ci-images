@@ -800,6 +800,15 @@ images:
     # downloads and, on the AMD network, amd-root-ca.crt.
     context_dirs:
       - common/cloud-image-cache
+      # The mainline kernel .debs, keyed by kernel_ref/arch. Same shape as the
+      # cloud image above and for a sharper reason: kernel.ubuntu.com is the
+      # one upstream a pinned-kernel flavour cannot build without, and it 503s
+      # in bursts -- one CI run had all three kernel-pinned flavours meet the
+      # same burst and one of them lose the build to it. Read-only here;
+      # populated by actions/cache in CI, or by hand locally. On the cluster
+      # common/ is shared home, so this cache survives changing node, which no
+      # --mount=type=cache in this repo does.
+      - common/kernel-cache
     # The stand-in for the `parentguest` build context, which the Dockerfile's
     # stage phase bind-mounts at /parent. A flavour that names a
     # guest_parent_variant gets that flavour's payload there instead; one that

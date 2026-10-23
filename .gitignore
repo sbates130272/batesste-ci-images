@@ -20,6 +20,11 @@ compose/vm/
 # key and this repository is public. build-vm.sh falls back to generating a
 # throwaway pair per flavour when it is absent, so a fresh clone still builds.
 common/ssh/
+# Downloaded mainline kernel .debs; see context_dirs in images.yml. The
+# directory is tracked (.gitkeep) so the bind mount always has something to
+# point at, but its contents never are.
+common/kernel-cache/*
+!common/kernel-cache/.gitkeep
 # VSCode 
 .vscode
 # Python cache

@@ -596,6 +596,44 @@ if [ -n "${FINAL_KERNEL_REF}" ]; then
     rm -rf "${DEBDIR}"
     mkdir -p "${DEBDIR}"
 
+    # A cache of the .debs, keyed by the pin that selects them.
+    #
+    # Same shape as the cloud-image cache above and for a better reason: this
+    # is the one upstream the build cannot proceed without, and it is flaky.
+    # kernel.ubuntu.com 503s in bursts, and on one CI run all three
+    # kernel-pinned flavours met the same burst within 17 seconds -- ionic got
+    # through, ernic-rocjitsu survived on a retry, and the slim flavour
+    # exhausted its budget and failed the build. Retries make that a coin
+    # flip with better odds; a cache removes the toss.
+    #
+    # Keyed by KERNEL_REF and ARCH because that is exactly what decides the
+    # file set. The pin moves rarely, so after one warm-up the three lanes
+    # stop touching the network for this at all.
+    #
+    # Read-only, like cloud-image-cache: common/ is a bind mount of the build
+    # context and the build cannot write back into it. Populating it is the
+    # caller's job -- actions/cache plus a pre-download step in CI, or by hand
+    # locally. On the cluster common/ is on shared home, so unlike every
+    # --mount=type=cache in this repo a populated kernel cache survives
+    # landing on a different node.
+    KCACHE="${CTX}/kernel-cache/${FINAL_KERNEL_REF}/${FINAL_ARCH}"
+    if [ -d "${KCACHE}" ] && cp "${KCACHE}"/*.deb "${DEBDIR}/" 2>/dev/null; then
+        KERNEL_DEBS=$(cd "${DEBDIR}" && ls -1 *.deb | tr '\n' ' ' | sed 's/ $//')
+        echo "Mainline kernel cache: HIT for ${FINAL_KERNEL_REF}/${FINAL_ARCH}"
+        for d in "${DEBDIR}"/*.deb; do
+            echo "  $(basename "${d}") ($(du -h "${d}" | cut -f1))"
+        done
+    else
+        echo "Mainline kernel cache: MISS for" \
+             "${FINAL_KERNEL_REF}/${FINAL_ARCH} (common/kernel-cache/)," \
+             "fetching from kernel.ubuntu.com"
+    fi
+fi
+
+# The download, skipped entirely on a cache hit -- both the directory listing
+# and the .debs themselves, which is the whole point: the listing is what 503s.
+if [ -n "${FINAL_KERNEL_REF}" ] && [ "${KERNEL_DEBS}" = none ]; then
+
     # Two observed failure modes against kernel.ubuntu.com, both minutes into a
     # build and neither previously guarded: a .deb transfer died with curl 92
     # (HTTP/2 PROTOCOL_ERROR, stream reset mid-transfer), and the directory
@@ -609,7 +647,22 @@ if [ -n "${FINAL_KERNEL_REF}" ]; then
     # is none of those, so without it curl gives up on the first failure. That
     # is why --retry-connrefused, used elsewhere in the repo, would not have
     # caught this.
-    CURL_RETRY="--http1.1 --retry 5 --retry-delay 2 --retry-all-errors"
+    #
+    # The budget is sized to the burst this comment already describes, which
+    # the previous 5 retries at 2s -- about 12 seconds of cover -- were not.
+    # Three lanes pin a kernel and all three met the same burst within 17
+    # seconds of each other on one CI run:
+    #
+    #   slim            503s 18:06:01 -> 18:06:14, retries exhausted, failed
+    #   ernic-rocjitsu  503  18:06:18, retried, got the .debs at 18:06:41
+    #   ionic           fetched cleanly at 18:06:06
+    #
+    # So the burst ran at least 40 seconds and the old budget straddled it:
+    # whether a lane survived came down to where in the burst it started.
+    # 8 retries at 10s is ~80 seconds of cover, which spans it with margin.
+    # Worth keeping the two numbers and the comment in step -- the previous
+    # pair disagreed, and the comment was the one telling the truth.
+    CURL_RETRY="--http1.1 --retry 8 --retry-delay 10 --retry-all-errors"
 
     # -64k is the arm64 page-size variant; taking both would install two
     # kernels and leave grub picking between them.
@@ -633,7 +686,11 @@ if [ -n "${FINAL_KERNEL_REF}" ]; then
         curl -fsSL ${CURL_RETRY} -o "${DEBDIR}/${n}" "${MAINLINE}/${n}"
     done
     KERNEL_DEBS=$(echo "${NAMES}" | tr '\n' ' ' | sed 's/ $//')
+fi
 
+# Installing them is the same work whichever way they arrived, so this is
+# outside the download branch above: a cache hit has already filled DEBDIR.
+if [ -n "${FINAL_KERNEL_REF}" ]; then
     KINSTALL=/tmp/install-kernel.sh
     printf 'KPIN=%s\n' "${FINAL_KERNEL_REF#v}" > "${KINSTALL}"
     cat >> "${KINSTALL}" <<'KERNEL_EOF'

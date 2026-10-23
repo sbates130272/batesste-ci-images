@@ -321,7 +321,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Ensure cloud image cache dir exists
-        run: mkdir -p common/cloud-image-cache
+        run: mkdir -p common/cloud-image-cache common/kernel-cache
 
       # The guest release is pinned in images.yml, not here, so bumping it
       # there moves the cache key and the download URL with it.
@@ -359,6 +359,56 @@ jobs:
       # no TCG fallback: a runner without /dev/kvm (ARM Linux, macOS, Windows,
       # ubuntu-slim) cannot build guest images and fails here rather than
       # spending an hour emulating one.
+
+      # The mainline kernel .debs, cached by the pin that selects them.
+      #
+      # kernel.ubuntu.com 503s in bursts and the build cannot proceed without
+      # these, so a cache is worth more than a retry budget: one run had all
+      # three kernel-pinned flavours meet the same burst within 17 seconds and
+      # one of them lose the build to it. kernel_ref moves rarely, so after a
+      # warm-up these lanes stop touching that host.
+      #
+      # Fetched here rather than inside the build so actions/cache can persist
+      # it -- common/ is a read-only bind mount from the container's side.
+      # Skipped for a flavour that pins no kernel, which leaves an empty
+      # directory and a MISS the build handles.
+      - name: Resolve guest kernel pin
+        id: kpin
+        if: matrix.target.entitlement != ''
+        run: |
+          ARGS=$(./ci-images-tool.py build-args "${{ matrix.target.key }}")
+          echo "ref=$(echo "$ARGS" | sed -n 's/^KERNEL_REF=//p')" >> "$GITHUB_OUTPUT"
+          echo "arch=$(echo "$ARGS" | sed -n 's/^ARCH=//p')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache mainline kernel debs
+        if: matrix.target.entitlement != '' && steps.kpin.outputs.ref != ''
+        uses: actions/cache@v6
+        with:
+          path: common/kernel-cache
+          key: kernel-debs-${{ steps.kpin.outputs.ref }}-${{ steps.kpin.outputs.arch }}
+
+      - name: Pre-download mainline kernel
+        if: matrix.target.entitlement != '' && steps.kpin.outputs.ref != ''
+        run: |
+          REF="${{ steps.kpin.outputs.ref }}"
+          ARCH="${{ steps.kpin.outputs.arch }}"
+          DIR="common/kernel-cache/${REF}/${ARCH}"
+          if [ -n "$(ls -A "$DIR" 2>/dev/null)" ]; then
+            echo "cache hit for ${REF}/${ARCH}:"; ls -la "$DIR"; exit 0
+          fi
+          mkdir -p "$DIR"
+          URL="https://kernel.ubuntu.com/mainline/${REF}/${ARCH}"
+          # Same retry budget and the same -64k exclusion as build-vm.sh; a
+          # partial set here would be a confusing failure inside the guest.
+          RETRY="--http1.1 --retry 8 --retry-delay 10 --retry-all-errors"
+          NAMES=$(curl -fsSL $RETRY --max-time 120 "${URL}/" \
+            | grep -oE 'linux-[a-z-]+-[0-9][^"]*\.deb' | grep -v -- '-64k' | sort -u)
+          [ -n "$NAMES" ] || { echo "::error::no kernel .debs at ${URL}/"; exit 1; }
+          for n in $NAMES; do
+            echo "  $n"
+            curl -fsSL $RETRY -o "${DIR}/${n}" "${URL}/${n}"
+          done
+
       - name: Enable KVM for guest image builds
         if: matrix.target.entitlement != ''
         run: |
@@ -858,7 +908,7 @@ jobs:
       # from its images.yml entry alone. Mirrors the matrix job's steps.
 
       - name: Ensure cloud image cache dir exists
-        run: mkdir -p common/cloud-image-cache
+        run: mkdir -p common/cloud-image-cache common/kernel-cache
 
       - name: Resolve guest Ubuntu release
         id: guest
@@ -888,6 +938,56 @@ jobs:
               --retry-connrefused -O "$IMG" \
               "https://cloud-images.ubuntu.com/${REL}/current/${REL}-server-cloudimg-amd64.img"
           fi
+
+
+      # The mainline kernel .debs, cached by the pin that selects them.
+      #
+      # kernel.ubuntu.com 503s in bursts and the build cannot proceed without
+      # these, so a cache is worth more than a retry budget: one run had all
+      # three kernel-pinned flavours meet the same burst within 17 seconds and
+      # one of them lose the build to it. kernel_ref moves rarely, so after a
+      # warm-up these lanes stop touching that host.
+      #
+      # Fetched here rather than inside the build so actions/cache can persist
+      # it -- common/ is a read-only bind mount from the container's side.
+      # Skipped for a flavour that pins no kernel, which leaves an empty
+      # directory and a MISS the build handles.
+      - name: Resolve guest kernel pin
+        id: kpin
+        if: matrix.target.entitlement != ''
+        run: |
+          ARGS=$(./ci-images-tool.py build-args "${{ matrix.target.key }}")
+          echo "ref=$(echo "$ARGS" | sed -n 's/^KERNEL_REF=//p')" >> "$GITHUB_OUTPUT"
+          echo "arch=$(echo "$ARGS" | sed -n 's/^ARCH=//p')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache mainline kernel debs
+        if: matrix.target.entitlement != '' && steps.kpin.outputs.ref != ''
+        uses: actions/cache@v6
+        with:
+          path: common/kernel-cache
+          key: kernel-debs-${{ steps.kpin.outputs.ref }}-${{ steps.kpin.outputs.arch }}
+
+      - name: Pre-download mainline kernel
+        if: matrix.target.entitlement != '' && steps.kpin.outputs.ref != ''
+        run: |
+          REF="${{ steps.kpin.outputs.ref }}"
+          ARCH="${{ steps.kpin.outputs.arch }}"
+          DIR="common/kernel-cache/${REF}/${ARCH}"
+          if [ -n "$(ls -A "$DIR" 2>/dev/null)" ]; then
+            echo "cache hit for ${REF}/${ARCH}:"; ls -la "$DIR"; exit 0
+          fi
+          mkdir -p "$DIR"
+          URL="https://kernel.ubuntu.com/mainline/${REF}/${ARCH}"
+          # Same retry budget and the same -64k exclusion as build-vm.sh; a
+          # partial set here would be a confusing failure inside the guest.
+          RETRY="--http1.1 --retry 8 --retry-delay 10 --retry-all-errors"
+          NAMES=$(curl -fsSL $RETRY --max-time 120 "${URL}/" \
+            | grep -oE 'linux-[a-z-]+-[0-9][^"]*\.deb' | grep -v -- '-64k' | sort -u)
+          [ -n "$NAMES" ] || { echo "::error::no kernel .debs at ${URL}/"; exit 1; }
+          for n in $NAMES; do
+            echo "  $n"
+            curl -fsSL $RETRY -o "${DIR}/${n}" "${URL}/${n}"
+          done
 
       - name: Enable KVM for guest image builds
         if: matrix.target.entitlement != ''
