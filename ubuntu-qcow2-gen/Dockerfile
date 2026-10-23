@@ -76,22 +76,32 @@ RUN python3 -m venv /opt/qemu-tool --clear && \
 
 # An apt cache on the builder, for the guest's own downloads.
 #
-# Every boot of every flavour re-fetched the same packages from the network:
-# the Ubuntu archive for the toolchain, repo.radeon.com for amdgpu-dkms (~31 MB
-# of .debs before dependencies) and stable.repo.amd.com for ROCm (several
-# hundred MB).  Those are bytes, wall-clock and -- since archive.ubuntu.com
-# refusing connections mid-build is a recurring flake here -- a source of
-# spurious failures that read as "requested packages missing from guest".
+# INCOMPLETE: this is plumbing that does not yet save anything. It is kept
+# because the hard half works and the remaining half is known; see the long
+# note in build-vm.sh at the apt-proxy injection for the measurements. In
+# short, cloud-init does the archive install inside gen-vm before any proxy
+# exists, and the acng store is not retaining what does go through it, so
+# 68158648 counted 1039 direct fetches against 17 remapped ones. Do not cite
+# this as a saving until both are closed.
 #
-# apt-cacher-ng runs on the builder, and the guest reaches it at 10.0.2.2:3142,
-# which is slirp's gateway address for the host.  Its store is a BuildKit cache
-# mount on each phase RUN, so it survives between builds on the same node.
+# The intent: every boot of every flavour re-fetches the same packages -- the
+# Ubuntu archive for the toolchain, repo.radeon.com for amdgpu-dkms (~31 MB of
+# .debs before dependencies) and stable.repo.amd.com for ROCm (several hundred
+# MB). Those are bytes, wall-clock and -- since archive.ubuntu.com refusing
+# connections mid-build is a recurring flake here -- a source of spurious
+# failures that read as "requested packages missing from guest".
 #
-# The remaps are what make the two HTTPS repositories cacheable at all: acng
-# tunnels an https:// request through untouched, so the guest is pointed at an
-# http:// URL with a remap key instead and acng fetches the real thing over TLS
-# upstream.  The repository signature is still checked by apt in the guest, so
-# the plain-http hop to a cache on the same machine costs nothing in trust.
+# apt-cacher-ng runs on the builder, and the guest reaches it at 10.0.2.2 on a
+# per-flavour port, which is slirp's gateway address for the host. Its store is
+# a BuildKit cache mount, so it is meant to survive between builds on the same
+# node.
+#
+# The remaps are the part that demonstrably works: acng tunnels an https://
+# request through untouched, so the guest is pointed at an http:// URL with a
+# remap key instead and acng fetches the real thing over TLS upstream.
+# Packages do arrive that way -- "Get:1 http://radeon/amdgpu/..." in any guest
+# log. The repository signature is still checked by apt in the guest, so the
+# plain-http hop to a cache on the same machine costs nothing in trust.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \

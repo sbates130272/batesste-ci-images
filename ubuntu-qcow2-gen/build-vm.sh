@@ -537,10 +537,30 @@ HARDEN_EOF
 # a command at all -- so every boot after this one (the kernel layer, the
 # provision script, the post playbook) goes through it.
 #
-# Not cloud-init's own package install, which happens inside gen-vm before
-# there is any guest to configure: that one still goes to the network. The
-# bulk of the bytes -- ROCm, the driver tree, the build toolchain -- is
-# downloaded by the provision script, which this covers.
+# This does not yet pay, and the measurements say so plainly.  68158648
+# counted 1039 fetches going direct to archive.ubuntu.com against 17 through
+# the remap, and the acng store stays at 24-36 KB across runs -- indexes, no
+# packages.  Two separate reasons:
+#
+#   * cloud-init installs the package manifest inside gen-vm, before there is
+#     a guest to configure, so the proxy written here is created after the
+#     archive traffic has already happened.  On rocjitsu's stage phase that is
+#     276 fetches before this boot and 0 after.  Catching those needs the
+#     proxy in gen-vm's cloud-config, which lives in qemu-minimal.
+#   * even the remapped ROCm and driver fetches are not retained.  The likely
+#     cause is PassThroughPattern in apt-cacher-ng.conf, which tells acng to
+#     tunnel rather than cache, but that has not been proven.
+#
+# An earlier version of this comment claimed "the bulk of the bytes -- ROCm,
+# the driver tree, the build toolchain -- is downloaded by the provision
+# script, which this covers".  The toolchain is not: it is in the cloud-init
+# manifest, on the far side of the gap above.
+#
+# Kept rather than removed because the plumbing is right and the remap
+# demonstrably works -- packages do arrive via http://radeon/ and
+# http://amdrocm/ -- so what is missing is the cloud-init half and a cache
+# that retains.  Worth knowing it is currently a net cost: the de-cache boot
+# in the trim phase exists only to undo this, at roughly 25s a flavour.
 #
 # 01 rather than 99: apt reads apt.conf.d in lexical order and a later file
 # wins, and this should lose to anything a flavour sets deliberately.
