@@ -40,6 +40,62 @@ set -eu
 QM=/build/qemu-minimal
 CTX=/ctx/common
 
+# Which slice of the above this invocation runs.  One Dockerfile RUN per phase,
+# so a change to a late input does not rebuild an early layer: editing a checks
+# file re-runs `verify` (seconds) instead of the whole 20-minute pipeline.
+#
+#   stage      gen-vm, the unattended-upgrades harden, the mainline kernel
+#   provision  provision/<flavour>.sh and the post-provision playbook
+#   trim       trim/<file> and the compacting convert
+#   verify     the verification boot, the checks and vm-info.json
+#   all        every phase in one process -- the old behaviour, and what a
+#              hand-run `build-vm` outside the Dockerfile still gets
+#
+# The phases are separate *processes*, so anything one of them learns that a
+# later one reports has to be written down rather than left in a shell
+# variable.  STATE is that file; see state_put/state_load below.
+PHASE="${BUILD_PHASE:-all}"
+STATE=/output/.build-state
+
+case "${PHASE}" in
+    all | stage | provision | trim | verify) ;;
+    *)
+        echo "Error: BUILD_PHASE=${PHASE} is not one of" \
+             "all, stage, provision, trim, verify" >&2
+        exit 1
+        ;;
+esac
+
+# True when this invocation should run phase $1.
+phase_runs() {
+    [ "${PHASE}" = all ] || [ "${PHASE}" = "$1" ]
+}
+
+# Record a fact for a later phase.  Values are written as shell assignments and
+# read back by sourcing, which is safe here because every caller passes a value
+# this script composed -- a flavour name, a digest, a filename.  Guest-reported
+# strings go through probe_val in the verify phase instead and never come here.
+state_put() {
+    [ -f "${STATE}" ] || : > "${STATE}"
+    # Last writer wins, so a phase re-run under `all` does not append a second
+    # value that the source would silently prefer.
+    grep -v "^$1=" "${STATE}" > "${STATE}.new" 2>/dev/null || : > "${STATE}.new"
+    # Single-quoted, with embedded quotes escaped the POSIX way ('\'').  Not
+    # cosmetic: KERNEL_DEBS is a space-separated list of .deb filenames, and
+    # written bare the source would take the first word as the assignment and
+    # try to *run* the rest.
+    printf "%s='%s'\n" "$1" "$(printf '%s' "$2" | sed "s/'/'\\\\''/g")" \
+        >> "${STATE}.new"
+    mv "${STATE}.new" "${STATE}"
+}
+
+state_load() {
+    if [ -f "${STATE}" ]; then
+        # shellcheck disable=SC1090
+        . "${STATE}"
+    fi
+}
+
 FLAVOUR="${FLAVOUR:-basic}"
 FINAL_USERNAME="${USERNAME:-batesste}"
 FINAL_VM_NAME="${VM_NAME:-${FINAL_USERNAME}-ci-vm}"
@@ -86,6 +142,11 @@ FINAL_RDMA_CORE_VERSION="${RDMA_CORE_VERSION:-}"
 # Empty means the flavour installs no fio; see the var's note in images.yml.
 FINAL_FIO_COMMIT="${FIO_COMMIT:-}"
 KERNEL_VERSION=$(uname -r)
+# The flavour's package manifest. Outside the stage phase that writes it into
+# the cloud-init config because the verify phase reads the same file back to
+# assert every requested package actually landed, and the two phases are
+# separate processes.
+EXTRA="/build/packages/${FINAL_PACKAGES}"
 
 echo "=== Guest Image Build Configuration ==="
 echo "Cache-bust: ${CACHE_BUST:-none}"
@@ -116,6 +177,126 @@ command -v qemu-tool > /dev/null || {
     exit 1
 }
 
+# ── the guest apt cache ─────────────────────────────────
+#
+# apt-cacher-ng on the builder, which the guest reaches at 10.0.2.2 -- slirp's
+# address for the host.  Every boot in every phase goes through it, so the
+# Ubuntu archive, repo.radeon.com and stable.repo.amd.com are fetched once per
+# node rather than once per boot per flavour.  See apt-cacher-ng.conf.
+#
+# Best-effort by design.  A build on a machine where acng is missing or will
+# not start is slower and still correct: APT_CACHE stays empty, the guest is
+# given no proxy, and every URI below stays the direct one.  Failing the build
+# over a cache would trade a saving for an outage.
+APT_CACHE=""
+ACNG_HOST=10.0.2.2
+# Derived from this flavour's SSH port rather than fixed at acng's default.
+#
+# A --security=insecure RUN shares the host network namespace, so every guest
+# flavour building at once sees one port space -- which is exactly why
+# PROBE_SSH_PORT is pinned per flavour in images.yml.  A fixed 3142 here has
+# the same collision: the first flavour to start binds it and the rest fail,
+# and because the readiness probe below only asks whether *something* is
+# listening on 127.0.0.1, they would then quietly proxy through another
+# flavour's daemon -- which dies when that flavour's step ends, mid-apt.
+#
+# +1000 rather than a second images.yml var: the SSH ports are already unique
+# per flavour and in the 222x range, so this is unique by construction and
+# there is one number to keep distinct instead of two.
+ACNG_PORT=$((${PROBE_SSH_PORT:-2222} + 1000))
+if command -v /usr/sbin/apt-cacher-ng > /dev/null; then
+    mkdir -p /var/cache/apt-cacher-ng /var/log/apt-cacher-ng
+    chown -R apt-cacher-ng:apt-cacher-ng \
+        /var/cache/apt-cacher-ng /var/log/apt-cacher-ng 2>/dev/null || true
+    # ForeGround=0 daemonises. SocketPath= disables the unix socket, which it
+    # otherwise tries to create under /run and which nothing here uses.
+    # Port on the command line, overriding the config file's: it is per
+    # flavour, and the config is a static COPY shared by all of them.
+    if setsid /usr/sbin/apt-cacher-ng -c /etc/apt-cacher-ng \
+            "Port=${ACNG_PORT}" ForeGround=0 SocketPath= \
+            > /var/log/apt-cacher-ng/start.log 2>&1; then
+        # Started is not the same as listening; give it a moment and check.
+        #
+        # curl against acng's own report page rather than a bare TCP connect:
+        # this script runs under dash, where /dev/tcp does not exist, and the
+        # redirect form of that test fails silently -- which would leave
+        # APT_CACHE empty and the cache quietly unused on every build.
+        _waited=0
+        while [ "${_waited}" -lt 10 ]; do
+            if curl -fsS --max-time 3 -o /dev/null \
+                    "http://127.0.0.1:${ACNG_PORT}/acng-report.html" \
+                    2>/dev/null; then
+                APT_CACHE="http://${ACNG_HOST}:${ACNG_PORT}"
+                break
+            fi
+            _waited=$((_waited + 1))
+            sleep 1
+        done
+    fi
+    if [ -n "${APT_CACHE}" ]; then
+        echo "apt cache: apt-cacher-ng on ${APT_CACHE} (guest view)"
+        du -sh /var/cache/apt-cacher-ng 2>/dev/null |
+            sed 's/^/  carried over: /'
+    else
+        echo "apt cache: apt-cacher-ng did not come up; building without it"
+        tail -n 20 /var/log/apt-cacher-ng/start.log 2>/dev/null || true
+    fi
+else
+    echo "apt cache: none (apt-cacher-ng not installed in this image)"
+fi
+
+# A repository URI as the guest should ask for it: through the cache when
+# there is one, direct when there is not.
+#
+#   apt_cache_uri <direct-https-uri> <remap-key>
+#
+# acng tunnels an https:// request without caching it, so a cached fetch has to
+# be asked for over http against a hostname the remap recognises -- see the
+# Remap- lines in apt-cacher-ng.conf.  apt still verifies the repository
+# signature in the guest either way, so the plain-http hop to a cache on the
+# same machine changes nothing about what the guest will trust.
+apt_cache_uri() {
+    if [ -z "${APT_CACHE}" ]; then
+        printf '%s' "$1"
+        return 0
+    fi
+    # https://host/path -> http://<key>/path
+    printf 'http://%s/%s' "$2" "$(printf '%s' "$1" | sed 's|^https\{0,1\}://[^/]*/||')"
+}
+
+# ── the guest compiler cache ────────────────────────────
+#
+# The amdgpu DKMS build is the single most expensive thing in a guest build --
+# ~210 seconds of straight C on 32 vCPUs, after the redundant builds are gone --
+# and it is recompiled in full whenever anything earlier in the flavour moves,
+# even when the driver source and the kernel headers have not.
+#
+# GUEST_CCACHE is a directory on the builder, mounted by the Dockerfile as a
+# BuildKit cache so it survives between builds. probe-guest carries it into
+# the provisioning boot and back out again; the provision script points ccache
+# at GUEST_CCACHE_GUEST_PATH, which is where it lands inside the guest.
+#
+# Node-local, necessarily, and the one thing a registry cache cannot carry:
+# BuildKit never exports a --mount=type=cache. On the cluster a job that lands
+# on a node it has not built on before gets a cold one, which is slower and
+# still correct. See the note on the builder state volume in ci-images-tool.py.
+GUEST_CCACHE=/ccache-guest
+GUEST_CCACHE_GUEST_PATH=/var/cache/guest-ccache
+if [ -d "${GUEST_CCACHE}" ]; then
+    echo "guest ccache: ${GUEST_CCACHE}" \
+         "($(du -sh "${GUEST_CCACHE}" 2>/dev/null | cut -f1 || echo 0))"
+else
+    # Not an error: a hand-run build-vm outside the Dockerfile has no cache
+    # mount, and should simply compile.
+    echo "guest ccache: none (no ${GUEST_CCACHE} mount in this build)"
+    GUEST_CCACHE=""
+    # Cleared together, so the guest-side helper's test reflects whether a
+    # cache is actually being carried rather than merely where it would land.
+    # Left set, dkms_build_cached would route through ccache into a directory
+    # nothing seeds and nothing saves -- all of the miss and none of the hit.
+    GUEST_CCACHE_GUEST_PATH=""
+fi
+
 # /dev/kvm does not exist in the build sandbox, so create it.  Both the mknod
 # and the open fail without the insecure entitlement, and that is fatal: there
 # is no TCG fallback.
@@ -129,6 +310,70 @@ if ! { [ -c /dev/kvm ] && (exec 3<> /dev/kvm); } 2>/dev/null; then
          "security.insecure', on an x86 host with KVM enabled."
     exit 1
 fi
+
+# ── phase: stage ────────────────────────────────────────
+#
+# gen-vm, the unattended-upgrades harden and the mainline kernel.  Everything
+# here depends only on the release, the package manifest and KERNEL_REF, so it
+# survives a change to a provision script, a trim or a checks file.
+if phase_runs stage; then
+
+# A derived flavour adopts a finished guest instead of building one.
+#
+# ernic-rocjitsu-slim is ernic-rocjitsu with things removed: same release, same
+# packages, same pinned kernel, same provision script, same post playbook.
+# Built from scratch it re-ran all of that -- 1250 seconds of byte-identical
+# work -- purely to then subtract from the result, and it is the longest target
+# in the bake, so that was wall-clock on the critical path rather than just
+# wasted CPU.
+#
+# /parent is a bind mount of the `parentguest` build context, which is always
+# defined: the fat flavour's target for a derived flavour, and an empty
+# directory for everything else (see PARENT_DIR in docker-bake.hcl).  Testing
+# for the payload rather than for a flag is what lets one Dockerfile serve
+# both -- there is no arg saying "I am derived", only a parent that is either
+# there or not.
+PARENT_IMAGE="/parent/output/${FINAL_VM_NAME}.qcow2"
+if [ -f "${PARENT_IMAGE}" ]; then
+    echo "=== Adopting a parent guest ==="
+    echo "  ${PARENT_IMAGE} ($(du -h "${PARENT_IMAGE}" | cut -f1))"
+    cp "${PARENT_IMAGE}" "/output/${FINAL_VM_NAME}.qcow2"
+    # The keypair travels with the disk: it is baked into the guest's
+    # authorized_keys, so a fresh one here would lock every later boot out.
+    cp /parent/output/id_rsa /output/id_rsa
+    cp /parent/output/id_rsa.pub /output/id_rsa.pub
+    chmod 600 /output/id_rsa
+    # probe-guest reads the key from /root/.ssh, not from /output.
+    install -d -m 700 /root/.ssh
+    install -m 600 /output/id_rsa /root/.ssh/id_rsa
+    install -m 644 /output/id_rsa.pub /root/.ssh/id_rsa.pub
+
+    # Everything the parent's manifest already answers, carried forward so the
+    # verify phase reports what actually built this disk rather than what this
+    # flavour's own (inert) vars happen to say.  The provision phase is skipped
+    # entirely, so these are the only record of it.
+    #
+    # Spelled out one key at a time rather than looped over the manifest's
+    # names: the state keys and the manifest keys are deliberately not the same
+    # words, and deriving one from the other would write POST_PLAYBOOK and
+    # PROVISION -- which are live variables in this script that state_load
+    # would then clobber.
+    PARENT_INFO=/parent/output/vm-info.json
+    state_put ADOPTED_PARENT 1
+    state_put PACKAGES_DIGEST \
+        "$(jq -r '.provisioning.packages_digest // "none"' "${PARENT_INFO}")"
+    state_put KERNEL_DEBS \
+        "$(jq -r '.provisioning.kernel_debs // "none"' "${PARENT_INFO}")"
+    state_put PROVISION_NAME \
+        "$(jq -r '.provisioning.provision // "none"' "${PARENT_INFO}")"
+    state_put POST_PLAYBOOK_NAME \
+        "$(jq -r '.provisioning.post_playbook // "none"' "${PARENT_INFO}")"
+    state_put ASSETS_NAME \
+        "$(jq -r '.provisioning.assets // "none"' "${PARENT_INFO}")"
+    echo "Adopted: skipping gen-vm, the kernel layer and provisioning"
+fi
+
+if [ ! -f "/output/${FINAL_VM_NAME}.qcow2" ]; then
 
 mkdir -p "${QM}/images"
 # common/cloud-image-cache/ is a *read-only* bind mount of the build context, so
@@ -158,7 +403,6 @@ fi
 # -generic metapackages instead; the substitution is kept for the few cases
 # where host and guest kernels really do have to agree.
 PACKAGES_FILE="${QM}/qemu/packages.d/packages-default"
-EXTRA="/build/packages/${FINAL_PACKAGES}"
 PACKAGES_DIGEST=none
 if [ -n "${FINAL_PACKAGES}" ] && [ "${FINAL_PACKAGES}" != "none" ]; then
     [ -f "${EXTRA}" ] || {
@@ -288,6 +532,26 @@ APT::Periodic::Download-Upgradeable-Packages "0";
 APT::Periodic::AutocleanInterval "0";
 CONF_EOF
 HARDEN_EOF
+
+# Point the guest's apt at the builder's cache, in the first boot that can run
+# a command at all -- so every boot after this one (the kernel layer, the
+# provision script, the post playbook) goes through it.
+#
+# Not cloud-init's own package install, which happens inside gen-vm before
+# there is any guest to configure: that one still goes to the network. The
+# bulk of the bytes -- ROCm, the driver tree, the build toolchain -- is
+# downloaded by the provision script, which this covers.
+#
+# 01 rather than 99: apt reads apt.conf.d in lexical order and a later file
+# wins, and this should lose to anything a flavour sets deliberately.
+if [ -n "${APT_CACHE}" ]; then
+    cat >> "${HARDEN}" <<HARDEN_PROXY_EOF
+sudo tee /etc/apt/apt.conf.d/01-ci-images-proxy > /dev/null <<'PROXY_EOF'
+Acquire::HTTP::Proxy "${APT_CACHE}";
+PROXY_EOF
+echo "apt proxy set to ${APT_CACHE}"
+HARDEN_PROXY_EOF
+fi
 
 echo "Disabling unattended upgrades in the guest"
 PROBE_PERSIST=1 probe-guest "/output/${FINAL_VM_NAME}.qcow2" \
@@ -438,6 +702,33 @@ KERNEL_EOF
     rm -rf "${DEBDIR}"
 fi
 
+# What this phase learned that vm-info.json reports, handed to the verify
+# phase.  The resolved .deb filenames carry the mainline build stamp, which is
+# how a "same version" rebuild upstream becomes visible rather than silent.
+#
+# Inside the "no parent was adopted" branch on purpose: an adopted guest
+# already wrote the parent's values above, and these would overwrite them with
+# the "none" this flavour never computed.
+state_put PACKAGES_DIGEST "${PACKAGES_DIGEST}"
+state_put KERNEL_DEBS "${KERNEL_DEBS}"
+
+fi  # no parent adopted
+
+fi  # phase: stage
+
+# ── phase: provision ────────────────────────────────────
+#
+# provision/<flavour>.sh and the post-provision playbook.  The expensive half
+# of the build -- ROCm, the amdgpu DKMS build, the SRQ playbook -- and the one
+# a change to a trim or a checks file should not re-run.
+#
+# Skipped wholesale for an adopted guest: the parent already ran exactly this,
+# which is the entire reason a derived flavour starts from one.  The names that
+# vm-info.json reports were copied out of the parent's manifest in the stage
+# phase, so nothing here needs to run for the record to be right.
+state_load
+if phase_runs provision && [ "${ADOPTED_PARENT:-0}" != 1 ]; then
+
 # Flavour provisioning this repo owns, for steps cloud-init cannot express: a
 # third-party apt repository needs a keyring and a sources file, a DKMS module
 # has to be patched and then built against the kernel that actually boots.
@@ -474,18 +765,176 @@ ROCM_PATH='${FINAL_ROCM_PATH}'
 ROCM_VERSION='${FINAL_ROCM_VERSION}'
 RDMA_CORE_VERSION='${FINAL_RDMA_CORE_VERSION}'
 FIO_COMMIT='${FINAL_FIO_COMMIT}'
+APT_CACHE='${APT_CACHE}'
+GUEST_CCACHE_DIR='${GUEST_CCACHE_GUEST_PATH}'
 EOF
+    # Shared guest-side helpers, prepended so the two provision scripts that
+    # need them carry one copy between them rather than one each.
+    cat >> "${PROV}" <<'HELPERS_EOF'
+# A repository URI as this guest should ask for it: through the builder's
+# apt-cacher-ng when the build has one, direct when it does not.
+#
+#   apt_cache_uri <direct-https-uri> <remap-key>
+#
+# The key names a Remap- line in the builder's apt-cacher-ng.conf.  acng
+# tunnels an https:// request without caching any of it, so a cacheable fetch
+# has to be asked for over http against a hostname the remap recognises -- the
+# guest never resolves that name, apt hands the whole URL to the proxy.  The
+# repository signature is still verified in the guest, so this changes what the
+# bytes travel over and not what the guest will trust.
+apt_cache_uri() {
+    if [ -z "${APT_CACHE:-}" ]; then
+        printf '%s' "$1"
+        return 0
+    fi
+    printf 'http://%s/%s' "$2" \
+        "$(printf '%s' "$1" | sed 's|^https\{0,1\}://[^/]*/||')"
+}
+
+# Run a DKMS build through ccache when this build was given one.
+#
+#   dkms_build_cached <dkms-args...>
+#
+# kbuild resolves the compiler as a bare "gcc" through PATH at make time, so
+# putting /usr/lib/ccache first is all it takes -- the package's symlinks there
+# are what turn that into a cached compile.  `sudo env` rather than plain sudo
+# because sudo resets PATH from secure_path and the prefix would be dropped.
+#
+# compiler_check=content hashes the compiler binary rather than trusting its
+# mtime: the guest is a fresh filesystem on every build, so every mtime is new
+# and the default check would miss on every object it ever cached.
+#
+# A miss costs the compile it would have cost anyway, so this is safe to leave
+# on; the cache is also per-node and often cold. The guest's own checks run
+# against whatever comes out either way -- a cached object that did not load
+# would fail the same assertions a freshly built one would.
+dkms_build_cached() {
+    if [ -z "${GUEST_CCACHE_DIR:-}" ] || [ ! -d /usr/lib/ccache ]; then
+        sudo dkms "$@"
+        return $?
+    fi
+    sudo env \
+        "PATH=/usr/lib/ccache:${PATH}" \
+        "CCACHE_DIR=${GUEST_CCACHE_DIR}" \
+        CCACHE_COMPILERCHECK=content \
+        CCACHE_MAXSIZE=5G \
+        dkms "$@"
+}
+
+# What the cache did, printed after the builds that used it. Zero hits on a
+# warm cache is worth seeing: it means something is defeating it.
+dkms_ccache_stats() {
+    [ -n "${GUEST_CCACHE_DIR:-}" ] || return 0
+    command -v ccache > /dev/null || return 0
+    echo "ccache statistics:"
+    sudo env "CCACHE_DIR=${GUEST_CCACHE_DIR}" ccache -s 2>/dev/null |
+        sed 's/^/  /' || true
+}
+
+# Keep amdgpu-dkms from building for a kernel this guest will never boot.
+#
+# The release leaves its own kernel installed beside whichever one the guest
+# comes up on -- the cloud image's 7.0.0-30 next to a pinned mainline 7.2.4, or
+# next to the HWE 7.0.0-38 that linux-generic pulled in.  amdgpu-dkms's postinst
+# autoinstalls for every kernel with headers on disk, so that second kernel
+# costs a full amdgpu build (264s measured on 32 vCPUs) producing a module
+# nothing will ever load.  The build that matters happens further down each
+# provision script, from the *patched* source, for the booted kernel.
+#
+# Done by hiding /lib/modules/<kver>/build rather than by purging the headers
+# package, because apt is the wrong tool for this and trying it cost a build.
+#
+# DKMS decides which kernels to build for by looking for that symlink, so
+# moving it aside is sufficient, and it is also the whole of the change: no
+# package state moves, dpkg has no opinion, vm-info.json still reports both
+# kernels, and the link is restored before provisioning ends so a consumer
+# installing a DKMS module later still gets both.
+#
+# The first version purged linux-headers-<stale> instead, and on the ernic
+# flavour that made things worse rather than better.  The versionless
+# metapackages (linux-headers-generic, linux-headers-virtual) pin an ABI, so
+# removing what they point at does not leave them satisfied: apt *upgrades*
+# them, pulls linux-headers-7.0.0-38 and -38-generic in fresh (19 MB), and DKMS
+# then builds for 7.0.0-38 instead of 7.0.0-30 -- the same two builds, plus a
+# download.  Purging the metapackages too would have cascaded into
+# linux-image-virtual and changed what the flavour ships.  Not involving apt at
+# all avoids the entire question.
+#
+# The booted kernel is always kept.  Any further versions named as arguments
+# are kept too, which is what a flavour that deliberately builds for a kernel
+# it is not running needs -- rocjitsu builds for the HWE kernel it will reboot
+# into, and on a boot where that is not already the running one, hiding its
+# headers would fail that build instead of saving time.
+_DKMS_HIDDEN=""
+dkms_hide_foreign_kernels() {
+    _keep=" $(uname -r) $* "
+    _DKMS_HIDDEN=""
+    for _d in /lib/modules/*/; do
+        _kver=$(echo "${_d}" | sed 's|/lib/modules/||; s|/$||')
+        case "${_keep}" in *" ${_kver} "*) continue ;; esac
+        [ -e "${_d}build" ] || continue
+        sudo mv "${_d}build" "${_d}build.dkms-hidden"
+        _DKMS_HIDDEN="${_DKMS_HIDDEN} ${_kver}"
+    done
+    if [ -z "${_DKMS_HIDDEN}" ]; then
+        echo "dkms: no foreign kernels to hide; builds target${_keep}"
+    else
+        echo "dkms: hid the build link for:${_DKMS_HIDDEN}"
+    fi
+    echo "dkms: buildable kernels now:"
+    for _b in /lib/modules/*/build; do
+        [ -e "${_b}" ] || continue
+        echo "  $(echo "${_b}" | sed 's|/lib/modules/||; s|/build$||')"
+    done
+}
+
+# Put the links back, and assert the hiding actually worked.
+#
+# The assertion is the point.  The failure it guards against is silent: a
+# redundant DKMS build costs four minutes and still produces a working guest,
+# so a regression here is invisible unless someone reads a build log closely --
+# which is exactly how the apt version above shipped and had to be measured out
+# of a log afterwards.  "dkms status" names every kernel a module is built for.
+dkms_unhide_foreign_kernels() {
+    _keep=" $(uname -r) $* "
+    for _kver in ${_DKMS_HIDDEN}; do
+        _d="/lib/modules/${_kver}/"
+        [ -e "${_d}build.dkms-hidden" ] || continue
+        sudo mv "${_d}build.dkms-hidden" "${_d}build"
+    done
+    if [ -n "${_DKMS_HIDDEN}" ]; then
+        echo "dkms: restored the build link for:${_DKMS_HIDDEN}"
+    fi
+    _DKMS_HIDDEN=""
+    _built=$(dkms status 2>/dev/null |
+        sed -n 's/.*[,/] *\([0-9][0-9.]*-[0-9][^,:]*\)[,:].*/\1/p' | sort -u)
+    for _b in ${_built}; do
+        case "${_keep}" in
+            *" ${_b} "*) ;;
+            *)
+                echo "Error: dkms has a module built for ${_b}, which this" \
+                     "flavour neither boots nor asked for" >&2
+                dkms status >&2
+                exit 1
+                ;;
+        esac
+    done
+}
+HELPERS_EOF
     cat "${PROVISION}" >> "${PROV}"
     ASSETS="/build/assets/${FINAL_PROVISION_FLAVOUR}"
     echo "Provisioning the guest with provision/${PROVISION_NAME}"
+    # PROBE_CCACHE is set only for this boot: it is the one that compiles.
     if [ -d "${ASSETS}" ]; then
         ASSETS_NAME="${FINAL_PROVISION_FLAVOUR}"
         echo "  with assets/${ASSETS_NAME} at /tmp/payload:"
         find "${ASSETS}" -type f | sed "s|^${ASSETS}/|    |"
-        PROBE_PERSIST=1 probe-guest "/output/${FINAL_VM_NAME}.qcow2" \
+        PROBE_PERSIST=1 PROBE_CCACHE="${GUEST_CCACHE}" \
+            probe-guest "/output/${FINAL_VM_NAME}.qcow2" \
             "${FINAL_USERNAME}" "${PROV}" "${ASSETS}"
     else
-        PROBE_PERSIST=1 probe-guest "/output/${FINAL_VM_NAME}.qcow2" \
+        PROBE_PERSIST=1 PROBE_CCACHE="${GUEST_CCACHE}" \
+            probe-guest "/output/${FINAL_VM_NAME}.qcow2" \
             "${FINAL_USERNAME}" "${PROV}"
     fi
 fi
@@ -526,6 +975,63 @@ if [ -n "${FINAL_POST_PLAYBOOK}" ]; then
     echo "Running ${POST_PLAYBOOK_NAME} against the provisioned guest"
     PROBE_PERSIST=1 PROBE_ANSIBLE=1 probe-guest \
         "/output/${FINAL_VM_NAME}.qcow2" "${FINAL_USERNAME}" "${POST_PB}"
+fi
+
+state_put PROVISION_NAME "${PROVISION_NAME}"
+state_put ASSETS_NAME "${ASSETS_NAME}"
+state_put POST_PLAYBOOK_NAME "${POST_PLAYBOOK_NAME}"
+
+fi  # phase: provision
+
+# ── phase: trim ─────────────────────────────────────────
+#
+# A flavour that ships what it provisioned has no trim, and this phase is then
+# a no-op that still records TRIM_NAME=none for the manifest.
+if phase_runs trim; then
+
+# Take the build-time apt cache back out of the guest, before anything that
+# ships looks at it.
+#
+# The provision script pointed the ROCm and driver repositories at the
+# builder's apt-cacher-ng, and the harden boot left an apt proxy behind.  Both
+# are addressed as 10.0.2.2 -- slirp's host address, which means nothing on a
+# consumer's machine -- so a guest published with either still in place is one
+# whose first `apt-get update` hangs until it times out.
+#
+# A boot of its own, here rather than at the end of the provision script,
+# because this is the one place every flavour passes through on its way to
+# being published: the two provision scripts would otherwise each need their
+# own copy, and a third flavour added later would need a third.
+#
+# The rewrite is the exact inverse of apt_cache_uri's remap keys, so it cannot
+# drift from them by construction -- there is nothing to keep in step, only two
+# prefixes to undo.  Unconditional sed and rm, so running it twice is harmless.
+if [ -n "${APT_CACHE}" ]; then
+    DECACHE=/tmp/decache.sh
+    cat > "${DECACHE}" <<'DECACHE_EOF'
+set -eu
+sudo rm -f /etc/apt/apt.conf.d/01-ci-images-proxy
+for f in /etc/apt/sources.list.d/*.sources /etc/apt/sources.list; do
+    [ -e "${f}" ] || continue
+    sudo sed -i \
+        -e 's|http://amdrocm/|https://stable.repo.amd.com/|g' \
+        -e 's|http://radeon/|https://repo.radeon.com/|g' \
+        "${f}"
+done
+# Asserted rather than assumed: a guest that ships pointing at 10.0.2.2 is a
+# broken guest, and this is the last point at which that is cheap to see.
+if sudo grep -rqE 'amdrocm/|//radeon/|10\.0\.2\.2' /etc/apt/ 2>/dev/null; then
+    echo "Error: build-time apt cache still referenced in /etc/apt" >&2
+    sudo grep -rnE 'amdrocm/|//radeon/|10\.0\.2\.2' /etc/apt/ >&2 || true
+    exit 1
+fi
+echo "build-time apt cache removed from the guest"
+grep -h '^URIs:' /etc/apt/sources.list.d/*.sources 2>/dev/null |
+    sed 's/^/  /' || true
+DECACHE_EOF
+    echo "Removing the build-time apt cache from the guest"
+    PROBE_PERSIST=1 probe-guest "/output/${FINAL_VM_NAME}.qcow2" \
+        "${FINAL_USERNAME}" "${DECACHE}"
 fi
 
 # The trim layer: a script that takes things back out of the finished guest.
@@ -582,6 +1088,29 @@ EOF
     AFTER=$(stat -c%s "/output/${FINAL_VM_NAME}.qcow2")
     echo "Compacted: ${BEFORE} -> ${AFTER} bytes"
 fi
+
+state_put TRIM_NAME "${TRIM_NAME}"
+
+fi  # phase: trim
+
+# ── phase: verify ───────────────────────────────────────
+#
+# The verification boot, the flavour's checks and vm-info.json.  Cheap -- one
+# boot and a few seconds of assertions -- and the phase most often edited, which
+# is the whole reason the four exist separately.
+if phase_runs verify; then
+
+# What the earlier phases recorded.  Under BUILD_PHASE=all these are already
+# set and the source is a no-op; under a split build this is where they come
+# back.  Defaulted afterwards so a hand-run `build-vm --phase verify` against a
+# guest built before this file grew a state file still produces a manifest.
+state_load
+PACKAGES_DIGEST="${PACKAGES_DIGEST:-none}"
+KERNEL_DEBS="${KERNEL_DEBS:-none}"
+PROVISION_NAME="${PROVISION_NAME:-none}"
+ASSETS_NAME="${ASSETS_NAME:-none}"
+POST_PLAYBOOK_NAME="${POST_PLAYBOOK_NAME:-none}"
+TRIM_NAME="${TRIM_NAME:-none}"
 
 # Boot the finished guest once, to read its kernel out of it and to run the
 # flavour's checks.  The kernel version is not knowable before the build --
@@ -931,4 +1460,16 @@ cat > /output/vm-info.json <<EOF
 EOF
 
 cat /output/vm-info.json
-rm -rf "${QM}"
+
+# The state file is build scaffolding, not payload: /output is copied wholesale
+# into the published image, so anything left here ships.
+rm -f "${STATE}"
+
+fi  # phase: verify
+
+# Only the phase that finishes the image reclaims the checkout; an earlier
+# phase leaving it removed would strand the one after it, which needs the
+# ansible/ tree the post-provision playbook is resolved against.
+if [ "${PHASE}" = all ] || [ "${PHASE}" = verify ]; then
+    rm -rf "${QM}"
+fi

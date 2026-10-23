@@ -121,6 +121,39 @@ if [ -n "${PAYLOAD}" ]; then
     scp ${SCP_OPTS} -r "${PAYLOAD}" "${GUEST_USER}@127.0.0.1:/tmp/payload"
 fi
 
+# A compiler cache that outlives the guest.
+#
+# PROBE_CCACHE names a directory on the builder; it is carried into the guest
+# before the script runs and carried back out after it, so a boot that compiles
+# the same source against the same headers as a previous build does not compile
+# it twice.  The amdgpu DKMS build this exists for is ~210s of straight C.
+#
+# A tarball over the existing SSH connection rather than a 9p or virtiofs
+# mount: the QEMU here is built with neither, and this needs no new device, no
+# new configure flag and no change to how the guest boots.  The cache is a few
+# hundred MB at most and slirp moves that in a couple of seconds.
+#
+# Deliberately not fatal at any step.  A cache that cannot be carried in, or
+# back out, costs a slow build; failing the build over it would be a worse
+# trade than the one it is trying to make.
+if [ -n "${PROBE_CCACHE:-}" ]; then
+    mkdir -p "${PROBE_CCACHE}"
+    # shellcheck disable=SC2086
+    ssh ${SSH_OPTS} "${GUEST_USER}@127.0.0.1" \
+        'sudo install -d -m 0777 /var/cache/guest-ccache' 2>/dev/null || true
+    if [ -n "$(ls -A "${PROBE_CCACHE}" 2>/dev/null)" ]; then
+        echo "probe-guest: seeding the guest ccache from ${PROBE_CCACHE}" \
+             "($(du -sh "${PROBE_CCACHE}" 2>/dev/null | cut -f1))" >&2
+        # shellcheck disable=SC2086
+        tar -C "${PROBE_CCACHE}" -cf - . 2>/dev/null |
+            ssh ${SSH_OPTS} "${GUEST_USER}@127.0.0.1" \
+                'sudo tar -C /var/cache/guest-ccache -xf -' 2>/dev/null ||
+            echo "probe-guest: ccache seed failed; continuing cold" >&2
+    else
+        echo "probe-guest: guest ccache is empty (cold build)" >&2
+    fi
+fi
+
 status=0
 if [ "${ANSIBLE}" = "1" ]; then
     # 127.0.0.1 and a forwarded port, not the guest's own address: the guest
@@ -164,6 +197,21 @@ EOF
 else
     # shellcheck disable=SC2086
     ssh ${SSH_OPTS} "${GUEST_USER}@127.0.0.1" 'bash -s' < "${SCRIPT}" || status=$?
+fi
+
+# Carry the cache back out before the guest is powered off, and whatever the
+# script's exit status was: a failed provision boot that still populated the
+# cache makes the *next* attempt faster, which is exactly when that matters.
+if [ -n "${PROBE_CCACHE:-}" ]; then
+    # shellcheck disable=SC2086
+    if ssh ${SSH_OPTS} "${GUEST_USER}@127.0.0.1" \
+            'sudo tar -C /var/cache/guest-ccache -cf - .' 2>/dev/null |
+            tar -C "${PROBE_CCACHE}" -xf - 2>/dev/null; then
+        echo "probe-guest: guest ccache saved to ${PROBE_CCACHE}" \
+             "($(du -sh "${PROBE_CCACHE}" 2>/dev/null | cut -f1))" >&2
+    else
+        echo "probe-guest: could not save the guest ccache; next build is cold" >&2
+    fi
 fi
 
 # shellcheck disable=SC2086

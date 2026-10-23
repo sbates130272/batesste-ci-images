@@ -315,11 +315,32 @@ jobs:
               "https://cloud-images.ubuntu.com/${REL}/current/${REL}-server-cloudimg-amd64.img"
           fi
 
+
+      # The guest Dockerfile mounts a `parentguest` build context, which bake
+      # defines for it. This job builds one target at a time rather than with
+      # bake, so the context has to be named here or the mount has nothing to
+      # resolve. Empty for every image that declares no parent_context.
+      #
+      # A derived flavour resolves to its parent's published rolling tag. In a
+      # release that is the right answer by construction: the matrix is ordered
+      # so the parent is pushed before the derived flavour is built, so the tag
+      # this resolves to is the one this same release just published.
+      - name: Compute build contexts
+        id: buildcontexts
+        run: |
+          {
+            echo 'contexts<<CTX_EOF'
+            ./ci-images-tool.py build-contexts "${{ matrix.target.key }}" \
+              --tag "${{ steps.version.outputs.version }}"
+            echo CTX_EOF
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.target.image }}/Dockerfile
+          build-contexts: ${{ steps.buildcontexts.outputs.contexts }}
           allow: security.insecure
           push: true
           tags: ${{ steps.tags.outputs.refs }}
@@ -518,6 +539,55 @@ jobs:
           echo "::error::timed out waiting for ${REF}"
           exit 1
 
+      # Same gate, for a derived *guest*: one that starts from another
+      # flavour's finished qcow2 consumes its parent's published rolling tag,
+      # and every target in this job builds in parallel -- so without this the
+      # slim flavour races the fat one and picks up the *previous* release's
+      # image, silently. A job-level `needs` cannot express "only that leg",
+      # which is the same reason the base wait above exists.
+      #
+      # Skipped for every target with no guest parent, which is all of them
+      # but the derived guest flavours.
+      - name: Wait for parent guest
+        if: matrix.target.guest_parent != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PARENT: ${{ matrix.target.guest_parent }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -uo pipefail
+          # Asked of *this* target rather than reconstructed from the parent's
+          # key: build-contexts emits the exact ref the build step below will
+          # resolve `parentguest` to, so the thing gated on and the thing
+          # consumed cannot disagree. It is the rolling variant tag, not the
+          # immutable one the base wait uses.
+          REF=$(./ci-images-tool.py build-contexts \
+            "${{ matrix.target.key }}" --tag "${VERSION}" \
+            | sed -n 's|^parentguest=docker-image://||p')
+          [ -n "$REF" ] || {
+            echo "::error::no parentguest ref for ${PARENT}"; exit 1; }
+          JOB="Build and Push ${PARENT}"
+          for _ in $(seq 1 180); do
+            if docker buildx imagetools inspect "$REF" > /dev/null 2>&1; then
+              echo "parent guest ready: ${REF}"
+              exit 0
+            fi
+            concl=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" \
+              --paginate \
+              -q ".jobs[] | select(.name == \"${JOB}\") | .conclusion" \
+              2>/dev/null || true)
+            case "$concl" in
+              failure|cancelled|timed_out)
+                echo "::error::parent job '${JOB}' ended: ${concl}"
+                exit 1
+                ;;
+            esac
+            sleep 30
+          done
+          echo "::error::timed out waiting for ${REF}"
+          exit 1
+
       # BASE_IMAGE resolves to the first line of the base's tag set: the
       # immutable, fully specified tag build-and-push just published.
       - name: Compute image tags, labels and build args
@@ -540,11 +610,32 @@ jobs:
             echo ARGS_EOF
           } >> "$GITHUB_OUTPUT"
 
+
+      # The guest Dockerfile mounts a `parentguest` build context, which bake
+      # defines for it. This job builds one target at a time rather than with
+      # bake, so the context has to be named here or the mount has nothing to
+      # resolve. Empty for every image that declares no parent_context.
+      #
+      # A derived flavour resolves to its parent's published rolling tag. In a
+      # release that is the right answer by construction: the matrix is ordered
+      # so the parent is pushed before the derived flavour is built, so the tag
+      # this resolves to is the one this same release just published.
+      - name: Compute build contexts
+        id: buildcontexts
+        run: |
+          {
+            echo 'contexts<<CTX_EOF'
+            ./ci-images-tool.py build-contexts "${{ matrix.target.key }}" \
+              --tag "${{ steps.version.outputs.version }}"
+            echo CTX_EOF
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.target.image }}/Dockerfile
+          build-contexts: ${{ steps.buildcontexts.outputs.contexts }}
           allow: security.insecure
           push: true
           # Guest targets also export /output to the host, so the artifact push

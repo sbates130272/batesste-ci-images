@@ -68,6 +68,10 @@ curl -fsSL --retry 5 --retry-connrefused --max-time 120 \
 # generic 404 several steps later, so check for it here where the version and
 # the codename can both be named in the message.
 DRIVER_URI="https://repo.radeon.com/amdgpu/${AMDGPU_DRIVER_VERSION}/ubuntu"
+# The suite probe stays on the direct URI. It is a liveness check against the
+# repository this guest is pinned to, and asking a cache whether upstream
+# publishes a suite is a question the cache can answer wrongly -- a hit on a
+# stale index would turn a dead pin into a green build.
 curl -fsS --retry 3 --retry-connrefused --max-time 60 -o /dev/null \
     "${DRIVER_URI}/dists/${VERSION_CODENAME}/Release" || {
     echo "Error: repo.radeon.com/amdgpu/${AMDGPU_DRIVER_VERSION} publishes no" \
@@ -75,16 +79,25 @@ curl -fsS --retry 3 --retry-connrefused --max-time 60 -o /dev/null \
     exit 1
 }
 
+# Through the builder's apt cache when the build has one. Several hundred MB of
+# ROCm and ~31 MB of driver .debs were re-downloaded on every boot of every
+# flavour before this.
+THEROCK_APT_URI=$(apt_cache_uri \
+    "https://stable.repo.amd.com/rocm/${THEROCK_PATH}" amdrocm)
+DRIVER_APT_URI=$(apt_cache_uri "${DRIVER_URI}" radeon)
+echo "ROCm repo:   ${THEROCK_APT_URI}"
+echo "driver repo: ${DRIVER_APT_URI}"
+
 sudo tee /etc/apt/sources.list.d/rocm.sources > /dev/null <<EOF
 Types: deb
-URIs: https://stable.repo.amd.com/rocm/${THEROCK_PATH}
+URIs: ${THEROCK_APT_URI}
 Suites: stable
 Components: main
 Architectures: amd64
 Signed-By: /etc/apt/keyrings/amdrocm.gpg
 
 Types: deb
-URIs: ${DRIVER_URI}
+URIs: ${DRIVER_APT_URI}
 Suites: ${VERSION_CODENAME}
 Components: main
 Architectures: amd64
@@ -365,6 +378,19 @@ install_hwe_kernel() {
 }
 
 install_amdgpu_dkms() {
+    # The postinst builds for every kernel with headers on disk.  On resolute
+    # that is the HWE kernel this boot is already running *and* the cloud
+    # image's 7.0.0-30, and the second one costs ~265s for a module grub will
+    # never select.  Both of those builds come from the unpatched tree and are
+    # redone from the patched one below, so the only thing the extra kernel
+    # buys is wall-clock.  On noble this is a no-op: amdgpu-dkms is installed
+    # before the HWE kernel puts a second set of headers on disk.
+    #
+    # HWE_KVER is kept explicitly: the DKMS loop below builds for it as well as
+    # for the running kernel, and on a boot where the two differ its build link
+    # is exactly what must survive this.  Unset on noble, where the HWE kernel
+    # is installed afterwards and the expansion is harmlessly empty.
+    dkms_hide_foreign_kernels "${HWE_KVER:-}"
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y amdgpu-dkms || {
         sudo tail -n 60 /var/lib/dkms/amdgpu/*/build/make.log || true
         exit 1
@@ -441,20 +467,44 @@ test -n "${PATCHES}"
 # headers by now -- so build for both and let the boot pick.  On noble only the
 # running 6.8 can be built for at all, and what that leaves behind is a patched
 # source tree plus a module that never loads.
-VER=$(dkms status amdgpu | awk -F'[,/]' 'NR==1{gsub(/ /,"",$2); print $2}')
+# The version from the source tree, not from "dkms status".
+#
+# That parse was -F'[,/]' on field 2, and it depended on the status line
+# carrying a comma -- which it only does once some kernel has been built
+# successfully:
+#
+#   amdgpu/7.1.9-2407772.26.04, 7.2.4-070204-generic, x86_64: installed
+#   amdgpu/7.1.9-2407772.26.04: added          <- no comma, no build yet
+#
+# On the second shape field 2 came out as "7.1.9-2407772.26.04:added" and the
+# build below died with "Could not find module source directory". It never
+# happened while the postinst was autoinstalling for every kernel on the disk,
+# because one of those builds always succeeded and supplied the comma -- so the
+# redundant build this flavour now avoids was quietly load-bearing for this
+# parse. AMDGPU_SRC is the directory dkms actually needs and is already
+# resolved above, so take the version from there and depend on nothing.
+VER=$(basename "${AMDGPU_SRC}" | sed 's/^amdgpu-//')
 test -n "${VER}"
+test -d "/usr/src/amdgpu-${VER}"
 DKMS_KVERS="$(uname -r)"
 if [ "${RELEASE}" != noble ] && [ "${HWE_KVER}" != "$(uname -r)" ]; then
     DKMS_KVERS="${DKMS_KVERS} ${HWE_KVER}"
 fi
 for kver in ${DKMS_KVERS}; do
     test -e "/lib/modules/${kver}/build"
-    sudo dkms build "amdgpu/${VER}" -k "${kver}" --force || {
+    dkms_build_cached build "amdgpu/${VER}" -k "${kver}" --force || {
         sudo tail -n 60 /var/lib/dkms/amdgpu/*/build/make.log || true
         exit 1
     }
     sudo dkms install "amdgpu/${VER}" -k "${kver}" --force
 done
+dkms_ccache_stats
+
+# Every kernel buildable again for a consumer, and an assertion that nothing
+# was built for a kernel this flavour hid.  DKMS_KVERS is passed because this
+# flavour deliberately builds for more than the booted kernel.
+# shellcheck disable=SC2086
+dkms_unhide_foreign_kernels ${DKMS_KVERS}
 
 if [ "${RELEASE}" = noble ]; then
     # Installing a kernel runs dkms_autoinstaller from

@@ -74,45 +74,31 @@ RUN python3 -m venv /opt/qemu-tool --clear && \
     ln -sf /opt/qemu-tool/bin/qemu-tool /usr/local/bin/qemu-tool && \
     qemu-tool --version
 
-# Per-flavour cloud-init package manifests, in-guest provisioning and
-# post-build assertions.  Copied whole so a flavour is packages/<name>.txt plus
-# an optional provision/<name>.sh plus checks/<name>.sh plus an images.yml
-# variant, with no Dockerfile change.
-COPY ubuntu-qcow2-gen/packages/ /build/packages/
-COPY ubuntu-qcow2-gen/provision/ /build/provision/
-COPY ubuntu-qcow2-gen/checks/ /build/checks/
-# The trim layer: scripts that take things back out of a provisioned guest, for
-# a flavour that is another flavour's image minus what a runtime consumer
-# cannot use. Named by the flavour's TRIM var, so adding one is a file here.
-COPY ubuntu-qcow2-gen/trim/ /build/trim/
-
-# Files a provision script needs *inside* the guest -- patches, generators --
-# rather than on the builder.  build-vm.sh copies assets/<flavour> to
-# /tmp/payload in the provisioning boot when it exists, using the same
-# primitive the mainline kernel .debs already travel by.
-COPY ubuntu-qcow2-gen/assets/ /build/assets/
-
-# assets/shared/ is not a flavour -- build-vm.sh never looks for it. Its
-# contents are grafted onto the payload of each flavour that wants them, so the
-# amdgpu-probe helper and the RAS patch exist once in the repo and cannot drift
-# between the two guests that build the same driver. See assets/shared/README.md.
+# An apt cache on the builder, for the guest's own downloads.
 #
-# One COPY per source: a directory source contributes its *contents*, so
-# "patches/" and "patches/" in one multi-source COPY would both land as
-# amdgpu/ at the top of the payload rather than under patches/.
-COPY ubuntu-qcow2-gen/assets/shared/amdgpu-probe /build/assets/rocjitsu/amdgpu-probe
-COPY ubuntu-qcow2-gen/assets/shared/patches/ /build/assets/rocjitsu/patches/
-COPY ubuntu-qcow2-gen/assets/shared/amdgpu-probe \
-     /build/assets/ernic-rocjitsu/amdgpu-probe
-COPY ubuntu-qcow2-gen/assets/shared/patches/ /build/assets/ernic-rocjitsu/patches/
+# Every boot of every flavour re-fetched the same packages from the network:
+# the Ubuntu archive for the toolchain, repo.radeon.com for amdgpu-dkms (~31 MB
+# of .debs before dependencies) and stable.repo.amd.com for ROCm (several
+# hundred MB).  Those are bytes, wall-clock and -- since archive.ubuntu.com
+# refusing connections mid-build is a recurring flake here -- a source of
+# spurious failures that read as "requested packages missing from guest".
+#
+# apt-cacher-ng runs on the builder, and the guest reaches it at 10.0.2.2:3142,
+# which is slirp's gateway address for the host.  Its store is a BuildKit cache
+# mount on each phase RUN, so it survives between builds on the same node.
+#
+# The remaps are what make the two HTTPS repositories cacheable at all: acng
+# tunnels an https:// request through untouched, so the guest is pointed at an
+# http:// URL with a remap key instead and acng fetches the real thing over TLS
+# upstream.  The repository signature is still checked by apt in the guest, so
+# the plain-http hop to a cache on the same machine costs nothing in trust.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && \
+    apt-get install -y --no-install-recommends apt-cacher-ng
 
-# The firmware generator, wired in here rather than vendored a second time:
-# ubuntu-rocm-rocjitsu owns it, the ernic-rocjitsu guest runs it (with
-# --generation, since no rocjitsu config exists in a guest), and one copy in
-# the repo means the fixtures a guest carries cannot drift from the ones that
-# image's own self-test exercises.
-COPY ubuntu-rocm-rocjitsu/vfio-guest-firmware.py \
-     /build/assets/ernic-rocjitsu/vfio-guest-firmware.py
+COPY ubuntu-qcow2-gen/apt-cacher-ng.conf \
+     /etc/apt-cacher-ng/zz-ci-images.conf
 
 # One keypair per flavour, generated here rather than inherited: the base image
 # is toolchain-only and ships neither a guest nor a key.  The rm still runs
@@ -128,15 +114,19 @@ COPY ubuntu-qcow2-gen/build-vm.sh /usr/local/bin/build-vm
 COPY ubuntu-qcow2-gen/probe-guest.sh /usr/local/bin/probe-guest
 RUN chmod +x /usr/local/bin/build-vm /usr/local/bin/probe-guest
 
-# --security=insecure is what lets the step create and open /dev/kvm, so this
-# needs "buildx build --allow security.insecure" against a builder started with
-# --allow-insecure-entitlement=security.insecure.  There is no TCG fallback:
-# emulation is ~10x slower, so a missing /dev/kvm fails the build.
+# Every knob the guest build reads, declared once and promoted to ENV.
 #
-# The bind mount exposes common/ from the build context: pre-downloaded cloud
-# images land where "qemu-tool gen-vm" looks, and the AMD root CA (gitignored,
-# absent in CI) is injected into the guest trust store when present.
-FROM base AS built
+# ARG values do not cross a FROM, and the build is now four stages: repeating
+# this block four times is how that goes wrong quietly, because an ARG missing
+# from one copy does not fail, it silently takes its default. build-vm.sh reads
+# all of these out of the environment already, so ENV is both the smaller
+# change and the one a later stage inherits for free.
+#
+# PASSWORD among them: it is the guest's console login, already published in
+# vm-info.json by design and already in the build history as an ARG, and the
+# final stage is FROM scratch with nothing but a COPY -- so it reaches no
+# published image config. See the note at the top of this file.
+FROM base AS config
 ARG QEMU_MINIMAL_REPO=
 ARG QEMU_MINIMAL_COMMIT=
 ARG FLAVOUR=basic
@@ -172,11 +162,173 @@ ARG CACHE_BUST=
 # buildx build`; bake builds all four at once on one machine, which is the
 # point of it. Each flavour therefore pins its own port in images.yml.
 ARG PROBE_SSH_PORT=2222
-ENV PROBE_SSH_PORT=${PROBE_SSH_PORT}
+ENV QEMU_MINIMAL_REPO=${QEMU_MINIMAL_REPO} \
+    QEMU_MINIMAL_COMMIT=${QEMU_MINIMAL_COMMIT} \
+    FLAVOUR=${FLAVOUR} \
+    USERNAME=${USERNAME} \
+    VM_NAME=${VM_NAME} \
+    PASSWORD=${PASSWORD} \
+    RELEASE=${RELEASE} \
+    ARCH=${ARCH} \
+    VM_SIZE=${VM_SIZE} \
+    VM_VCPUS=${VM_VCPUS} \
+    VM_VMEM=${VM_VMEM} \
+    VM_PACKAGES=${VM_PACKAGES} \
+    VM_PLAYBOOK=${VM_PLAYBOOK} \
+    POST_PLAYBOOK=${POST_PLAYBOOK} \
+    KERNEL_REF=${KERNEL_REF} \
+    AMDGPU_DRIVER_VERSION=${AMDGPU_DRIVER_VERSION} \
+    ROCM_PATH=${ROCM_PATH} \
+    ROCM_VERSION=${ROCM_VERSION} \
+    RDMA_CORE_VERSION=${RDMA_CORE_VERSION} \
+    FIO_COMMIT=${FIO_COMMIT} \
+    PROVISION_FLAVOUR=${PROVISION_FLAVOUR} \
+    TRIM=${TRIM} \
+    CACHE_BUST=${CACHE_BUST} \
+    PROBE_SSH_PORT=${PROBE_SSH_PORT}
+
+# --security=insecure is what lets these steps create and open /dev/kvm, so this
+# needs "buildx build --allow security.insecure" against a builder started with
+# --allow-insecure-entitlement=security.insecure.  There is no TCG fallback:
+# emulation is ~10x slower, so a missing /dev/kvm fails the build.
+#
+# The bind mount exposes common/ from the build context: pre-downloaded cloud
+# images land where "qemu-tool gen-vm" looks, and the AMD root CA (gitignored,
+# absent in CI) is injected into the guest trust store when present.
+#
+# Four steps rather than one, one per BUILD_PHASE of build-vm.
+#
+# This was a single RUN covering the whole pipeline, which meant a one-line
+# edit to a checks file -- seven seconds of actual work -- rebuilt the twenty
+# minutes of gen-vm, kernel install, ROCm and DKMS ahead of it.  The boundaries
+# are the points where the inputs change, and each phase's COPY sits
+# immediately above its own RUN rather than in the shared base, which is what
+# makes the invalidation land on the right step: touching checks/ must not
+# reach back past the trim.
+#
+# The cost is that every phase snapshots the guest qcow2 -- several GB a layer
+# on the fat flavours.  That is affordable against the builder's own state
+# volume, which is where the Slurm path keeps its cache and is node-local; it
+# is also why pushing all of it down an NFS CACHE_LOCAL is still not the
+# default.  See docker-bake.hcl.
+
+# ── phase: stage ── gen-vm, the harden boot, the mainline kernel.
+# Reads the release, the package manifest and KERNEL_REF.
+#
+# Also where a derived flavour adopts its parent instead of building anything.
+# `parentguest` is a named build context that bake always defines: the fat
+# flavour's target for a derived flavour, and an empty directory otherwise. A
+# bind mount rather than a COPY precisely so the "otherwise" case is legal --
+# COPY --from against a context with no /output in it is an error, while a bind
+# mount of a directory with nothing in it is simply an empty /parent, which is
+# what build-vm.sh tests for.
+FROM config AS staged
+# Redeclared purely so ${FLAVOUR} expands in the cache-mount id below: mount
+# options are resolved from build args, and an ARG does not cross a FROM. The
+# ENV of the same name inherited from `config` still wins inside the RUN, so
+# this changes nothing the script sees.
+#
+# A per-flavour id is what keeps the five guest builds concurrent. One shared
+# id with sharing=locked serialises every step that holds it, and measured on
+# 68152691 that cost 2269s of the 4099s spent in guest steps: `ubuntu-qcow2-gen
+# provisioned` blocked for 470.4s to do 0.1s of work, and `ernic-rocjitsu
+# staged` blocked 453.4s. Bake exists to build these at once; a shared lock
+# undoes it. With per-flavour ids, 68153192 measured 1.5s of blocking in total.
+#
+# The cost is that each flavour now keeps its own acng store rather than
+# sharing one: the Ubuntu archive packages they have in common are fetched
+# once per flavour instead of once, and the cache is five copies on disk.
+# That is not recoverable while each step runs its own daemon -- five acng
+# processes over one cache directory is not something acng supports, and
+# BuildKit gives no way to run one daemon across steps -- and 68153192 says
+# the parallelism is worth far more than the sharing was.
+ARG FLAVOUR=basic
+# Per-flavour cloud-init package manifests.  Copied whole so a flavour is
+# packages/<name>.txt plus an optional provision/<name>.sh plus checks/<name>.sh
+# plus an images.yml variant, with no Dockerfile change.
+COPY ubuntu-qcow2-gen/packages/ /build/packages/
 # hadolint ignore=DL3059
 RUN --security=insecure \
     --mount=type=bind,source=common,target=/ctx/common \
-    build-vm
+    --mount=type=cache,id=acng-${FLAVOUR},target=/var/cache/apt-cacher-ng,sharing=locked \
+    --mount=type=bind,from=parentguest,target=/parent \
+    BUILD_PHASE=stage build-vm
+
+# ── phase: provision ── provision/<flavour>.sh and the post-provision playbook.
+# The expensive half: ROCm, the amdgpu DKMS build, the SRQ playbook.
+FROM staged AS provisioned
+# As above: for the cache-mount id only.
+ARG FLAVOUR=basic
+COPY ubuntu-qcow2-gen/provision/ /build/provision/
+
+# Files a provision script needs *inside* the guest -- patches, generators --
+# rather than on the builder.  build-vm.sh copies assets/<flavour> to
+# /tmp/payload in the provisioning boot when it exists, using the same
+# primitive the mainline kernel .debs already travel by.
+COPY ubuntu-qcow2-gen/assets/ /build/assets/
+
+# assets/shared/ is not a flavour -- build-vm.sh never looks for it. Its
+# contents are grafted onto the payload of each flavour that wants them, so the
+# amdgpu-probe helper and the RAS patch exist once in the repo and cannot drift
+# between the two guests that build the same driver. See assets/shared/README.md.
+#
+# One COPY per source: a directory source contributes its *contents*, so
+# "patches/" and "patches/" in one multi-source COPY would both land as
+# amdgpu/ at the top of the payload rather than under patches/.
+COPY ubuntu-qcow2-gen/assets/shared/amdgpu-probe /build/assets/rocjitsu/amdgpu-probe
+COPY ubuntu-qcow2-gen/assets/shared/patches/ /build/assets/rocjitsu/patches/
+COPY ubuntu-qcow2-gen/assets/shared/amdgpu-probe \
+     /build/assets/ernic-rocjitsu/amdgpu-probe
+COPY ubuntu-qcow2-gen/assets/shared/patches/ /build/assets/ernic-rocjitsu/patches/
+
+# The firmware generator, wired in here rather than vendored a second time:
+# ubuntu-rocm-rocjitsu owns it, the ernic-rocjitsu guest runs it (with
+# --generation, since no rocjitsu config exists in a guest), and one copy in
+# the repo means the fixtures a guest carries cannot drift from the ones that
+# image's own self-test exercises.
+COPY ubuntu-rocm-rocjitsu/vfio-guest-firmware.py \
+     /build/assets/ernic-rocjitsu/vfio-guest-firmware.py
+# /ccache-guest is the compiler cache for the amdgpu DKMS build *inside* the
+# guest.  probe-guest carries it in over SSH and back out again, so a rebuild
+# whose driver source and kernel headers have not moved does not recompile
+# ~210s of C.  Only this phase compiles anything, so only this phase mounts it.
+#
+# sharing=shared, and deliberately one cache for all the flavours rather than
+# one each: rocjitsu and ernic-rocjitsu compile the same amdgpu source, so a
+# shared cache is where the hits come from.  ccache is built for concurrent
+# access -- it locks per entry -- so two guests writing at once is the case it
+# is designed for, not a hazard.
+#
+# This was sharing=locked out of over-caution, copied from the container ccache
+# mounts, and it serialised the provision phases: see the note on the staged
+# stage above.
+# hadolint ignore=DL3059
+RUN --security=insecure \
+    --mount=type=bind,source=common,target=/ctx/common \
+    --mount=type=cache,id=acng-${FLAVOUR},target=/var/cache/apt-cacher-ng,sharing=locked \
+    --mount=type=cache,target=/ccache-guest,sharing=shared \
+    BUILD_PHASE=provision build-vm
+
+# ── phase: trim ── trim/<file> and the compacting convert.
+# A no-op for a flavour that ships what it provisioned.
+FROM provisioned AS trimmed
+# The trim layer: scripts that take things back out of a provisioned guest, for
+# a flavour that is another flavour's image minus what a runtime consumer
+# cannot use. Named by the flavour's TRIM var, so adding one is a file here.
+COPY ubuntu-qcow2-gen/trim/ /build/trim/
+# hadolint ignore=DL3059
+RUN --security=insecure \
+    --mount=type=bind,source=common,target=/ctx/common \
+    BUILD_PHASE=trim build-vm
+
+# ── phase: verify ── the verification boot, the checks and vm-info.json.
+# The cheapest phase and the most often edited, which is the point of the split.
+FROM trimmed AS built
+COPY ubuntu-qcow2-gen/checks/ /build/checks/
+# hadolint ignore=DL3059
+RUN --security=insecure \
+    --mount=type=bind,source=common,target=/ctx/common \
+    BUILD_PHASE=verify build-vm
 
 # A pure payload: nothing to run, nothing to patch, no CVE surface.  Consume it
 # with "docker create" + "docker cp", or with COPY --from in another build.

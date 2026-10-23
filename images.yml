@@ -800,6 +800,17 @@ images:
     # downloads and, on the AMD network, amd-root-ca.crt.
     context_dirs:
       - common/cloud-image-cache
+    # The stand-in for the `parentguest` build context, which the Dockerfile's
+    # stage phase bind-mounts at /parent. A flavour that names a
+    # guest_parent_variant gets that flavour's payload there instead; one that
+    # does not gets this empty directory, because a --mount=from= naming a
+    # context that does not exist fails the build. See noparent/README.md.
+    parent_context: ubuntu-qcow2-gen/noparent
+    # A variant may set `guest_parent_variant:` beside its `suffix:` to start
+    # from another variant's finished qcow2 instead of building one. It is a
+    # structural field rather than a var, for the same reason `base_variant`
+    # is: it changes which targets this one depends on, and nothing renders it
+    # into a template. See the ernic-rocjitsu-slim variant.
     vars:
       flavour: basic
       # Guest disk size in GB. The qcow2 is sparse, so this is a ceiling the
@@ -1207,6 +1218,27 @@ images:
       # payload, and a consumer's build tree has somewhere to go.
       ernic-rocjitsu-slim:
         suffix: "-ernic-rocjitsu-slim"
+        # Start from the fat flavour's finished disk rather than rebuilding it.
+        #
+        # Everything in this variant's vars down to trim: is identical to
+        # ernic-rocjitsu's by construction -- same release, same packages, same
+        # kernel pin, same provision script, same post playbook -- so building
+        # it from the cloud image re-ran ~1250s of byte-identical work purely
+        # in order to subtract from the result. On the longest target in the
+        # bake, that was wall-clock on the critical path, not just wasted CPU.
+        # Naming the parent here makes the build adopt that disk and run only
+        # the trim, the compacting convert and the checks.
+        #
+        # Not `base`: a base is what the Dockerfile's FROM resolves to, and for
+        # every guest flavour alike that is the QEMU toolchain. A derived
+        # flavour needs the toolchain *and* a payload, so the payload arrives
+        # as the `parentguest` build context instead -- see parent_context on
+        # the image above, and noparent/README.md.
+        #
+        # The provisioning facts in vm-info.json are copied out of the parent's
+        # manifest rather than recomputed, so this guest still reports which
+        # provision script and playbook actually built it.
+        guest_parent_variant: ernic-rocjitsu
         # Under Hub's 100-byte cap; see the rocjitsu note above.
         description: >-
           Runtime-only ernic-rocjitsu guest: same drivers, no toolchain, fast
@@ -1214,6 +1246,10 @@ images:
         vars:
           flavour: ernic-rocjitsu-slim
           provision_flavour: ernic-rocjitsu
+          # Kept rather than deleted now that guest_parent_variant means they
+          # are never acted on here: they are what the parent is built with, so
+          # a reader can check the two recipes still agree, `validate` renders
+          # them, and the labels below continue to describe the guest honestly.
           trim: slim.sh
           vm_packages: ernic-rocjitsu.txt
           # Equal to the fat flavour's, and load-bearing here in a way it is

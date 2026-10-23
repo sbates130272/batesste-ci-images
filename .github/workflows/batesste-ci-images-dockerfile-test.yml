@@ -436,11 +436,46 @@ jobs:
             echo ARGS_EOF
           } >> "$GITHUB_OUTPUT"
 
+      # The guest Dockerfile mounts a `parentguest` build context, which bake
+      # defines for it. This job does not use bake -- it builds one target at a
+      # time -- so the context has to be named here, or the mount has nothing
+      # to resolve and the build fails before it starts. Empty for every image
+      # that does not declare a parent_context, which is all of them but the
+      # guest generator.
+      #
+      # --standalone: a derived flavour builds its own guest here rather than
+      # adopting its parent's published payload. Three reasons, in order of how
+      # much they matter:
+      #
+      #   * a fork PR has no Docker Hub credentials and cannot resolve the
+      #     parent's ref at all, and this workflow deliberately supports forks;
+      #   * the parent is not built in this run, so adopting would test the
+      #     derived recipe against whatever was published last rather than
+      #     against this PR;
+      #   * it would pull a multi-GB payload onto a hosted runner in order to
+      #     delete most of it, which is poor value for a smoke test.
+      #
+      # So what CI proves here is that the slim recipe builds end to end. The
+      # adoption path itself is exercised by the bake builds, where the parent
+      # and the derived flavour are in one solve. PR #118 is the cautionary
+      # tale: without --standalone this resolved to a namespace-less Docker Hub
+      # ref and failed as "pull access denied" forty minutes in.
+      - name: Compute build contexts
+        id: buildcontexts
+        run: |
+          {
+            echo 'contexts<<CTX_EOF'
+            ./ci-images-tool.py build-contexts "${{ matrix.target.key }}" \
+              --standalone
+            echo CTX_EOF
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build Docker image
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.target.image }}/Dockerfile
+          build-contexts: ${{ steps.buildcontexts.outputs.contexts }}
           allow: security.insecure
           push: false
           load: true
@@ -929,11 +964,46 @@ jobs:
             echo ARGS_EOF
           } >> "$GITHUB_OUTPUT"
 
+      # The guest Dockerfile mounts a `parentguest` build context, which bake
+      # defines for it. This job does not use bake -- it builds one target at a
+      # time -- so the context has to be named here, or the mount has nothing
+      # to resolve and the build fails before it starts. Empty for every image
+      # that does not declare a parent_context, which is all of them but the
+      # guest generator.
+      #
+      # --standalone: a derived flavour builds its own guest here rather than
+      # adopting its parent's published payload. Three reasons, in order of how
+      # much they matter:
+      #
+      #   * a fork PR has no Docker Hub credentials and cannot resolve the
+      #     parent's ref at all, and this workflow deliberately supports forks;
+      #   * the parent is not built in this run, so adopting would test the
+      #     derived recipe against whatever was published last rather than
+      #     against this PR;
+      #   * it would pull a multi-GB payload onto a hosted runner in order to
+      #     delete most of it, which is poor value for a smoke test.
+      #
+      # So what CI proves here is that the slim recipe builds end to end. The
+      # adoption path itself is exercised by the bake builds, where the parent
+      # and the derived flavour are in one solve. PR #118 is the cautionary
+      # tale: without --standalone this resolved to a namespace-less Docker Hub
+      # ref and failed as "pull access denied" forty minutes in.
+      - name: Compute build contexts
+        id: buildcontexts
+        run: |
+          {
+            echo 'contexts<<CTX_EOF'
+            ./ci-images-tool.py build-contexts "${{ matrix.target.key }}" \
+              --standalone
+            echo CTX_EOF
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build Docker image
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.target.image }}/Dockerfile
+          build-contexts: ${{ steps.buildcontexts.outputs.contexts }}
           allow: security.insecure
           push: false
           load: true
