@@ -794,6 +794,45 @@ def base_target(cfg: Config, target: Target) -> Target | None:
     return Target(base, str(target_attr(cfg, target, "base_variant", "") or ""))
 
 
+def parent_context_dir(cfg: Config, target: Target) -> str:
+    """The stand-in directory for this image's ``parentguest`` context, or "".
+
+    An image whose Dockerfile bind-mounts a parent payload declares
+    ``parent_context: <dir>`` in images.yml.  Empty -- every image but the
+    guest generator -- means the context is never referenced and bake should
+    not emit one.
+
+    The directory itself is empty by design; it exists so that a flavour which
+    derives from nothing still has a context to mount.  See
+    ``ubuntu-qcow2-gen/noparent/README.md``.
+    """
+    return str(target_attr(cfg, target, "parent_context", "") or "")
+
+
+def guest_parent_target(cfg: Config, target: Target) -> Target | None:
+    """The finished guest this one is derived from, or None if it builds its own.
+
+    A *derived* guest flavour is another flavour's disk with things taken back
+    out of it: ``ernic-rocjitsu-slim`` is ``ernic-rocjitsu`` minus the
+    toolchain.  Declared as ``guest_parent_variant`` on the variant, naming a
+    sibling variant of the same image.
+
+    Distinct from ``base_target``: a base is what the Dockerfile's ``FROM``
+    resolves to -- the QEMU toolchain, for every guest flavour alike -- while
+    this is a *payload* handed to the build as the ``parentguest`` context.  A
+    derived flavour needs both, which is why it cannot be expressed as a base.
+    """
+    parent = str(target_attr(cfg, target, "guest_parent_variant", "") or "")
+    if not parent:
+        return None
+    if parent == target.variant:
+        console.print(
+            f"[red]Error:[/] {target.key} names itself as guest_parent_variant"
+        )
+        sys.exit(1)
+    return Target(target.image, parent)
+
+
 def discover_targets(cfg: Config) -> list[Target]:
     """Every target declared in the spec, in dependency order.
 
@@ -828,6 +867,11 @@ def order_targets(cfg: Config, targets: list[Target]) -> list[Target]:
         # instead of being built, so it imposes no ordering.
         if base and base in known:
             visit(base, (*stack, t))
+        # Same rule for a derived guest's parent: its payload is an input to
+        # this build, so it has to be built first when both are in the set.
+        parent = guest_parent_target(cfg, t)
+        if parent and parent in known:
+            visit(parent, (*stack, t))
         seen.add(t)
         ordered.append(t)
 
@@ -1257,6 +1301,27 @@ def bake_target(
         base_ref = args.get("BASE_IMAGE", "")
         if base_ref and base_ref == rolling_ref(cfg, base):
             contexts[familiar_ref(base_ref)] = f"target:{bake_name(cfg, base)}"
+
+    # The `parentguest` context, which the guest Dockerfile bind-mounts at
+    # /parent in its stage phase. Always defined for a target that uses it,
+    # because a --mount=from= naming a context that does not exist is a build
+    # error -- see ubuntu-qcow2-gen/noparent/README.md.
+    #
+    # Three cases, and the empty one is the common one:
+    #   * a derived flavour whose parent is in this run  -> target:, so the
+    #     payload is handed over inside the solve rather than via a registry
+    #   * a derived flavour whose parent is not          -> the parent's
+    #     rolling tag, pulled like any other image
+    #   * every other flavour                            -> an empty directory
+    none_dir = parent_context_dir(cfg, target)
+    if none_dir:
+        parent = guest_parent_target(cfg, target)
+        if parent is None:
+            contexts["parentguest"] = none_dir
+        elif parent in selected and target in selected and not base_from_registry:
+            contexts["parentguest"] = f"target:{bake_name(cfg, parent)}"
+        else:
+            contexts["parentguest"] = f"docker-image://{rolling_ref(cfg, parent)}"
 
     # Guest targets export /output to the host as well as loading an image, so
     # a local build leaves a usable qcow2 behind rather than one buried in
@@ -2939,6 +3004,7 @@ def cmd_targets(args: argparse.Namespace) -> None:
         if args.job and job != args.job:
             continue
         base = base_target(cfg, t)
+        parent = guest_parent_target(cfg, t)
         rows.append(
             {
                 "key": t.key,
@@ -2954,6 +3020,15 @@ def cmd_targets(args: argparse.Namespace) -> None:
                 # base built earlier in the same run without naming any image.
                 "base": base.key if base else "",
                 "base_scope": target_scope(cfg, base) if base else "",
+                # A derived *guest*: this target starts from another variant's
+                # finished qcow2, handed to it as the `parentguest` context.
+                #
+                # Emitted so the CI matrices can be partitioned on it. Both
+                # workflows build a whole job's targets in parallel, and a
+                # flavour that consumes its parent's published tag has to be
+                # built after the run that publishes it -- otherwise it races
+                # its own parent and picks up the previous release's image.
+                "guest_parent": parent.key if parent else "",
             }
         )
 
@@ -3315,6 +3390,74 @@ def cmd_build_args(args: argparse.Namespace) -> None:
             )
         )
     )
+
+
+def cmd_build_contexts(args: argparse.Namespace) -> None:
+    """Print a target's named build contexts, one ``name=value`` per line.
+
+    The companion to ``build-args``, and for the same reason: the Dockerfile
+    Test workflow builds one target at a time with
+    ``docker/build-push-action`` rather than with bake, so it needs the
+    ``parentguest`` context spelled out or the guest Dockerfile's
+    ``--mount=from=parentguest`` has nothing to resolve.
+
+    Only the contexts that are not already implied by a build arg are emitted:
+    the base-image handoff is keyed by the ref ``BASE_IMAGE`` resolves to and
+    is bake's business, while this is a name the Dockerfile refers to directly.
+
+    A target is treated as the only one being built, which is what that
+    workflow does, so a derived flavour's parent resolves to its published
+    rolling tag rather than to an in-run target.
+
+    ``--standalone`` overrides that and points ``parentguest`` at the empty
+    directory instead, so a derived flavour builds its own guest rather than
+    adopting a published one.  See the flag's help for why Dockerfile Test
+    wants it.
+    """
+
+    cfg = load_config(env_file=args.env_file)
+    if args.tag:
+        cfg.image_tag = resolve_image_tag(args.tag)
+
+    target = parse_target(cfg, args.image)
+
+    if args.standalone:
+        none_dir = parent_context_dir(cfg, target)
+        if none_dir:
+            print(f"parentguest={none_dir}")
+        return
+
+    entry = bake_target(cfg, target, {target})
+    value = entry["contexts"].get("parentguest")
+    if value is None:
+        return
+
+    # A registry ref with no namespace is the failure this guard exists for.
+    #
+    # full_image_ref() prepends REGISTRY_USERNAME only when it is set, so an
+    # environment without it yields "docker.io/batesste-ci-images-<scope>" --
+    # a top-level Docker Hub repository that does not exist. That is not a
+    # clear error anywhere: buildx reports it as "pull access denied,
+    # repository does not exist or may require authorization", forty minutes
+    # into a CI job, which reads as a credentials problem rather than a
+    # malformed name. It cost exactly that on PR #118.
+    #
+    # Refuse rather than emit it. The caller either sets REGISTRY_USERNAME or
+    # passes --standalone and builds the guest itself.
+    if value.startswith("docker-image://"):
+        ref = value.removeprefix("docker-image://")
+        name = ref.split("/", 1)[1] if "/" in ref else ref
+        if "/" not in name:
+            console.print(
+                f"[red]Error:[/] parentguest would resolve to [bold]{ref}[/], "
+                "which has no registry namespace -- REGISTRY_USERNAME is "
+                "unset.\n"
+                "        Set it, or pass --standalone to build the guest "
+                "without adopting a parent."
+            )
+            sys.exit(1)
+
+    print(f"parentguest={value}")
 
 
 def cmd_labels(args: argparse.Namespace) -> None:
@@ -5137,6 +5280,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common_args(p_build_args)
 
+    # ── build-contexts ──
+    p_build_contexts = sub.add_parser(
+        "build-contexts",
+        help="Print a target's named build contexts as name=value lines",
+    )
+    p_build_contexts.add_argument("image", metavar="TARGET", help=TARGET_HELP)
+    p_build_contexts.add_argument(
+        "--tag",
+        metavar="TAG",
+        help="Base tag being published; sets the refs emitted",
+    )
+    p_build_contexts.add_argument(
+        "--standalone",
+        action="store_true",
+        help=(
+            "Point parentguest at the empty directory even for a derived "
+            "flavour, so it builds its own guest instead of adopting a "
+            "published one. For Dockerfile Test, which builds one target at "
+            "a time: the parent is not built in that run, so adopting would "
+            "mean pulling a multi-GB payload onto a hosted runner to throw "
+            "most of it away -- and the Docker Hub ref it needs is "
+            "unavailable to a fork PR. The adoption path is covered by the "
+            "bake builds instead"
+        ),
+    )
+    _add_common_args(p_build_contexts)
+
     # ── labels ──
     p_labels = sub.add_parser(
         "labels",
@@ -5331,6 +5501,7 @@ DISPATCH = {
     "badges": cmd_badges,
     "tags": cmd_tags,
     "build-args": cmd_build_args,
+    "build-contexts": cmd_build_contexts,
     "labels": cmd_labels,
     "config": cmd_config,
     "inspect": cmd_inspect,

@@ -13,6 +13,18 @@ cmake
 ninja-build
 pkg-config
 dkms
+
+# ccache, for the amdgpu DKMS build.
+#
+# That build is the most expensive thing in this guest -- ~210s of straight C --
+# and it is recompiled in full whenever anything earlier in the flavour moves,
+# even when the driver source and the kernel headers have not. probe-guest
+# carries a cache in and out of the provisioning boot; this is the package that
+# makes /usr/lib/ccache exist for kbuild's bare "gcc" to resolve through.
+#
+# Harmless when the build is given no cache: dkms_build_cached falls back to a
+# plain dkms call and this is just an unused binary.
+ccache
 git
 # No kernel metapackage here, deliberately.  Which one to install, and whether
 # it goes in before or after amdgpu-dkms, depends on the release, and
