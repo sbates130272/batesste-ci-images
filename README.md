@@ -27,8 +27,8 @@ adding an image or a variant adds its row.
 [![grpc v1.73.0](https://img.shields.io/badge/grpc-v1.73.0-244C5A)](https://github.com/grpc/grpc/releases/tag/v1.73.0)
 [![libfabric v1.21.0](https://img.shields.io/badge/libfabric-v1.21.0-0F4C81)](https://github.com/ofiwg/libfabric/releases/tag/v1.21.0)
 [![guest resolute](https://img.shields.io/badge/guest-resolute-772953)](https://cloud-images.ubuntu.com/)
-[![guest kernel (ionic) v7.2.3](https://img.shields.io/badge/guest%20kernel%20%28ionic%29-v7.2.3-772953)](https://kernel.ubuntu.com/mainline/v7.2.3/)
-[![guest kernel (ernic-rocjitsu) v7.2.4](https://img.shields.io/badge/guest%20kernel%20%28ernic--rocjitsu%29-v7.2.4-772953)](https://kernel.ubuntu.com/mainline/v7.2.4/)
+[![guest kernel (ionic) v7.2.6](https://img.shields.io/badge/guest%20kernel%20%28ionic%29-v7.2.6-772953)](https://kernel.ubuntu.com/mainline/v7.2.6/)
+[![guest kernel (ernic-rocjitsu) v7.2.6](https://img.shields.io/badge/guest%20kernel%20%28ernic--rocjitsu%29-v7.2.6-772953)](https://kernel.ubuntu.com/mainline/v7.2.6/)
 
 **Pinned commits**
 
@@ -1483,7 +1483,7 @@ Each flavour is provisioned in three layers:
   build tag, for a kernel no Ubuntu archive has. Mainline publishes one build
   per version rather than one per release and depends on only a handful of base
   packages, so this is orthogonal to `release`: `ionic` is resolute userspace,
-  whose GA kernel is 7.0, running a mainline 7.2.3 kernel instead. The `.deb`s
+  whose GA kernel is 7.0, running a mainline 7.2.6 kernel instead. The `.deb`s
   are loose files in no apt repository and
   cloud-init has no hook to run a command, so they are installed in a
   provisioning boot of its own, after cloud-init and before verification. The

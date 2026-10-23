@@ -63,6 +63,21 @@ rdma-core
 ibverbs-utils
 libibverbs-dev
 
+# perftest with ROCm memory support has to be built in-guest (see the perftest
+# entry below: the archive build carries no --use_rocm).  These are what that
+# build needs on top of the rdma-core dependencies above.  Without
+# libibumad-dev configure hard-errors; the rest fail earlier or less legibly.
+#
+# autoconf and automake are here for the same build -- autogen.sh needs them
+# and nothing else in this flavour pulls them in, so libtool alone would still
+# leave the in-guest build one apt round-trip short.
+autoconf
+automake
+libtool
+libibumad-dev
+librdmacm-dev
+libpci-dev
+
 # ib_send_bw and friends, for jobs that move traffic over the ionic queue
 # pairs rather than only assert the modules built.  Built without ROCm memory
 # support: --use_rocm needs perftest compiled against a ROCm the archive build
