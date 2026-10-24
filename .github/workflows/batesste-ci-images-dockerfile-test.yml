@@ -1455,6 +1455,53 @@ jobs:
           docker compose -f compose/docker-compose.yml logs qemu
           exit 1
 
+      # "VM image found" only proves entrypoint.sh got as far as the qcow2. It
+      # says nothing about whether QEMU survived its own command line -- and it
+      # did not, from 7f1eea1 until the commit that added this step. The
+      # vfio-user device was attached as "socket.type=unix,socket.path=...",
+      # which no QEMU in this image accepts, so qemu-system died on every run
+      # with "Property 'vfio-user-pci.socket.type' not found" and this job went
+      # green anyway: nothing downstream of that echo looked at the guest, and
+      # the two socket checks below are against the server containers, which
+      # are perfectly healthy whether or not anything ever connects to them.
+      #
+      # SSH is the assertion because it is end to end -- it cannot pass unless
+      # QEMU lives, the guest boots and its network is up -- and lspci is what
+      # proves the vfio-user attach itself worked rather than QEMU having
+      # quietly started without the device.
+      - name: Verify the guest boots and sees the vfio-user device
+        run: |
+          chmod 600 compose/vm/id_rsa
+          user=$(jq -r .username compose/vm/vm-info.json)
+          ssh_opts="-p 2222 -i compose/vm/id_rsa
+            -o StrictHostKeyChecking=no
+            -o UserKnownHostsFile=/dev/null
+            -o ConnectTimeout=5
+            -o LogLevel=ERROR"
+          # shellcheck disable=SC2086
+          for i in $(seq 1 60); do
+            if ssh ${ssh_opts} "${user}@localhost" true 2>/dev/null; then
+              echo "guest answered SSH after ~$((i * 5))s"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::guest never answered SSH on port 2222"
+              docker compose -f compose/docker-compose.yml logs qemu
+              exit 1
+            fi
+            sleep 5
+          done
+          # 1002:75c1 is the gfx1250 device rocjitsu serves; the compose stack
+          # attaches that one socket, so its absence means the attach failed.
+          # shellcheck disable=SC2086
+          if ! ssh ${ssh_opts} "${user}@localhost" lspci -nn | tee /dev/stderr \
+            | grep -q "1002:75c1"; then
+            echo "::error::guest booted but the rocjitsu device is not on its PCI bus"
+            docker compose -f compose/docker-compose.yml logs qemu
+            exit 1
+          fi
+          echo "guest sees the rocjitsu vfio-user device"
+
       - name: Wait for rocm-ernic to start
         run: |
           for i in $(seq 1 30); do
