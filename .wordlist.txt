@@ -290,3 +290,10 @@ BARs
 unmapped
 GPUs
 repointing
+TiB
+prefetchable
+hardcoded
+configs
+nutanix
+QEMU's
+upstream's

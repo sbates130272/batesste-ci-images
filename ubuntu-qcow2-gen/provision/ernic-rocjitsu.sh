@@ -617,6 +617,19 @@ sudo usermod -aG render,video "${USERNAME}"
 sudo install -m 0755 /tmp/payload/amdgpu-probe /usr/local/bin/amdgpu-probe
 bash -n /usr/local/bin/amdgpu-probe
 
+# The login hint that goes with it, from assets/shared/ for the same reason the
+# probe is -- see the longer note in provision/rocjitsu.sh.  Prints only when
+# there is something to say, and reads its state from "amdgpu-probe --status"
+# so it cannot drift from the parameters.  No dot in the installed name:
+# run-parts skips those.
+sudo install -m 0755 /tmp/payload/amdgpu-probe-motd \
+    /etc/update-motd.d/99-amdgpu-probe
+sh -n /etc/update-motd.d/99-amdgpu-probe
+# No device and no amdgpu in this boot, so "absent" is the only right answer
+# and any output would mean the detection is wrong.
+test "$(/usr/local/bin/amdgpu-probe --status)" = absent
+test -z "$(sudo /etc/update-motd.d/99-amdgpu-probe)"
+
 # RDMA pins memory, and this guest's default ceiling is 8192 KB.  Past it
 # every ibv_reg_mr() fails with "Cannot allocate memory", and it is reported
 # a long way from the cause: UCX surfaces it as a ud_recv_skb mpool failure

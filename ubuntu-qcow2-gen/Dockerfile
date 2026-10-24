@@ -286,9 +286,13 @@ COPY ubuntu-qcow2-gen/assets/ /build/assets/
 # "patches/" and "patches/" in one multi-source COPY would both land as
 # amdgpu/ at the top of the payload rather than under patches/.
 COPY ubuntu-qcow2-gen/assets/shared/amdgpu-probe /build/assets/rocjitsu/amdgpu-probe
+COPY ubuntu-qcow2-gen/assets/shared/amdgpu-probe-motd \
+     /build/assets/rocjitsu/amdgpu-probe-motd
 COPY ubuntu-qcow2-gen/assets/shared/patches/ /build/assets/rocjitsu/patches/
 COPY ubuntu-qcow2-gen/assets/shared/amdgpu-probe \
      /build/assets/ernic-rocjitsu/amdgpu-probe
+COPY ubuntu-qcow2-gen/assets/shared/amdgpu-probe-motd \
+     /build/assets/ernic-rocjitsu/amdgpu-probe-motd
 COPY ubuntu-qcow2-gen/assets/shared/patches/ /build/assets/ernic-rocjitsu/patches/
 
 # The firmware generator, wired in here rather than vendored a second time:

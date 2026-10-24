@@ -271,6 +271,16 @@ bash -n /usr/local/bin/amdgpu-probe
 grep -q 'ip_block_mask=0x7f' /usr/local/bin/amdgpu-probe
 grep -q 'vramlimit=1024' /usr/local/bin/amdgpu-probe
 
+# The login hint that goes with it.  Asserted as installed, syntactically
+# valid, and -- in this boot, where no device is attached and amdgpu is
+# blacklisted -- silent: a hint that fires with no GPU present would nag every
+# guest at every login.  The installed name has no dot in it because run-parts,
+# which is what pam_motd runs over /etc/update-motd.d, skips files that do.
+test -x /etc/update-motd.d/99-amdgpu-probe
+sh -n /etc/update-motd.d/99-amdgpu-probe
+test "$(/usr/local/bin/amdgpu-probe --status)" = absent
+test -z "$(sudo -n /etc/update-motd.d/99-amdgpu-probe)"
+
 # Firmware.  Unlike the rocjitsu flavour, this guest carries the generated gap
 # set as well as the packaged blobs, so there is nothing left that amdgpu opens
 # and the guest lacks -- and that is asserted as an empty list rather than an

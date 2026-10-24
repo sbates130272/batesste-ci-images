@@ -14,6 +14,7 @@ created in response to.
 | File | Goes to | Why it is shared |
 | --- | --- | --- |
 | `amdgpu-probe` | `rocjitsu`, `ernic-rocjitsu` | The emulation parameters belong with the driver build, and both flavours build the same driver. |
+| `amdgpu-probe-motd` | `rocjitsu`, `ernic-rocjitsu` | The login hint for the step above, installed at `/etc/update-motd.d/99-amdgpu-probe`. Shares for the same reason and reads its state from `amdgpu-probe --status`, so it restates no parameters and cannot drift from them. |
 | `patches/amdgpu/0003-amdgpu-ras-guard-vbios-query.patch` | `rocjitsu`, `ernic-rocjitsu` | Always needed under rocjitsu, on any kernel — see [the patch notes](../ernic-rocjitsu/patches/amdgpu/README.md#0003-amdgpu-ras-guard-vbios-query). |
 
 The `0003-` prefix is kept in both flavours even though `rocjitsu` applies no
