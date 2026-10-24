@@ -35,7 +35,8 @@ params=(
   # device advertises.  A smaller limit runs scratch-free kernels fine but
   # makes a private-segment dispatch wait forever for an allocation that never
   # arrives.  Unrelated to vram_aperture_bytes in the rocjitsu config -- that
-  # is the BAR window, and upstream leaves it at 256 MiB alongside this.
+  # is the BAR window, which the rocjitsu image now builds at 256 GiB rather
+  # than the 256 MiB upstream ships.  Changing one says nothing about the other.
   vramlimit=1024
 )
 

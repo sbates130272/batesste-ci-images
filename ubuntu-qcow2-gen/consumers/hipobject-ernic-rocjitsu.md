@@ -161,7 +161,8 @@ different driver build will silently omit MES.
 It is not a performance knob — it is the budget ROCr provisions queue scratch
 from, and 256 runs scratch-free kernels fine while making a private-segment
 dispatch wait forever for an allocation that never arrives. Unrelated to
-`vram_aperture_bytes` in the rocjitsu config, which is the BAR window.
+`vram_aperture_bytes` in the rocjitsu config, which is the BAR window and is
+built at 256 GiB rather than upstream's 256 MiB.
 
 The helper also refuses, loudly, when amdgpu is already resident with the wrong
 parameters — `modprobe` returns 0 in that case and discards everything you

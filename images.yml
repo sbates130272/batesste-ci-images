@@ -502,6 +502,31 @@ images:
       rocjitsu_config:
         value: gfx1250_mi455x.json
         env: ROCM_ROCJITSU_CONFIG
+      # The BAR0 window the vfio-user front end advertises, written into the
+      # served config at build time. Upstream ships 268435456 -- 256 MiB, the
+      # small-BAR ceiling -- and `keep` leaves that alone.
+      #
+      # `max` resolves to the largest power of two within the modelled device's
+      # own vm.gpu.device.local_mem_size, which is 256 GiB for this profile.
+      # Those are rocjitsu's own two bounds and it only warns about them, so
+      # the resolution and the assertions live in the Dockerfile rather than a
+      # number being restated here -- a renamed profile with different memory
+      # gets the right window without an edit. An explicit power-of-two byte
+      # count is also accepted.
+      #
+      # Defaulted to `keep`, not `max`, because a large BAR this stack cannot
+      # place is worse than no large BAR. qemu-tool puts the device behind a
+      # pcie-root-port and emits neither a raised phys-bits nor a
+      # pci-hole64-size, so a guest attached to a 256 GiB build fails to assign
+      # BAR0 *and* BAR2 and ends up with no VRAM window at all, where the
+      # shipped 256 MiB assigns cleanly. Measured in a booted guest; the table
+      # and the two options qemu-tool would need are in the image README.
+      #
+      # Large BAR is a P2P DMA concern rather than a prerequisite: gfx1250
+      # agents enumerate and run on the 256 MiB aperture.
+      rocjitsu_vram_aperture:
+        value: keep
+        env: ROCM_ROCJITSU_VRAM_APERTURE
       # Empty means "whatever emulation/rocjitsu/cmake/rj_libvfio_user.cmake
       # pins", which is nutanix/libvfio-user at v0.8. The sbates-fork variant
       # below fills these in and the Dockerfile redirects the fetch through
@@ -524,6 +549,7 @@ images:
       ROCJITSU_BRANCH: "{rocjitsu_branch}"
       ROCJITSU_COMMIT: "{rocjitsu_commit}"
       ROCJITSU_CONFIG: "{rocjitsu_config}"
+      ROCJITSU_VRAM_APERTURE_BYTES: "{rocjitsu_vram_aperture}"
       ROCJITSU_LOG_GROUPS: "{rocjitsu_log_groups}"
       LIBVFIO_USER_REPO: "{libvfio_user_override_repo}"
       LIBVFIO_USER_COMMIT: "{libvfio_user_override_commit}"
@@ -532,6 +558,10 @@ images:
       "{ns}.rocjitsu.branch": "{rocjitsu_branch}"
       "{ns}.rocjitsu.commit": "{rocjitsu_commit}"
       "{ns}.rocjitsu.log-groups": "{rocjitsu_log_groups}"
+      # What was asked for, not what it resolved to -- `max` depends on the
+      # profile. The resolved byte count is in rocjitsu-build.json, which is
+      # read off the image rather than off the tag.
+      "{ns}.rocjitsu.vram-aperture": "{rocjitsu_vram_aperture}"
       # Empty label values are dropped, so the default image carries neither of
       # these and only the variant advertises a libvfio-user of its own.
       "{ns}.libvfio-user.repo": "{libvfio_user_override_repo}"

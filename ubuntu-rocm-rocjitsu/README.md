@@ -264,6 +264,111 @@ serve today. It is a spec var so a variant built against a different upstream
 ref can point at a renamed or newly added profile without touching the
 Dockerfile.
 
+## Large BAR
+
+The image can serve the device with a 256 GiB VRAM BAR instead of upstream's
+268435456 -- 256 MiB, the small-BAR ceiling. **It does not do so by default,
+and you should not turn it on without reading the guest-side section below:**
+on the QEMU command line this stack actually uses, a 256 GiB BAR is worse than
+no change at all, because the guest fails to place it and ends up with no VRAM
+window whatsoever.
+
+It is a config field and nothing else: `vm.gpu.pci.vram_aperture_bytes` in
+`gfx1250_mi455x.json`. There is no CLI flag and no environment variable
+rocjitsu reads instead, which is why the only place this can be set is in the
+image, before it is sealed. `rocjitsu_vram_aperture` in
+[`images.yml`](../images.yml) is the knob; it defaults to `keep`, which leaves
+upstream's value untouched, and takes `max` or an explicit power-of-two byte
+count to raise it.
+
+`max` is the largest power of two that is not larger than the profile's own
+`vm.gpu.device.local_mem_size` -- 256 GiB against this profile's 432 GiB --
+because those are the two bounds rocjitsu itself enforces:
+
+| `vram_aperture_bytes` | rocjitsu says |
+| --- | --- |
+| 128 GiB | clean, serves |
+| 256 GiB | clean, serves |
+| 300 GiB | warns: the aperture is not a power of two |
+| 512 GiB | warns: the aperture is larger than the memory itself |
+
+Both of those are warnings, not errors -- the device still serves -- so the
+build-time probe fails on any line mentioning `aperture`, and the resolved byte
+count is written into `rocjitsu-build.json` and
+`/usr/local/share/rocjitsu-vram-aperture.txt`. The `…rocjitsu.vram-aperture`
+label carries what was asked for, which is `keep` on a default build.
+
+### Why it is off by default
+
+A BAR the server advertises is not a BAR the guest can use, and on the command
+line `qemu-tool` builds today it cannot. The device sits behind a
+`pcie-root-port`, so BAR0 and BAR2 share one bridge window of 256 GiB + 2 MiB,
+and the guest kernel has nowhere to put it:
+
+```text
+pci 0000:00:02.0: bridge window [mem size 0x4000200000 64bit pref]: can't assign; no space
+pci 0000:01:00.0: BAR 0 [mem size 0x4000000000 64bit pref]: failed to assign
+pci 0000:01:00.0: BAR 2 [mem size 0x00200000 64bit pref]: failed to assign
+```
+
+Both 64-bit BARs are then unassigned and `lspci` shows only the two 32-bit
+ones. Measured in a booted guest against this image, all four cases:
+
+| `vram_aperture_bytes` | QEMU options | Guest result |
+| --- | --- | --- |
+| 256 MiB (upstream) | none | BAR0 `[256M]` + BAR2 `[2M]` assigned, 0 failures |
+| 256 GiB | none | both fail to assign, 12 failures |
+| 256 GiB | `pci-hole64-size=512G` | both fail to assign |
+| 256 GiB | `phys-bits=41` + `pci-hole64-size=512G` | BAR0 `[256G]` + BAR2 `[2M]`, 0 failures |
+
+`qemu-tool` emits `-cpu EPYC`, which gives the guest 40 physical address bits,
+and no `pci-hole64-size`, which leaves q35 on its 32 GiB default. Raising only
+the hole does not help -- at 40 phys-bits its maximum is 512G, since `1T` is
+refused outright with `phys-bits too low (40)` -- so both have to move
+together, and `qemu-tool` exposes neither. Until it does, `max` produces an
+image whose device a guest is strictly worse off attached to.
+
+So raise this only if you are driving QEMU yourself and can set both. Making
+it usable through the normal path needs two new `qemu-tool run-vm` options --
+one for the guest's physical address bits, one for the q35 64-bit PCI hole --
+and ideally for it to size both from the BARs the attached vfio-user devices
+advertise, since it already knows the socket list.
+
+Note also that large BAR is a P2P DMA concern rather than a prerequisite for
+ordinary use: gfx1250 agents enumerate and run fine on the shipped 256 MiB
+aperture. vfio-user P2P DMA additionally needs the fork QEMU image rather than
+the stock one.
+
+### Why only one profile gets this
+
+Both image variants carry it -- `-sbates-fork` inherits the var -- and the
+window follows whatever `rocjitsu_config` names, computed from that profile's
+own `local_mem_size`, so repointing the var needs no edit. The other 14
+profiles in `configs/` are left alone on purpose:
+
+- `gfx1250_mi455x.json` is the only one upstream gives a `vm.gpu.pci` block at
+  all. The rest model no PCI device, so there is no BAR to size.
+- A block can be added to them and rocjitsu will take it, but every non-120500
+  target then warns `has no IP discovery profile ... a guest driver would find
+  nothing to attach to`. The window would be one no guest can reach.
+- `gfx1250_mi455x_kmd_4gpu.json` is the near miss -- same `gfx_target_version`
+  120500 -- but it exits 1 when served, unmodified and with no aperture set,
+  because it describes four GPUs and this transport presents one function.
+
+The helper creates the `pci` block when a config lacks one rather than
+refusing, so repointing `rocjitsu_config` at a profile upstream never gave one
+does not fail the build. It still refuses `max` on a profile that states no
+`local_mem_size` -- `gfx1251_synthetic.json` and the three `guest_*` configs
+-- since there is nothing to size against; use `keep` for those.
+
+Guests are unaffected either way. The `ubuntu-qcow2-gen` rocjitsu flavours
+carry no copy of this: the BAR comes from whichever server they are booted
+against.
+
+This is unrelated to the amdgpu `vramlimit` parameter, which several documents
+here mention alongside it. That is the budget ROCr provisions queue scratch from;
+this is the BAR window.
+
 ## Logging
 
 The server is built with `RJ_LOG_GROUPS=OFF`. Group logging is compiled in,
