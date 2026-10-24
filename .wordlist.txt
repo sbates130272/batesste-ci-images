@@ -287,7 +287,9 @@ repoint
 eventfd
 Repin
 BARs
+unmapped
 GPUs
+repointing
 TiB
 prefetchable
 hardcoded
