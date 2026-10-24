@@ -30,6 +30,13 @@ ARG ROCJITSU_CONFIG=gfx1250_mi455x.json
 # Compile-time log groups; see rj_log.cmake. Nothing gates these at runtime, so
 # a group named here prints for every event it covers.
 ARG ROCJITSU_LOG_GROUPS=OFF
+# Large BAR. Upstream ships the served config at 256 MiB -- the small-BAR
+# ceiling -- and that is a config field, not a flag, so the only way to ship a
+# large-BAR device is to rewrite it before the image is sealed. `max` is the
+# largest power of two within the modelled device's own memory, which is what
+# rocjitsu's two startup warnings bound it to; `keep` leaves upstream's value
+# for a build that wants to reproduce the small-BAR behaviour.
+ARG ROCJITSU_VRAM_APERTURE_BYTES=max
 
 # Optional, and empty by default: build against a libvfio-user of our choosing
 # instead of the one emulation/rocjitsu/cmake/rj_libvfio_user.cmake pins
@@ -196,6 +203,46 @@ ENV ROCJITSU_CONFIG_DIR=/usr/local/share/rocjitsu/configs
 ENV ROCJITSU_SOCKET_DIR=/run/rocjitsu
 ENV ROCJITSU_CONFIG_PATH=${ROCJITSU_CONFIG_DIR}/${ROCJITSU_CONFIG}
 
+# Give the served device a large BAR, by rewriting the only thing that decides
+# it. The helper ships rather than being inlined because the same rewrite is
+# what an operator needs to try a different window against a running stack, and
+# because it is where the power-of-two and <= local_mem_size rules are stated
+# once -- rocjitsu only warns about both and serves anyway, so a bad value
+# reaches a guest as a BAR that silently does not map rather than as a failure.
+#
+# Only the config this image serves is touched, whichever ROCJITSU_CONFIG
+# names -- the window is computed from that profile's own memory rather than
+# from a constant, so repointing the var needs no edit here. The other profiles
+# are deliberately left alone: gfx1250_mi455x.json is the only one upstream
+# gives a vm.gpu.pci block at all, and the only one that can be served over
+# vfio-user. Every other gfx target warns "has no IP discovery profile ... a
+# guest driver would find nothing to attach to", and gfx1250_mi455x_kmd_4gpu
+# -- the one other 120500 profile -- exits 1 unmodified, because it describes
+# four GPUs and this transport presents one function. A BAR on any of them
+# would size a window no guest can reach.
+#
+# Asserted after the fact, against the file, because every failure mode here is
+# quiet: a renamed key would leave a JSON document that still parses, still
+# serves, and still has a 256 MiB BAR.
+COPY ubuntu-rocm-rocjitsu/rocjitsu-vram-aperture.py \
+     /usr/local/bin/rocjitsu_vram_aperture.py
+RUN set -eu; \
+    chmod 0755 /usr/local/bin/rocjitsu_vram_aperture.py; \
+    python3 /usr/local/bin/rocjitsu_vram_aperture.py \
+        --config "${ROCJITSU_CONFIG_PATH}" \
+        --bytes "${ROCJITSU_VRAM_APERTURE_BYTES}"; \
+    aperture=$(python3 -c \
+        'import json,sys;print(json.load(open(sys.argv[1]))["vm"]["gpu"]["pci"]["vram_aperture_bytes"])' \
+        "${ROCJITSU_CONFIG_PATH}"); \
+    if [ "${ROCJITSU_VRAM_APERTURE_BYTES}" = max ]; then \
+        mem=$(python3 -c \
+            'import json,sys;print(json.load(open(sys.argv[1]))["vm"]["gpu"]["device"]["local_mem_size"])' \
+            "${ROCJITSU_CONFIG_PATH}"); \
+        test "${aperture}" -le "${mem}"; \
+        test "$((aperture * 2))" -gt "${mem}"; \
+    fi; \
+    echo "${aperture}" > /usr/local/share/rocjitsu-vram-aperture.txt
+
 # The dependency tags are read out of the cmake that pins them rather than
 # restated here, so a bump upstream cannot leave this metadata lying about what
 # the vfio-user transport was built against.
@@ -242,6 +289,7 @@ RUN set -eu; \
   "libvfio_user_tag": "%s",\n\
   "json_c_tag": "%s",\n\
   "vfio_enabled": true,\n\
+  "vram_aperture_bytes": %s,\n\
   "log_groups": "%s",\n\
   "guest_tools": ["rj-ip-discovery", "run-vfio-guest.py", "vfio_guest_firmware.py"],\n\
   "firmware_sets": ["gap", "full"],\n\
@@ -255,6 +303,7 @@ RUN set -eu; \
         "${libvfio_user_upstream_tag}" \
         "${libvfio_user_tag}" \
         "${json_c_tag}" \
+        "$(cat /usr/local/share/rocjitsu-vram-aperture.txt)" \
         "${ROCJITSU_LOG_GROUPS}" \
         "${ROCJITSU_CONFIG_DIR}" \
         > /usr/local/share/rocjitsu-build.json; \
@@ -267,6 +316,12 @@ RUN set -eu; \
 # config leaves the device unusable and rocjitsu exits 1.
 # The verdict has to be latched inside the loop: libvfio-user unlinks the socket
 # on teardown, so re-testing it after the shutdown would always fail.
+#
+# The log is also the only place the BAR window is adjudicated. rocjitsu
+# accepts an aperture larger than the modelled memory, or one that is not a
+# power of two, and serves anyway -- it says so once, as a warning, and that
+# warning is the whole signal. So anything matching 'aperture' here fails the
+# build; at a good value rocjitsu says nothing about it at all.
 # hadolint ignore=DL3001
 RUN rocjitsu --config "${ROCJITSU_CONFIG_PATH}" \
              --vfio-socket /tmp/probe.sock > /tmp/probe.log 2>&1 & \
@@ -289,6 +344,10 @@ RUN rocjitsu --config "${ROCJITSU_CONFIG_PATH}" \
     cat /tmp/probe.log; \
     if [ "$served" -ne 1 ]; then \
         echo "rocjitsu did not serve a vfio-user device" >&2; \
+        exit 1; \
+    fi; \
+    if grep -q aperture /tmp/probe.log; then \
+        echo "rocjitsu rejected the VRAM aperture; see the warning above" >&2; \
         exit 1; \
     fi; \
     rm -f /tmp/probe.log

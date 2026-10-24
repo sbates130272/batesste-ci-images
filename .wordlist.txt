@@ -286,3 +286,7 @@ CMake's
 repoint
 eventfd
 Repin
+BARs
+unmapped
+GPUs
+repointing

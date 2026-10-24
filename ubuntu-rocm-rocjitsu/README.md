@@ -264,6 +264,86 @@ serve today. It is a spec var so a variant built against a different upstream
 ref can point at a renamed or newly added profile without touching the
 Dockerfile.
 
+## Large BAR
+
+The image ships the served device with a 256 GiB VRAM BAR. Upstream ships it
+at 268435456 -- 256 MiB, the small-BAR ceiling -- so a guest saw a 256 MiB
+window onto a 432 GiB device and paged everything else through the GART.
+
+It is a config field and nothing else: `vm.gpu.pci.vram_aperture_bytes` in
+`gfx1250_mi455x.json`. There is no CLI flag and no environment variable
+rocjitsu reads instead, which is why the only place this can be set is in the
+image, before it is sealed. `rocjitsu_vram_aperture` in
+[`images.yml`](../images.yml) is the knob; it defaults to `max`, takes `keep`
+to reproduce upstream's small BAR, and takes an explicit power-of-two byte
+count.
+
+`max` is the largest power of two that is not larger than the profile's own
+`vm.gpu.device.local_mem_size` -- 256 GiB against this profile's 432 GiB --
+because those are the two bounds rocjitsu itself enforces:
+
+| `vram_aperture_bytes` | rocjitsu says |
+| --- | --- |
+| 128 GiB | clean, serves |
+| 256 GiB | clean, serves |
+| 300 GiB | warns: the aperture is not a power of two |
+| 512 GiB | warns: the aperture is larger than the memory itself |
+
+Both of those are warnings, not errors -- the device still serves -- so the
+build-time probe fails on any line mentioning `aperture`, and the resolved byte
+count is written into `rocjitsu-build.json` and
+`/usr/local/share/rocjitsu-vram-aperture.txt`. The `…rocjitsu.vram-aperture`
+label carries what was asked for, which is `max` on a default build.
+
+No QEMU-side change is needed to place it. q35 sizes its own 64-bit PCI hole
+around the BARs the device advertises, so `info pci` against a guest attached
+to this image reports, with no `pci-hole64-size` set and nothing else changed:
+
+```text
+Class 4608: PCI device 1002:75c1
+  BAR0: 64 bit prefetchable memory at 0x4000000000 [0x7fffffffff]
+  BAR2: 64 bit prefetchable memory at 0x8000000000 [0x80001fffff]
+```
+
+which is the 256 GiB VRAM window followed by the 2 MiB doorbell -- both
+mapped, where the small-BAR build left BAR2 unmapped. Setting
+`pci-hole64-size` explicitly changes neither line; what it does have is a
+ceiling, because the default `qemu64` CPU model has 40 physical address bits
+and a 1T hole is refused outright with `phys-bits too low (40)`.
+
+vfio-user P2P DMA is a separate matter and still needs the fork QEMU image
+rather than the stock one.
+
+### Why only one profile gets this
+
+Both image variants carry it -- `-sbates-fork` inherits the var -- and the
+window follows whatever `rocjitsu_config` names, computed from that profile's
+own `local_mem_size`, so repointing the var needs no edit. The other 14
+profiles in `configs/` are left alone on purpose:
+
+- `gfx1250_mi455x.json` is the only one upstream gives a `vm.gpu.pci` block at
+  all. The rest model no PCI device, so there is no BAR to size.
+- A block can be added to them and rocjitsu will take it, but every non-120500
+  target then warns `has no IP discovery profile ... a guest driver would find
+  nothing to attach to`. The window would be one no guest can reach.
+- `gfx1250_mi455x_kmd_4gpu.json` is the near miss -- same `gfx_target_version`
+  120500 -- but it exits 1 when served, unmodified and with no aperture set,
+  because it describes four GPUs and this transport presents one function.
+
+The helper creates the `pci` block when a config lacks one rather than
+refusing, so repointing `rocjitsu_config` at a profile upstream never gave one
+does not fail the build. It still refuses `max` on a profile that states no
+`local_mem_size` -- `gfx1251_synthetic.json` and the three `guest_*` configs
+-- since there is nothing to size against; use `keep` for those.
+
+Guests are unaffected either way. The `ubuntu-qcow2-gen` rocjitsu flavours
+carry no copy of this: the BAR comes from whichever server they are booted
+against.
+
+This is unrelated to the amdgpu `vramlimit` parameter, which several documents
+here mention alongside it. That is the budget ROCr provisions queue scratch from;
+this is the BAR window.
+
 ## Logging
 
 The server is built with `RJ_LOG_GROUPS=OFF`. Group logging is compiled in,
