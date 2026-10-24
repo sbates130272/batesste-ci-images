@@ -17,12 +17,14 @@
 # in build-vm.sh is skipped for a trimmed flavour precisely because it cannot
 # describe this guest.  These are what does.
 #
-# Not asserted here, unlike the fat flavour: the amdgpu patch markers in
-# /usr/src/amdgpu-*.  That tree is gone by design.  The patched build is
-# asserted by behaviour instead -- it resolves under updates/dkms, it declares
-# the gc_12_1_0 firmware a driver without gfx1250 support does not reference,
-# and it carries emu_mode -- and the fat flavour, built from the same script,
-# still asserts every marker on the sources themselves.
+# The amdgpu patch markers in /usr/src/amdgpu-* are asserted here as well as
+# in the fat flavour, because the trim now keeps that tree: a consumer copies
+# it out and builds the patched driver against its own kernel on the host, so
+# a tree that survived the trim with its patches lost would hand that consumer
+# an unpatched driver and nothing in this guest would notice.  The installed
+# module is asserted by behaviour as well -- it resolves under updates/dkms,
+# it declares the gc_12_1_0 firmware a driver without gfx1250 support does not
+# reference, and it carries emu_mode.
 
 # The floor the whole flavour turns on.  ionic_rdma calls ib_umem_get_va, which
 # exists in 7.2.4 and does not in 7.0 or 7.1.13.  Asserted by version only: the
@@ -307,9 +309,29 @@ for tool in gcc cc g++ make cmake ninja dkms git hipcc hipconfig \
     fi
 done
 
-# No DKMS source tree, no kernel headers, no second kernel.
+# The DKMS source is kept -- it is the payload a consumer extracts to build
+# the patched driver on its own host -- so assert it arrived whole and still
+# carries the patches.  Same markers the fat flavour checks; see the note at
+# the top of this file for why they are repeated here.
+AMDGPU_SRC=$(ls -d /usr/src/amdgpu-* | tail -1)
+test "$(ls -1d /usr/src/amdgpu-* | wc -l)" -eq 1
+test -d "${AMDGPU_SRC}/amd"
+# KFD atomics: the emulated device cannot advertise PCIe atomics through the
+# vfio-user PCI capability, and KFD refuses a device without them.
+grep -q 'amdgpu_emu_mode == 1' "${AMDGPU_SRC}/amd/amdkfd/kfd_device.c"
+# 0001, the unreviewed ptrace gate.  See
+# assets/ernic-rocjitsu/patches/amdgpu/README.md.
+grep -q 'KERNEL_VERSION(7, 2, 0)' \
+    "${AMDGPU_SRC}/amd/amdkfd/kfd_process_queue_manager.c"
+# 0002, the panel_type probes.
+grep -q 'AC_AMDGPU_DRM_DISPLAY_INFO_PANEL_TYPE' \
+    "${AMDGPU_SRC}/amd/dkms/m4/drm-display-info.m4"
+grep -q 'AC_AMDGPU_DRM_MODE_PANEL_TYPE_LCD' \
+    "${AMDGPU_SRC}/amd/dkms/m4/drm-display-info.m4"
+echo "note: kept DKMS source ${AMDGPU_SRC} ($(du -sh "${AMDGPU_SRC}" | cut -f1))"
+
+# No DKMS state, no kernel headers, no second kernel.
 test ! -e /var/lib/dkms
-test -z "$(ls -d /usr/src/amdgpu-* 2>/dev/null || true)"
 test ! -e "/lib/modules/$(uname -r)/build"
 test "$(ls -1 /boot/vmlinuz-* | wc -l)" -eq 1
 test -e "/boot/vmlinuz-$(uname -r)"
@@ -399,8 +421,14 @@ grep -q 'This is the slim guest' "${HOME}/WELCOME.md"
 # The size the flavour exists to deliver.  A ceiling rather than a target, and
 # generous enough not to fail on an archive that grew a little -- but low
 # enough that losing a whole trim section (the ROCm -dev packages are ~1.9 GB,
-# the DKMS source ~2 GB, the toolchain and the LLVM prune ~0.7 GB between them)
-# fails here instead of shipping.  Raising it is a decision, not a fix.
+# the toolchain and the LLVM prune ~0.7 GB between them) fails here instead of
+# shipping.  Raising it is a decision, not a fix.
+#
+# The 563 MB DKMS source is now kept rather than trimmed, which spends a little
+# over half of what used to be the headroom here.  The ceiling was deliberately
+# left where it was: ~3.9 GB used against 5120 still leaves room for an archive
+# that grows, and moving it would blunt exactly the signal this check exists
+# for.
 #
 # MiB rather than GB, because "df -BG" rounds the block count *up*: 4097 MiB
 # prints as "5G", so a "-ge 5" test is really a 4096 MiB cliff sitting a couple

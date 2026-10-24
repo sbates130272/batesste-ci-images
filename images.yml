@@ -874,6 +874,18 @@ images:
       # a kernel no Ubuntu archive has: the mainline .debs depend only on a
       # handful of base packages and are built once per version rather than
       # per release, so this is orthogonal to the release var above.
+      #
+      # The mainline .debs are not configured like Ubuntu's release kernels,
+      # and the difference is not a version gap: CONFIG_DMABUF_MOVE_NOTIFY is
+      # =y on both 6.8 and the release 7.0, and absent entirely -- not "is not
+      # set" -- from the mainline build (seen on 7.2.4, 2026-10-23). A consumer
+      # that probes kernel config rather than capability can therefore conclude
+      # a feature is missing when it works: rdma-perftest gates its ROCm
+      # dma-buf path on that symbol and refuses to start, while the same
+      # transfer runs fine under PERFTEST_ASSUME_DMABUF=1, because move_notify
+      # is only needed for movable exporters and the path used is pinned.
+      # Prefer fixing the probe; flipping the symbol means giving up the
+      # prebuilt .debs and building the kernel here.
       kernel_ref: ""
       # Only read by a flavour whose provision script installs the AMD kernel
       # driver, and inert for every other one. A directory under
@@ -995,11 +1007,17 @@ images:
       # are deliberately *not* built here, since building them from pinned
       # upstream sources is what those jobs exist to test.
       #
-      # The kernel is mainline v7.2.3, the build rocm-ernic's self-hosted
-      # guests are already passing on, stamp 202609030700. Moving it was tried
-      # -- to 7.2.6 and then 7.2.4, to put the mainline flavours on one
-      # kernel -- and reverted, because nothing downstream had been rebuilt
-      # against either. No Ubuntu release
+      # The kernel is mainline v7.2.6, stamp 202609141300 -- the same pin every
+      # other mainline flavour here carries, and the top of the series: the
+      # mainline PPA built v7.2.1 through v7.2.6 and then stopped, so v7.2.7
+      # and up do not exist there however far upstream stable has run. Probe
+      # kernel.ubuntu.com/mainline/<tag>/amd64/ before believing a newer one.
+      #
+      # This was v7.2.3 -- the build rocm-ernic's self-hosted guests pass on --
+      # and moving it had been tried and reverted twice before, because nothing
+      # downstream had been rebuilt against the newer pin. That is still the
+      # risk and it has simply been accepted: the three mainline flavours are
+      # now on one kernel deliberately. No Ubuntu release
       # ships it -- resolute GA is 7.0.0-31 -- so kernel_ref installs it on top
       # and the release only decides how painful that is. resolute makes it a
       # plain dpkg operation; noble needs a run-parts shim, because its
@@ -1008,12 +1026,11 @@ images:
       # noble's gcc-13 cannot provide. Both are hand-modifications invisible to
       # dpkg -V, and both are how the existing guests were built.
       #
-      # Do not move this without a green ionic-ernic DKMS build against it:
-      # ionic_rdma calls ib_umem_get_va, which exists from 7.2.4 and not in
-      # 7.0 or 7.1.13. The
-      # not the same as being tested. This pin and rocm-ernic's are still
-      # separate, with nothing asserting they stay compatible beyond
-      # checks/ionic.sh.
+      # Do not move this below 7.2.4 whatever else changes: ionic_rdma calls
+      # ib_umem_get_va, which exists from 7.2.4 and not in 7.0 or 7.1.13. That
+      # floor is a compile-time fact and is not the same as being tested
+      # -- this pin and rocm-ernic's IONIC_KERNEL_REF are still separate, with
+      # nothing asserting they stay compatible beyond checks/ionic.sh.
       #
       # vm_playbook stays empty until vm-ionic.yml lands in qemu-minimal, and
       # the pre-seeded /opt/ionic-src checkout waits on it.
@@ -1027,13 +1044,13 @@ images:
       ionic:
         suffix: "-ionic"
         description: >-
-          Ubuntu guest disk on a mainline 7.2.3 kernel with the ionic RDMA
+          Ubuntu guest disk on a mainline 7.2.6 kernel with the ionic RDMA
           driver, for rocm-ernic DKMS jobs.
         vars:
           flavour: ionic
           vm_packages: ionic.txt
           probe_ssh_port: 2223
-          kernel_ref: v7.2.3
+          kernel_ref: v7.2.6
           rdma_core_version: "61.0"
         # rocm-ernic's two-VM job still copies the scratch payload image with
         # skopeo rather than pulling the artifact, and pins a dated tag to do
@@ -1134,14 +1151,15 @@ images:
       # It is a third flavour rather than a change to either of the two above,
       # because both of those are consumed today and neither wants what this
       # one needs -- though the kernel is no longer one of those reasons.
-      # The kernel is the reason: mainline v7.2.4, where ionic -> the 7.2
+      # The kernel is the reason: mainline v7.2.6, where ionic -> the 7.2
       # floor and rocjitsu -> the release kernel pull in opposite directions.
       #
       #   kernel_ref: v7.2.4 is a floor, not a preference. ionic_rdma calls
       #     ib_umem_get_va, a static inline that exists in 7.2.4 and does not
-      #     exist in 7.0 or 7.1.13. The ionic flavour stays on v7.2.3, the
-      #     build rocm-ernic is passing on; the two pins move independently and
-      #     nothing asserts they stay equal.
+      #     exist in 7.0 or 7.1.13. v7.2.6 is the top of the mainline PPA's
+      #     7.2 series and clears that floor; the ionic flavour sits on it
+      #     too, but the two pins move independently and nothing asserts they
+      #     stay equal.
       #
       #   amdgpu_driver_version: 31.60 for the rocjitsu flavour's reasons --
       #     the first driver tree with both a resolute suite and real gfx1250
@@ -1167,7 +1185,7 @@ images:
         suffix: "-ernic-rocjitsu"
         # Under Hub's 100-byte cap; see the rocjitsu note above.
         description: >-
-          Ubuntu guest on mainline 7.2.4 with ionic RDMA and a patched
+          Ubuntu guest on mainline 7.2.6 with ionic RDMA and a patched
           amdgpu-dkms, for hipObject jobs.
         vars:
           flavour: ernic-rocjitsu
@@ -1183,7 +1201,7 @@ images:
           post_playbook: vm-ernic-srq.yml
           probe_ssh_port: 2225
           release: resolute
-          kernel_ref: v7.2.4
+          kernel_ref: v7.2.6
           amdgpu_driver_version: "31.60"
           guest_rocm_version: "10.1"
           rdma_core_version: "61.0"
@@ -1268,7 +1286,7 @@ images:
           post_playbook: vm-ernic-srq.yml
           probe_ssh_port: 2226
           release: resolute
-          kernel_ref: v7.2.4
+          kernel_ref: v7.2.6
           amdgpu_driver_version: "31.60"
           guest_rocm_version: "10.1"
           rdma_core_version: "61.0"
@@ -1339,7 +1357,7 @@ badges:
         # Two flavours install a kernel of their own, so these read the variant
         # rather than the default target. They are pinned separately on
         # purpose -- they are equal today only because all three were moved
-        # to v7.2.4 together, and nothing asserts they stay that way.
+        # to v7.2.6 together, and nothing asserts they stay that way.
         - label: guest kernel (ionic)
           target: ubuntu-qcow2-gen@ionic
           var: kernel_ref

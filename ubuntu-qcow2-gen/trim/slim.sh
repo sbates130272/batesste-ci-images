@@ -7,10 +7,14 @@
 # -- with everything a runtime consumer cannot use removed.
 #
 # "Runtime consumer" is the contract, and it is a real loss: the guest that
-# comes out of this cannot compile anything.  No gcc, no headers, no DKMS
-# source.  A lane that builds ionic-ernic or hipObject inside the guest wants
-# the fat flavour; this one is for booting a prebuilt binary against the two
-# emulated devices, fast.
+# comes out of this cannot compile anything.  No gcc, no headers, no DKMS.
+# A lane that builds ionic-ernic or hipObject inside the guest wants the fat
+# flavour; this one is for booting a prebuilt binary against the two emulated
+# devices, fast.
+#
+# The amdgpu DKMS *source* is the one exception, and it is deliberate: it is
+# kept so a consumer can copy it out and build the patched driver against its
+# own kernel on the host.  Nothing here can build it in place.  See section 1.
 #
 # Appended to a preamble that sets "set -eu" plus FLAVOUR, RELEASE, USERNAME,
 # ROCM_PATH, ROCM_VERSION and KERNEL_REF, so any failing command fails the
@@ -53,18 +57,43 @@ purge_installed() {
     fi
 }
 
-# --- 1. amdgpu: keep the module, drop the source -------------------------
+# --- 1. amdgpu: keep the module and the source, drop the DKMS state ------
 #
-# /usr/src/amdgpu-* is ~2 GB and exists so a later "dkms autoinstall" can
-# rebuild the patched driver for a new kernel.  This guest installs no kernels,
-# so it buys nothing here -- but removing it means removing amdgpu-dkms, and
-# that package's postrm runs "dkms remove", which deletes the module the fat
-# build spent twenty minutes producing.
+# /usr/src/amdgpu-* is kept.  It is what a consumer copies out to build the
+# patched driver against its own kernel on the host -- rocm-xio's dmabuf lane
+# does exactly that -- and it is cheaper than it looks: 563 MB on disk and
+# ~19 MB in the published artifact, measured on
+# amdgpu-dkms 1:7.1.9.31600000-2407772.26.04, against a 5120 MiB ceiling this
+# guest sits about 1.1 GB under.  An earlier comment here put it at ~2 GB and
+# dropped it on that basis; that figure was /var/lib/dkms (the build objects),
+# not the source.
 #
-# So the module is saved first and reinstated afterwards, rather than hoping
-# the postrm leaves it alone.  Everything below asserts itself: this is the one
-# irreversible step in the trim, and a guest that comes out of it without a
-# loadable patched amdgpu is worth no bytes at all.
+# /var/lib/dkms still goes: it is DKMS's own state for a tree this guest
+# cannot rebuild anyway, having no compiler and no headers after section 3.
+#
+# Both the module and the source have to survive purging amdgpu-dkms, and
+# neither survives it unaided: the package's maintainer scripts run
+# "dkms remove", which deletes the module the fat build spent twenty minutes
+# producing, and dpkg owns every file under /usr/src/amdgpu-*, so purging
+# takes the source with it.  So both are copied aside first and reinstated
+# afterwards, rather than hoping the purge leaves them alone.
+#
+# Copied and not moved, which matters and is not an optimisation to reclaim:
+# the *prerm* runs "dkms remove" before dpkg deletes anything, and that
+# refuses outright on a tree whose source directory has gone --
+#
+#   Error! amdgpu/7.1.9-2407772.26.04: Missing the module source directory
+#          or the symbolic link pointing to it.  Manual intervention is
+#          required!
+#
+# exiting 4, which fails the purge and the build with it.  The source has to
+# be where dkms expects it until the purge is over.  The 563 MB of transient
+# duplication is free here: the guest disk is 512 GB and the fat image it is
+# trimming uses under 10.
+#
+# Everything below asserts itself: this is the one irreversible step in the
+# trim, and a guest that comes out of it without a loadable patched amdgpu is
+# worth no bytes at all.
 AMDGPU_KO=$(modinfo -n amdgpu)
 case "${AMDGPU_KO}" in
     */updates/dkms/*) ;;
@@ -89,8 +118,29 @@ echo "saved ${AMDGPU_KO} (version ${AMDGPU_MODVER})"
 sudo apt-mark manual amdgpu-dkms-firmware
 AMDGPU_PKG=$(dpkg-query -W -f='${Version}' amdgpu-dkms)
 FW_PKG=$(dpkg-query -W -f='${Version}' amdgpu-dkms-firmware)
+
+# Exactly one tree, named, so a second one left by an earlier build cannot
+# make the restore ambiguous or the assertions below pass on the wrong thing.
+AMDGPU_SRC=$(ls -d /usr/src/amdgpu-* 2>/dev/null | head -1)
+if [ -z "${AMDGPU_SRC}" ] || [ "$(ls -d /usr/src/amdgpu-* | wc -l)" -ne 1 ]; then
+    echo "Error: expected exactly one /usr/src/amdgpu-* tree, found:" \
+         "$(ls -d /usr/src/amdgpu-* 2>/dev/null | tr '\n' ' ')" >&2
+    exit 1
+fi
+AMDGPU_SRC_BASENAME=$(basename "${AMDGPU_SRC}")
+sudo cp -a "${AMDGPU_SRC}" "/var/tmp/slim-save/${AMDGPU_SRC_BASENAME}"
+echo "saved ${AMDGPU_SRC}"
+
 ${APT} purge -y amdgpu-dkms
 sudo rm -rf /usr/src/amdgpu-* /var/lib/dkms
+
+# Back where a consumer expects it, and owned by root rather than by dpkg --
+# the package that owned it is gone, so nothing will ever update or remove it.
+sudo mv "/var/tmp/slim-save/${AMDGPU_SRC_BASENAME}" "/usr/src/${AMDGPU_SRC_BASENAME}"
+sudo chown -R root:root "/usr/src/${AMDGPU_SRC_BASENAME}"
+# amd/ is 561 MB of the 563: if the move half-landed, this is what notices.
+test -d "/usr/src/${AMDGPU_SRC_BASENAME}/amd"
+echo "kept /usr/src/${AMDGPU_SRC_BASENAME} ($(sudo du -sh "/usr/src/${AMDGPU_SRC_BASENAME}" | cut -f1))"
 
 # Back where modprobe looks.  depmod rather than trusting the postrm to have
 # left modules.dep alone: it did run "dkms remove", and that rewrites it.
@@ -565,7 +615,9 @@ sudo tee /etc/slim-trim.json > /dev/null <<EOF
   "amdgpu_dkms_package": "${AMDGPU_PKG}",
   "amdgpu_dkms_firmware_package": "${FW_PKG}",
   "amdgpu_module_version": "${AMDGPU_MODVER}",
-  "amdgpu_module_source_removed": true,
+  "amdgpu_module_source_removed": false,
+  "amdgpu_module_source_path": "/usr/src/${AMDGPU_SRC_BASENAME}",
+  "dkms_state_removed": true,
   "rocm_path": "${ROCM_PATH}",
   "rocm_subtrees_removed": [${ROCM_DELETED}],
   "rocm_packages_purged": ["amdrocm-blas-dev${ROCM_VERSION}",
@@ -596,8 +648,9 @@ half are identical. What is gone:
 - **The toolchain.** No gcc, no cmake, no kernel headers, no DKMS. This guest
   cannot build \`ionic-ernic\`, or anything else. Use the fat
   \`ernic-rocjitsu\` flavour for a lane that compiles in-guest.
-- **The amdgpu DKMS source.** The patched module is installed and is what
-  \`modprobe\` picks; it cannot be rebuilt here, so do not install a kernel.
+- **DKMS itself**, and \`/var/lib/dkms\` with it. The patched module is
+  installed and is what \`modprobe\` picks; it cannot be rebuilt *here*, so do
+  not install a kernel in this guest.
 - **ROCm's compilers and headers.** The HIP runtime is here and a prebuilt HIP
   binary runs; \`hipcc\`, \`amdclang\` and every ROCm header are gone. LLVM
   survives only as the two shared libraries \`libamd_comgr\` links against,
@@ -610,13 +663,19 @@ half are identical. What is gone:
   /dev/vda1\` once inside the guest.
 - linux-firmware, snapd, docs, man pages and every apt cache.
 
-What is **not** gone, and is worth knowing because it cannot be rebuilt here:
-the ionic SRQ stack. The \`ionic-ernic\` DKMS modules under \`updates/dkms\`
-and the patched rdma-core in \`/usr/local\` both survive the trim, and
-\`/etc/ionic-srq.json\` still records what they were built from. The DKMS
-*source* and the compiler are gone, so a kernel installed in this guest would
-have neither a GPU driver nor an SRQ-capable ionic -- use the fat
-\`ernic-rocjitsu\` flavour for any lane that needs to rebuild either.
+What is **not** gone:
+
+- **The amdgpu DKMS source**, at \`/usr/src/${AMDGPU_SRC_BASENAME}\`. Kept so
+  a consumer can copy it out and build the patched driver against its own
+  kernel *on the host*. There is no compiler and no \`dkms\` in here, so it
+  cannot be built in place -- it is a payload to extract, not a tree to use.
+- **The ionic SRQ stack**, which matters because it cannot be rebuilt here at
+  all. The \`ionic-ernic\` DKMS modules under \`updates/dkms\` and the patched
+  rdma-core in \`/usr/local\` both survive the trim, and
+  \`/etc/ionic-srq.json\` still records what they were built from. No source
+  for these is kept, so a kernel installed in this guest would have an
+  SRQ-capable ionic nowhere -- use the fat \`ernic-rocjitsu\` flavour for any
+  lane that needs to rebuild it.
 
 \`/etc/slim-trim.json\` is the machine-readable version of this list.
 EOF
