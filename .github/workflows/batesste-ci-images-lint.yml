@@ -10,7 +10,7 @@ on:
 jobs:
   shellcheck:
     name: Shell Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Run ShellCheck
@@ -23,7 +23,7 @@ jobs:
 
   python-lint:
     name: Python Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Set up Python
@@ -39,7 +39,7 @@ jobs:
 
   images-config:
     name: Image Config Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Set up Python
@@ -61,7 +61,7 @@ jobs:
 
   readme-structure:
     name: README Structure Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Check all image directories are documented
@@ -69,7 +69,7 @@ jobs:
 
   qemu-tool-only:
     name: qemu-tool CLI Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       # The standalone gen-vm / run-vm scripts are being removed upstream, so
@@ -80,7 +80,7 @@ jobs:
 
   dockerfile-lint:
     name: Dockerfile Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Run Hadolint on all Dockerfiles

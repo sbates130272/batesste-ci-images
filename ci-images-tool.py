@@ -84,6 +84,10 @@ HUB_API = "https://hub.docker.com/v2"
 # be made on the encoded form -- see hub_short_description().
 HUB_SHORT_DESCRIPTION_MAX_BYTES = 100
 HUB_ELLIPSIS = "…"
+# The overview is capped the same way. Nothing trims this one: cutting a README
+# mid-sentence publishes a worse page than leaving the last good one up, so
+# cmd_describe refuses the target and says by how much.
+HUB_FULL_DESCRIPTION_MAX_BYTES = 25000
 
 # Repo-specific rather than the bare "builder": these builds also run on shared
 # Slurm compute nodes, where a builder of that name already exists and belongs
@@ -3191,7 +3195,11 @@ def status_table_rows(cfg: Config) -> list[tuple[str, str, str]]:
     for t in discover_targets(cfg):
         kind = "qcow2" if publish_mode(cfg, t) == "artifact" else "container"
         if str(target_attr(cfg, t, "job", "matrix")) == "bases":
-            bases.append(t.image)
+            # By image, not by target: a variant built in this job shares its
+            # base's directory, which is what put ubuntu-libvfio-user in the
+            # label twice once the fork variant arrived.
+            if t.image not in bases:
+                bases.append(t.image)
             continue
         label = target_scope(cfg, t)
         # A variant's repository name does not say which job builds it, so
@@ -3212,6 +3220,17 @@ def status_table_rows(cfg: Config) -> list[tuple[str, str, str]]:
     return rows
 
 
+def status_badge_slug(job: str) -> str:
+    """The gh-pages badge filename for *job*.
+
+    Must stay identical to slug() in scripts/publish-build-status.py: that
+    script names the files, this one writes the URLs that read them, and a
+    disagreement shows up as a README full of shields' "invalid" badges.
+    """
+
+    return re.sub(r"[^a-z0-9]+", "-", job.lower()).strip("-")
+
+
 def render_status_block(cfg: Config) -> str:
     """The marker-delimited per-artifact build-status table, markers included."""
 
@@ -3219,6 +3238,8 @@ def render_status_block(cfg: Config) -> str:
     query = f"?query=branch%3A{STATUS_BRANCH}+event%3A{STATUS_EVENT}"
     link = f"https://github.com/{slug}/actions/workflows/{STATUS_WORKFLOW}{query}"
     kinds = {"container": "1f6feb", "qcow2": "8957e5"}
+    owner, _, repo = slug.partition("/")
+    site = f"https://{owner}.github.io/{repo}"
 
     out = [
         STATUS_BEGIN,
@@ -3229,12 +3250,13 @@ def render_status_block(cfg: Config) -> str:
         "| --- | --- |",
     ]
     for kind, label, job in status_table_rows(cfg):
-        tag = f"[![{kind}](https://img.shields.io/badge/type-{kind}-{kinds[kind]})]"
-        img = (
-            f"https://img.shields.io/github/actions/workflow/status/{slug}/"
-            f"{STATUS_WORKFLOW}?branch={STATUS_BRANCH}&event={STATUS_EVENT}"
-            f"&job={quote(job, safe='')}"
-        )
+        tag = f"![{kind}](https://img.shields.io/badge/type-{kind}-{kinds[kind]})"
+        # shields' `endpoint` type, not its `github/actions/workflow/status`
+        # one: the latter accepts a `job` parameter and ignores it, so every
+        # row of this table reported the whole workflow's conclusion. These
+        # files are published per job by the Dockerfile Test lane.
+        endpoint = f"{site}/builds/badge-{status_badge_slug(job)}.json"
+        img = f"https://img.shields.io/endpoint?url={quote(endpoint, safe='')}"
         name = label.split(" (")[0]
         out.append(f"| {tag} {label} | [![{name} {STATUS_BRANCH}]({img})]({link}) |")
     out += ["", STATUS_END]
@@ -4734,6 +4756,17 @@ def cmd_describe(args: argparse.Namespace) -> None:
             continue
 
         full = readme.read_text()
+        over = len(full.encode()) - HUB_FULL_DESCRIPTION_MAX_BYTES
+        if over > 0:
+            console.print(
+                f"[yellow]Skipping[/] {target.key}: {target.image}/{README_FILE} "
+                f"is {over} bytes over Docker Hub's "
+                f"{HUB_FULL_DESCRIPTION_MAX_BYTES}-byte overview limit; shorten "
+                f"it or the page keeps the overview it has now"
+            )
+            failed = True
+            continue
+
         short = image_description(cfg, target)
         if not short:
             console.print(

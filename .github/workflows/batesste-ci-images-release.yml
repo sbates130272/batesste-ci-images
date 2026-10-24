@@ -19,7 +19,7 @@ env:
 jobs:
   discover-images:
     name: Discover Images
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       targets: ${{ steps.find-images.outputs.targets }}
       derived: ${{ steps.find-images.outputs.derived }}
@@ -54,7 +54,7 @@ jobs:
   # scratch tag so the matrix below can resolve them immediately.
   build-bases:
     name: Build and Push Base Images
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -156,7 +156,7 @@ jobs:
 
   build-and-push:
     name: Build and Push ${{ matrix.target.key }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [discover-images, build-bases]
     permissions:
       contents: read
@@ -409,7 +409,7 @@ jobs:
 
   build-and-push-derived:
     name: Build and Push ${{ matrix.target.key }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Deliberately *not* `needs: build-and-push`. A derived target consumes
     # exactly one base, named in its own matrix.target.base_scope, and a
     # job-level `needs` cannot say "only that leg" -- so every guest used to
@@ -800,7 +800,7 @@ jobs:
   # PATCH under a plain read/write token, with a 403 rather than an auth error.
   sync-descriptions:
     name: Sync Docker Hub Descriptions
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [build-bases, build-and-push, build-and-push-derived]
     steps:
       - uses: actions/checkout@v7
@@ -822,7 +822,7 @@ jobs:
 
   github-release:
     name: Create GitHub Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [build-bases, build-and-push, build-and-push-derived]
     permissions:
       contents: write
