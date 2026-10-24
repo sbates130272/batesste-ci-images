@@ -34,9 +34,14 @@ ARG ROCJITSU_LOG_GROUPS=OFF
 # ceiling -- and that is a config field, not a flag, so the only way to ship a
 # large-BAR device is to rewrite it before the image is sealed. `max` is the
 # largest power of two within the modelled device's own memory, which is what
-# rocjitsu's two startup warnings bound it to; `keep` leaves upstream's value
-# for a build that wants to reproduce the small-BAR behaviour.
-ARG ROCJITSU_VRAM_APERTURE_BYTES=max
+# rocjitsu's two startup warnings bound it to.
+#
+# Defaults to `keep` -- upstream's value, untouched -- because the guest side
+# cannot place a 256 GiB BAR yet: behind qemu-tool's pcie-root-port, with no
+# raised phys-bits and no pci-hole64-size, the guest fails to assign BAR0 and
+# BAR2 both and is left with no VRAM window at all. Opt in only where QEMU is
+# driven by hand. See the README.
+ARG ROCJITSU_VRAM_APERTURE_BYTES=keep
 
 # Optional, and empty by default: build against a libvfio-user of our choosing
 # instead of the one emulation/rocjitsu/cmake/rj_libvfio_user.cmake pins
@@ -224,6 +229,12 @@ ENV ROCJITSU_CONFIG_PATH=${ROCJITSU_CONFIG_DIR}/${ROCJITSU_CONFIG}
 # Asserted after the fact, against the file, because every failure mode here is
 # quiet: a renamed key would leave a JSON document that still parses, still
 # serves, and still has a 256 MiB BAR.
+#
+# The readback tolerates an absent pci block, which is the common case now that
+# the default is `keep`: gfx1250_mi455x.json is the only profile upstream gives
+# one, so repointing ROCJITSU_CONFIG anywhere else leaves nothing to read and 0
+# is what the schema means by it -- an implementation-chosen window of at most
+# 256 MiB.
 COPY ubuntu-rocm-rocjitsu/rocjitsu-vram-aperture.py \
      /usr/local/bin/rocjitsu_vram_aperture.py
 RUN set -eu; \
@@ -232,7 +243,7 @@ RUN set -eu; \
         --config "${ROCJITSU_CONFIG_PATH}" \
         --bytes "${ROCJITSU_VRAM_APERTURE_BYTES}"; \
     aperture=$(python3 -c \
-        'import json,sys;print(json.load(open(sys.argv[1]))["vm"]["gpu"]["pci"]["vram_aperture_bytes"])' \
+        'import json,sys;print(json.load(open(sys.argv[1]))["vm"]["gpu"].get("pci",{}).get("vram_aperture_bytes",0))' \
         "${ROCJITSU_CONFIG_PATH}"); \
     if [ "${ROCJITSU_VRAM_APERTURE_BYTES}" = max ]; then \
         mem=$(python3 -c \

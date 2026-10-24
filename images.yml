@@ -504,23 +504,28 @@ images:
         env: ROCM_ROCJITSU_CONFIG
       # The BAR0 window the vfio-user front end advertises, written into the
       # served config at build time. Upstream ships 268435456 -- 256 MiB, the
-      # small-BAR ceiling -- so without this a guest sees a 256 MiB window onto
-      # a 432 GiB device and pages the rest through the GART.
+      # small-BAR ceiling -- and `keep` leaves that alone.
       #
       # `max` resolves to the largest power of two within the modelled device's
       # own vm.gpu.device.local_mem_size, which is 256 GiB for this profile.
       # Those are rocjitsu's own two bounds and it only warns about them, so
       # the resolution and the assertions live in the Dockerfile rather than a
       # number being restated here -- a renamed profile with different memory
-      # gets the right window without an edit. `keep` reproduces upstream's
-      # small BAR; an explicit power-of-two byte count is also accepted.
+      # gets the right window without an edit. An explicit power-of-two byte
+      # count is also accepted.
       #
-      # Nothing is needed on the QEMU side: q35 sizes its 64-bit PCI hole
-      # around the BARs the device advertises, and a guest attached to a
-      # default build maps the window at 0x4000000000 with no pci-hole64-size
-      # set. Measured, not assumed -- see the README.
+      # Defaulted to `keep`, not `max`, because a large BAR this stack cannot
+      # place is worse than no large BAR. qemu-tool puts the device behind a
+      # pcie-root-port and emits neither a raised phys-bits nor a
+      # pci-hole64-size, so a guest attached to a 256 GiB build fails to assign
+      # BAR0 *and* BAR2 and ends up with no VRAM window at all, where the
+      # shipped 256 MiB assigns cleanly. Measured in a booted guest; the table
+      # and the two options qemu-tool would need are in the image README.
+      #
+      # Large BAR is a P2P DMA concern rather than a prerequisite: gfx1250
+      # agents enumerate and run on the 256 MiB aperture.
       rocjitsu_vram_aperture:
-        value: max
+        value: keep
         env: ROCM_ROCJITSU_VRAM_APERTURE
       # Empty means "whatever emulation/rocjitsu/cmake/rj_libvfio_user.cmake
       # pins", which is nutanix/libvfio-user at v0.8. The sbates-fork variant

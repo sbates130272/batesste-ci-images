@@ -266,17 +266,20 @@ Dockerfile.
 
 ## Large BAR
 
-The image ships the served device with a 256 GiB VRAM BAR. Upstream ships it
-at 268435456 -- 256 MiB, the small-BAR ceiling -- so a guest saw a 256 MiB
-window onto a 432 GiB device and paged everything else through the GART.
+The image can serve the device with a 256 GiB VRAM BAR instead of upstream's
+268435456 -- 256 MiB, the small-BAR ceiling. **It does not do so by default,
+and you should not turn it on without reading the guest-side section below:**
+on the QEMU command line this stack actually uses, a 256 GiB BAR is worse than
+no change at all, because the guest fails to place it and ends up with no VRAM
+window whatsoever.
 
 It is a config field and nothing else: `vm.gpu.pci.vram_aperture_bytes` in
 `gfx1250_mi455x.json`. There is no CLI flag and no environment variable
 rocjitsu reads instead, which is why the only place this can be set is in the
 image, before it is sealed. `rocjitsu_vram_aperture` in
-[`images.yml`](../images.yml) is the knob; it defaults to `max`, takes `keep`
-to reproduce upstream's small BAR, and takes an explicit power-of-two byte
-count.
+[`images.yml`](../images.yml) is the knob; it defaults to `keep`, which leaves
+upstream's value untouched, and takes `max` or an explicit power-of-two byte
+count to raise it.
 
 `max` is the largest power of two that is not larger than the profile's own
 `vm.gpu.device.local_mem_size` -- 256 GiB against this profile's 432 GiB --
@@ -293,26 +296,48 @@ Both of those are warnings, not errors -- the device still serves -- so the
 build-time probe fails on any line mentioning `aperture`, and the resolved byte
 count is written into `rocjitsu-build.json` and
 `/usr/local/share/rocjitsu-vram-aperture.txt`. The `…rocjitsu.vram-aperture`
-label carries what was asked for, which is `max` on a default build.
+label carries what was asked for, which is `keep` on a default build.
 
-No QEMU-side change is needed to place it. q35 sizes its own 64-bit PCI hole
-around the BARs the device advertises, so `info pci` against a guest attached
-to this image reports, with no `pci-hole64-size` set and nothing else changed:
+### Why it is off by default
+
+A BAR the server advertises is not a BAR the guest can use, and on the command
+line `qemu-tool` builds today it cannot. The device sits behind a
+`pcie-root-port`, so BAR0 and BAR2 share one bridge window of 256 GiB + 2 MiB,
+and the guest kernel has nowhere to put it:
 
 ```text
-Class 4608: PCI device 1002:75c1
-  BAR0: 64 bit prefetchable memory at 0x4000000000 [0x7fffffffff]
-  BAR2: 64 bit prefetchable memory at 0x8000000000 [0x80001fffff]
+pci 0000:00:02.0: bridge window [mem size 0x4000200000 64bit pref]: can't assign; no space
+pci 0000:01:00.0: BAR 0 [mem size 0x4000000000 64bit pref]: failed to assign
+pci 0000:01:00.0: BAR 2 [mem size 0x00200000 64bit pref]: failed to assign
 ```
 
-which is the 256 GiB VRAM window followed by the 2 MiB doorbell -- both
-mapped, where the small-BAR build left BAR2 unmapped. Setting
-`pci-hole64-size` explicitly changes neither line; what it does have is a
-ceiling, because the default `qemu64` CPU model has 40 physical address bits
-and a 1T hole is refused outright with `phys-bits too low (40)`.
+Both 64-bit BARs are then unassigned and `lspci` shows only the two 32-bit
+ones. Measured in a booted guest against this image, all four cases:
 
-vfio-user P2P DMA is a separate matter and still needs the fork QEMU image
-rather than the stock one.
+| `vram_aperture_bytes` | QEMU options | Guest result |
+| --- | --- | --- |
+| 256 MiB (upstream) | none | BAR0 `[256M]` + BAR2 `[2M]` assigned, 0 failures |
+| 256 GiB | none | both fail to assign, 12 failures |
+| 256 GiB | `pci-hole64-size=512G` | both fail to assign |
+| 256 GiB | `phys-bits=41` + `pci-hole64-size=512G` | BAR0 `[256G]` + BAR2 `[2M]`, 0 failures |
+
+`qemu-tool` emits `-cpu EPYC`, which gives the guest 40 physical address bits,
+and no `pci-hole64-size`, which leaves q35 on its 32 GiB default. Raising only
+the hole does not help -- at 40 phys-bits its maximum is 512G, since `1T` is
+refused outright with `phys-bits too low (40)` -- so both have to move
+together, and `qemu-tool` exposes neither. Until it does, `max` produces an
+image whose device a guest is strictly worse off attached to.
+
+So raise this only if you are driving QEMU yourself and can set both. Making
+it usable through the normal path needs two new `qemu-tool run-vm` options --
+one for the guest's physical address bits, one for the q35 64-bit PCI hole --
+and ideally for it to size both from the BARs the attached vfio-user devices
+advertise, since it already knows the socket list.
+
+Note also that large BAR is a P2P DMA concern rather than a prerequisite for
+ordinary use: gfx1250 agents enumerate and run fine on the shipped 256 MiB
+aperture. vfio-user P2P DMA additionally needs the fork QEMU image rather than
+the stock one.
 
 ### Why only one profile gets this
 
