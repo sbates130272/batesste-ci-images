@@ -286,3 +286,12 @@ CMake's
 repoint
 eventfd
 Repin
+BARs
+GPUs
+TiB
+prefetchable
+hardcoded
+configs
+nutanix
+QEMU's
+upstream's

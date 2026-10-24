@@ -39,12 +39,11 @@ params=(
   vramlimit=1024
 )
 
-# modprobe is a no-op on a resident module: it returns 0 without re-inserting,
-# so every parameter above is discarded in silence.  That is exactly what
-# happens when a stale initramfs loaded amdgpu during boot.  Compare what is
-# live against what we asked for and say so, rather than exiting 0 having done
-# nothing.
-if [ -d /sys/module/amdgpu ]; then
+# What is live against what we asked for.  Sets "mismatch" and nothing else, so
+# both the probe below and --status read the same parameter list; the login
+# hint in /etc/update-motd.d calls --status rather than restating any of it,
+# which is the whole reason this is a function.
+collect_mismatch() {
   mismatch=()
   for kv in "${params[@]}"; do
     name=${kv%%=*}
@@ -58,6 +57,63 @@ if [ -d /sys/module/amdgpu ]; then
       mismatch+=("$name: want $want, live $live")
     fi
   done
+}
+
+# Is an emulated accelerator actually on the bus?  Read from sysfs rather than
+# lspci, which is a package this guest is not guaranteed to carry.  0x1002 is
+# AMD and 0x1200xx is "processing accelerator", which is the class rocjitsu's
+# PciDeviceInfo defaults to and the one amdgpu's PCI table matches on.
+device_present() {
+  local dev vendor class
+  for dev in /sys/bus/pci/devices/*; do
+    if [ ! -r "${dev}/vendor" ] || [ ! -r "${dev}/class" ]; then
+      continue
+    fi
+    read -r vendor < "${dev}/vendor" || continue
+    [ "${vendor}" = "0x1002" ] || continue
+    read -r class < "${dev}/class" || continue
+    case "${class}" in
+      0x1200*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# Report state and do nothing else.  One word on stdout, always exit 0: the
+# caller is a motd script, and a login is not a thing to fail over a GPU.
+#
+#   absent    no emulated accelerator on the bus -- nothing to probe
+#   ready     device present, amdgpu not loaded -- the probe is the next step
+#   loaded    amdgpu loaded with these parameters -- nothing to do
+#   stranded  amdgpu loaded with different ones -- costs a reboot to leave
+if [ "${1:-}" = "--status" ]; then
+  if [ -d /sys/module/amdgpu ]; then
+    collect_mismatch
+    if [ ${#mismatch[@]} -eq 0 ]; then
+      echo loaded
+    else
+      echo stranded
+    fi
+  elif device_present; then
+    echo ready
+  else
+    echo absent
+  fi
+  exit 0
+fi
+
+if [ $# -gt 0 ]; then
+  echo "usage: $0 [--status]" >&2
+  exit 2
+fi
+
+# modprobe is a no-op on a resident module: it returns 0 without re-inserting,
+# so every parameter above is discarded in silence.  That is exactly what
+# happens when a stale initramfs loaded amdgpu during boot.  Compare what is
+# live against what we asked for and say so, rather than exiting 0 having done
+# nothing.
+if [ -d /sys/module/amdgpu ]; then
+  collect_mismatch
 
   if [ ${#mismatch[@]} -eq 0 ]; then
     echo "amdgpu already loaded with the emulation parameters."

@@ -607,6 +607,27 @@ sudo usermod -aG render,video "${USERNAME}"
 sudo install -m 0755 /tmp/payload/amdgpu-probe /usr/local/bin/amdgpu-probe
 bash -n /usr/local/bin/amdgpu-probe
 
+# And a login hint, because "offered, not imposed" has a cost: the probe is a
+# step people forget, and a guest that has not had it looks like a guest whose
+# GPU is broken.  This prints only when there is something to say -- device on
+# the bus and amdgpu not loaded, or amdgpu loaded with the wrong parameters --
+# and nothing at all otherwise, so a guest booted without a device is silent.
+#
+# It reads its state from "amdgpu-probe --status" rather than restating any of
+# the parameters, so the two cannot drift.  Still not automation: see the note
+# in the file for why a systemd unit cannot do this safely.
+#
+# No dot in the installed name: run-parts, which is what pam_motd runs over
+# /etc/update-motd.d, skips files whose names contain one.
+sudo install -m 0755 /tmp/payload/amdgpu-probe-motd \
+    /etc/update-motd.d/99-amdgpu-probe
+sh -n /etc/update-motd.d/99-amdgpu-probe
+# Prove it runs and says nothing here: this is the probe-persist boot, where
+# the device is absent and amdgpu is blacklisted, so "absent" is the only
+# correct answer and any output at all would mean the detection is wrong.
+test "$(/usr/local/bin/amdgpu-probe --status)" = absent
+test -z "$(sudo /etc/update-motd.d/99-amdgpu-probe)"
+
 # fio with the libhipfile ioengine, so a consumer can measure GPU-side I/O
 # against an emulated NVMe controller from inside the guest.
 #
