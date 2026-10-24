@@ -72,13 +72,24 @@ purge_installed() {
 # cannot rebuild anyway, having no compiler and no headers after section 3.
 #
 # Both the module and the source have to survive purging amdgpu-dkms, and
-# neither survives it unaided: the postrm runs "dkms remove", which deletes
-# the module the fat build spent twenty minutes producing, and dpkg owns
-# every file under /usr/src/amdgpu-*, so purging takes the source with it.
-# So both are moved aside first and reinstated afterwards, rather than hoping
-# the postrm leaves them alone.  The source is moved rather than copied --
-# same filesystem, so it is a rename rather than 563 MB of duplication at the
-# exact moment the disk is fullest.
+# neither survives it unaided: the package's maintainer scripts run
+# "dkms remove", which deletes the module the fat build spent twenty minutes
+# producing, and dpkg owns every file under /usr/src/amdgpu-*, so purging
+# takes the source with it.  So both are copied aside first and reinstated
+# afterwards, rather than hoping the purge leaves them alone.
+#
+# Copied and not moved, which matters and is not an optimisation to reclaim:
+# the *prerm* runs "dkms remove" before dpkg deletes anything, and that
+# refuses outright on a tree whose source directory has gone --
+#
+#   Error! amdgpu/7.1.9-2407772.26.04: Missing the module source directory
+#          or the symbolic link pointing to it.  Manual intervention is
+#          required!
+#
+# exiting 4, which fails the purge and the build with it.  The source has to
+# be where dkms expects it until the purge is over.  The 563 MB of transient
+# duplication is free here: the guest disk is 512 GB and the fat image it is
+# trimming uses under 10.
 #
 # Everything below asserts itself: this is the one irreversible step in the
 # trim, and a guest that comes out of it without a loadable patched amdgpu is
@@ -117,7 +128,7 @@ if [ -z "${AMDGPU_SRC}" ] || [ "$(ls -d /usr/src/amdgpu-* | wc -l)" -ne 1 ]; the
     exit 1
 fi
 AMDGPU_SRC_BASENAME=$(basename "${AMDGPU_SRC}")
-sudo mv "${AMDGPU_SRC}" "/var/tmp/slim-save/${AMDGPU_SRC_BASENAME}"
+sudo cp -a "${AMDGPU_SRC}" "/var/tmp/slim-save/${AMDGPU_SRC_BASENAME}"
 echo "saved ${AMDGPU_SRC}"
 
 ${APT} purge -y amdgpu-dkms
