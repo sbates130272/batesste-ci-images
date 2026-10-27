@@ -425,6 +425,10 @@ jobs:
       actions: read
     strategy:
       fail-fast: false
+      # Same starvation guard as build-derived in dockerfile-test.yml: a leg
+      # waiting on its base still owns a runner, so an uncapped derived tier
+      # can take the whole pool and deadlock against the base builds it polls.
+      max-parallel: 2
       matrix:
         target: >-
           ${{

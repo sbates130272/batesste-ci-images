@@ -810,6 +810,15 @@ jobs:
       actions: read
     strategy:
       fail-fast: false
+      # A waiting leg still owns its runner, so an unbounded derived tier can
+      # take the whole concurrency pool and starve the very base builds it is
+      # polling for -- a deadlock the wait step can only resolve by timing out.
+      # Run 40128860848 lost all five guests that way: ubuntu-qemu-libvfio-user
+      # did not get a runner until seven minutes after the last leg gave up.
+      # Capping the tier leaves pool-minus-this slots for the base tier, and
+      # legs held back by the cap are queued rather than running, so they cost
+      # nothing. Keep this comfortably below the account's job concurrency.
+      max-parallel: 2
       matrix:
         target: >-
           ${{
