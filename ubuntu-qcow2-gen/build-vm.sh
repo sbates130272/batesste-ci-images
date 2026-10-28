@@ -1212,6 +1212,36 @@ printf 'PROBE_KERNEL=%s\n' "$(uname -r)"
 printf 'PROBE_KERNELS=%s\n' \
     "$(ls -1 /boot/vmlinuz-* 2>/dev/null | sed 's|.*/vmlinuz-||' |
         sort -V | tr '\n' ',' | sed 's/,$//')"
+# The modules trees and the initramfs images, which go stale independently of
+# the kernel list above and of each other.
+#
+# A modules tree follows its package. An initramfs is *generated* per kernel
+# and then survives until something regenerates or removes it -- so it is the
+# one of the three that can name a kernel that no longer exists anywhere else.
+# That is not hypothetical: the ernic-rocjitsu guest ships
+# /boot/initrd.img-added, 29 MB for a kernel called "added" that was never
+# installed, left behind by an update-initramfs call with a bad -k. No grub
+# entry references it and `update-initramfs -d` will not remove it, because
+# "added" is not a kernel it knows about.
+#
+# Recorded rather than asserted. How many kernels a guest ships is a property
+# of the flavour -- one that pins kernel_ref has two until trim/kernel-only.sh
+# takes one away -- so the manifest states it and a consumer decides.
+printf 'PROBE_MODULES_TREES=%s\n' \
+    "$(find /lib/modules -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null |
+        sort -V | tr '\n' ',' | sed 's/,$//')"
+printf 'PROBE_INITRAMFS=%s\n' \
+    "$(find /boot -maxdepth 1 -name 'initrd.img-*' -printf '%f\n' 2>/dev/null |
+        sed 's|^initrd.img-||' | sort -V | tr '\n' ',' | sed 's/,$//')"
+# An initramfs whose kernel has no modules tree. Nothing regenerates it,
+# nothing boots it, and it is pure disk -- so it is named here rather than
+# left for someone to notice in a du.
+printf 'PROBE_INITRAMFS_ORPHANS=%s\n' \
+    "$(for _i in /boot/initrd.img-*; do
+        [ -e "${_i}" ] || continue
+        _k=${_i#/boot/initrd.img-}
+        [ -d "/lib/modules/${_k}" ] || printf '%s\n' "${_k}"
+    done | sort -V | tr '\n' ',' | sed 's/,$//')"
 # sudo: grub.cfg is mode 600. Without it this reads nothing and the manifest
 # records a default nobody checked.
 # Named for the key it is emitted as, because the pinned-kernel assertion
@@ -1391,7 +1421,14 @@ GUEST_DKMS=$(probe_val PROBE_DKMS)
 GUEST_ROCM_PATH=$(probe_val PROBE_ROCM_PATH)
 GUEST_ROCM_VERSION=$(probe_val PROBE_ROCM_VERSION)
 GUEST_SSH_HOST_KEYS=$(probe_val PROBE_SSH_HOST_KEYS)
+GUEST_MODULES_TREES=$(probe_val PROBE_MODULES_TREES)
+GUEST_INITRAMFS=$(probe_val PROBE_INITRAMFS)
+GUEST_INITRAMFS_ORPHANS=$(probe_val PROBE_INITRAMFS_ORPHANS)
 echo "Guest kernels: ${GUEST_KERNELS}"
+echo "  modules trees: ${GUEST_MODULES_TREES:-none}"
+echo "  initramfs:     ${GUEST_INITRAMFS:-none}"
+[ -z "${GUEST_INITRAMFS_ORPHANS}" ] || \
+    echo "  ORPHANED initramfs (no modules tree): ${GUEST_INITRAMFS_ORPHANS}"
 echo "Grub default: ${GUEST_GRUB_DEFAULT_KERNEL:-<index>} (${GUEST_GRUB_DEFAULT_ID})"
 
 # ";"-and-","-separated on the wire because the probe emits one line per fact;
@@ -1400,6 +1437,9 @@ json_array() {
     printf '%s' "$1" | tr "$2" '\n' | jq -R . | jq -s -c .
 }
 JSON_KERNELS=$(json_array "${GUEST_KERNELS}" ',')
+JSON_MODULES_TREES=$(json_array "${GUEST_MODULES_TREES}" ',')
+JSON_INITRAMFS=$(json_array "${GUEST_INITRAMFS}" ',')
+JSON_INITRAMFS_ORPHANS=$(json_array "${GUEST_INITRAMFS_ORPHANS}" ',')
 JSON_DKMS=$(json_array "${GUEST_DKMS}" ';')
 JSON_SSH_HOST_KEYS=$(json_array "${GUEST_SSH_HOST_KEYS}" ';')
 
@@ -1488,7 +1528,10 @@ cat > /output/vm-info.json <<EOF
     "booted": "${GUEST_KERNEL}",
     "default": "${GUEST_GRUB_DEFAULT_KERNEL}",
     "default_grub_id": "${GUEST_GRUB_DEFAULT_ID}",
-    "installed": ${JSON_KERNELS}
+    "installed": ${JSON_KERNELS},
+    "modules_trees": ${JSON_MODULES_TREES},
+    "initramfs": ${JSON_INITRAMFS},
+    "initramfs_orphans": ${JSON_INITRAMFS_ORPHANS}
   },
   "os": {
     "distribution": "ubuntu",

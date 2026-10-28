@@ -54,6 +54,47 @@ ldconfig -p | grep -q libibverbs
 # symbol table is the only one of the three that answers the question.
 test -s /etc/ionic-srq.json
 python3 -c 'import json; json.load(open("/etc/ionic-srq.json"))'
+
+# (4) the ionic sources were fetched at a ref that matches the kernel they
+# were built against.
+#
+# Validating the stamp as JSON was all this used to do, which meant the two
+# version fields inside it were written, shipped and never read. They drifted:
+# a guest built 2026-10-24 records kernel_ref v7.2.4 against built_for_kernel
+# 7.2.6-070206-generic, because qemu-minimal's ernic-pins.yml still pins
+# ionic_kernel_pin v7.2.4 while this flavour's kernel_ref and rocm-ernic's own
+# IONIC_KERNEL_REF both moved to v7.2.6.
+#
+# major.minor is the contract, not equality: qemu-minimal's driver_ionic.yml
+# compares exactly that, and ionic's in-tree API is stable within a stable
+# series, so 7.2.4 sources against a 7.2.6 kernel do build and do work. That
+# is also why nothing caught the drift -- the guard that exists passes.
+#
+# So fail on the contract and say the rest out loud. A point-release gap is
+# not a defect, but it is the shape of one, and it is invisible unless
+# something prints it.
+python3 - <<'PY'
+import json, os, sys
+s = json.load(open("/etc/ionic-srq.json"))
+src = str(s.get("kernel_ref", "")).lstrip("v")
+built = str(s.get("built_for_kernel", ""))
+if not src or not built:
+    sys.exit("ERROR: /etc/ionic-srq.json has no kernel_ref/built_for_kernel")
+mm = lambda v: ".".join(v.split("-")[0].split(".")[:2])
+if mm(src) != mm(built):
+    sys.exit(
+        f"ERROR: ionic sources at v{src} were built against {built}; "
+        f"driver_ionic.yml requires the major.minor to agree"
+    )
+if src.split("-")[0] != built.split("-")[0]:
+    print(
+        f"note: ionic sources are v{src} but the kernel is {built} -- same "
+        f"series, different point release. Bump ionic_kernel_pin in "
+        f"qemu-minimal's ansible/playbooks/vars/ernic-pins.yml to close it."
+    )
+print(f"ionic: sources v{src}, built for {built}")
+PY
+
 IONIC_KO=$(modinfo -n ionic_rdma)
 case "${IONIC_KO}" in
     */updates/dkms/*) ;;

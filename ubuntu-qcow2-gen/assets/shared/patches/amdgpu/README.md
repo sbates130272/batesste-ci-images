@@ -1,26 +1,30 @@
-# amdgpu DKMS patches for the `ernic-rocjitsu` guest flavour
+# amdgpu DKMS patches for the rocjitsu guest flavours
 
-`provision/ernic-rocjitsu.sh` applies these with `patch -p1` against the
-amdgpu DKMS tree (`/usr/src/amdgpu-7.1.9-*`) before building it for the
-mainline 7.2.4 kernel the flavour boots. They are applied in sorted order,
-after the KFD atomics patch the provision script carries inline.
+Applied with `patch -p1` against the amdgpu DKMS tree
+(`/usr/src/amdgpu-7.1.9-*`) before it is built, in sorted order, after the KFD
+atomics patch the provision scripts carry inline.
 
-`checks/ernic-rocjitsu.sh` greps the installed source for a marker from each
-one, so a driver bump that silently drops a hunk fails the image build rather
-than the consumer's job.
+Every flavour that builds a DKMS amdgpu to run under rocjitsu gets all of
+them. `provision/rocjitsu.sh` and `provision/ernic-rocjitsu.sh` each read
+`/tmp/payload/patches/amdgpu/`, and the Dockerfile grafts this directory onto
+both payloads -- see the `COPY ... assets/shared/patches/` lines there.
 
-They arrived here from hipObject's `ci/ernic/patches/amdgpu/`, where they were
-scp'd into the guest at job time. That directory and the workflow step that
-used it go away once this flavour is published.
+They live here rather than under one flavour because a patch applied to one
+guest and not the other is a driver that oopses in only one of them, which is
+the hardest kind of difference to find. `0001` and `0002` were under
+`assets/ernic-rocjitsu/` until 2026-10-28, when the `rocjitsu` flavour moved
+to the same mainline 7.2.6 kernel and needed the same series.
 
-`0003` is **not in this directory**. It lives in
-[`assets/shared/patches/amdgpu/`](../../../shared/README.md) and is copied into
-both this flavour's payload and the `rocjitsu` flavour's by the Dockerfile,
-because it is needed by any guest that runs a DKMS amdgpu under rocjitsu and a
-patch applied to one guest and not the other is a driver that oopses in only
-one lane. It is still documented below, and it still arrives at
-`/tmp/payload/patches/amdgpu/0003-…` with the same name and number — nothing in
-the provision script changes.
+  * `0001` -- the unreviewed KFD ptrace gate, needed from 7.2.
+  * `0002` -- probe `panel_type` separately in the amdkcl configure tests.
+  * `0003` -- guard the RAS VBIOS query. rocjitsu serves no option ROM
+    (`rombar=0`), so `adev->mode_info.atom_context` is NULL and the unguarded
+    query oopses in `amdgpu_atom_parse_data_header`. Needed on every kernel,
+    not just 7.2.
+
+`checks/rocjitsu.sh` and `checks/ernic-rocjitsu.sh` grep the installed source
+for a marker from each one, so a driver bump that silently drops a hunk fails
+the image build rather than the consumer's job.
 
 ## `0001-amdkfd-fail-closed-ptrace-gate-7.2` — **unreviewed**
 

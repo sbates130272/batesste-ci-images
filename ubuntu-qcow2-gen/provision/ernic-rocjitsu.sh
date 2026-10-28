@@ -358,6 +358,57 @@ find "${DESTDIR}" -name 'amdgpu.ko*' -delete
 HOOK
 sudo chmod 0755 /etc/initramfs-tools/hooks/amdgpu-exclude
 
+# The same treatment for the *stock* ionic, for a different reason.
+#
+# amdgpu is excluded because it must not autoload. ionic is excluded because
+# the copy the initramfs would carry is the wrong one, and carrying it breaks
+# ionic_rdma outright.
+#
+# The ionic-ernic DKMS package builds a patched pair -- ionic and ionic_rdma
+# together -- into updates/dkms/ and displaces the in-tree modules, so on the
+# rootfs there is nothing to get wrong:
+#
+#   $ cat /lib/modules/<k>/modules.dep | grep ionic
+#   updates/dkms/ionic_rdma.ko.zst: updates/dkms/ionic.ko.zst kernel/.../ib_core.ko.zst
+#   updates/dkms/ionic.ko.zst:
+#
+#   $ ls /lib/modules/<k>/kernel/drivers/net/ethernet/pensando/ionic/
+#   (empty -- DKMS took it)
+#
+# The initramfs is the exception. MODULES=most sweeps every network driver in
+# at image-build time, and the copy it took is the stock in-tree one from
+# before DKMS displaced it -- a module at a path that no longer exists on the
+# rootfs, with a different srcversion (4C88CEF... against the DKMS build's
+# 451442B...). The initramfs runs before any of the above is consulted, so
+# that stale ionic is resident first, and ionic_rdma -- compiled against the
+# patched one -- then fails to load on a symbol version mismatch.
+#
+# This is why the symptom reads as "the in-tree ionic is winning" when nothing
+# on the rootfs could produce that, and why neither `depmod -a` nor an
+# /etc/modules-load.d/ entry fixes it: depmod has already run and is correct,
+# and modules-load.d runs after the initramfs has done the damage.
+#
+# Dropping it is safe: root is on virtio, the emulated NIC is not a boot
+# device, and nothing in the initramfs needs it. The DKMS pair then loads from
+# the rootfs, where modules.dep already points at both halves.
+sudo tee /etc/initramfs-tools/hooks/ionic-exclude > /dev/null <<'HOOK'
+#!/bin/sh
+PREREQ=""
+prereqs() { echo "${PREREQ}"; }
+case "${1}" in prereqs) prereqs; exit 0 ;; esac
+[ -n "${DESTDIR}" ] || exit 0
+# Queue first, staging tree second -- see the amdgpu-exclude hook beside this
+# one for why both are needed and why a find alone achieves nothing.
+if [ -n "${__MODULES_TO_ADD:-}" ] && [ -f "${__MODULES_TO_ADD}" ]; then
+    grep -vxE 'ionic|ionic_rdma' "${__MODULES_TO_ADD}" \
+        > "${__MODULES_TO_ADD}.keep" || true
+    mv "${__MODULES_TO_ADD}.keep" "${__MODULES_TO_ADD}"
+fi
+find "${DESTDIR}" -name 'ionic.ko*' -delete
+find "${DESTDIR}" -name 'ionic_rdma.ko*' -delete
+HOOK
+sudo chmod 0755 /etc/initramfs-tools/hooks/ionic-exclude
+
 # amdgpu-dkms, installed for its *source* -- the postinst's own build cannot
 # succeed here.  It builds the unpatched tree against the 7.2.4 headers, that
 # fails, and without this the failure propagates through run-parts into dpkg
@@ -509,6 +560,19 @@ for img in /boot/initrd.img-*; do
         echo "ERROR: amdgpu.ko is present in ${img}" >&2
         echo "       the initramfs exclude hook did not take; see the note" >&2
         echo "       beside /etc/initramfs-tools/hooks/amdgpu-exclude" >&2
+        exit 1
+    fi
+    # Same assert for ionic, and it is the more important of the two: a stale
+    # ionic here is not a tidiness problem, it is ionic_rdma failing to load
+    # in the consumer's guest with a symbol version mismatch and nothing in
+    # the message naming the initramfs.
+    if lsinitramfs "${img}" | grep -qE '(^|/)ionic(_rdma)?\.ko(\.[a-z]+)?$'; then
+        echo "ERROR: ionic.ko or ionic_rdma.ko is present in ${img}" >&2
+        echo "       the initramfs would load the stock in-tree module before" >&2
+        echo "       the DKMS pair on the rootfs, and ionic_rdma would then" >&2
+        echo "       fail on a symbol version mismatch. See the note beside" >&2
+        echo "       /etc/initramfs-tools/hooks/ionic-exclude" >&2
+        lsinitramfs "${img}" | grep -E 'ionic' >&2 || true
         exit 1
     fi
 done

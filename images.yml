@@ -505,16 +505,16 @@ images:
       # The BAR0 window the vfio-user front end advertises, written into the
       # served config at build time.
       #
-      # `keep` leaves alone whatever the profile carries, and since rocjitsu
-      # 392e4f4 that is *nothing*: gfx1250_mi455x.json used to state
-      # `pci.vram_aperture_bytes: 268435456` and the key was dropped as
-      # redundant once 256 MiB became the built-in default. The window is
-      # unchanged -- config/pci_device_config.h defaults the field to 0, which
-      # it documents as "the largest power of two within 256 MiB and within
-      # local memory" -- but the number is now implied rather than shipped. So
-      # under `keep` the readback below records 0, not 268435456, and the
-      # rocjitsu.vram-aperture label says `keep` either way. Do not read that 0
-      # as "no aperture".
+      # `keep` leaves alone whatever the profile carries, and at the pinned
+      # commit that is *nothing*. gfx1250_mi455x.json used to state
+      # `pci.vram_aperture_bytes: 268435456` -- 256 MiB, the small-BAR ceiling
+      # -- and upstream 392e4f4 dropped the key as redundant, because
+      # config/pci_device_config.h defaults the field to 0 and documents 0 as
+      # "the largest power of two within 256 MiB and within local memory".
+      #
+      # Same aperture, implied rather than shipped. So the readback below
+      # records 0, not 268435456, while the rocjitsu.vram-aperture label still
+      # says `keep`. Do not read that 0 as "no aperture".
       #
       # `max` resolves to the largest power of two within the modelled device's
       # own vm.gpu.device.local_mem_size, which is 256 GiB for this profile.
@@ -1091,6 +1091,20 @@ images:
           vm_packages: ionic.txt
           probe_ssh_port: 2223
           kernel_ref: v7.2.6
+          # This flavour installs no amdgpu at all -- provision/ionic.sh does
+          # not mention it, and there is no GPU in an ionic guest to drive.
+          # Stated rather than inherited: the default is "latest", and a
+          # flavour that silently carried it advertised an amdgpu driver
+          # version it never installs. `none` is the value the amdgpu tree
+          # check in version-scrub.sh already skips on.
+          amdgpu_driver_version: "none"
+          # One kernel in the image, not two. Every flavour that pins
+          # kernel_ref installs it beside the cloud image's own, and grub is
+          # pinned to the right one -- but the other still costs ~368 MB of
+          # modules, headers, vmlinuz and a 64 MB initramfs nobody boots, and
+          # it is the thing a broken grub pin would fall back to. See
+          # trim/kernel-only.sh.
+          trim: kernel-only.sh
           rdma_core_version: "61.0"
         # rocm-ernic's two-VM job still copies the scratch payload image with
         # skopeo rather than pulling the artifact, and pins a dated tag to do
@@ -1170,15 +1184,32 @@ images:
           vm_packages: rocjitsu.txt
           probe_ssh_port: 2224
           release: resolute
-          # No kernel_ref: this flavour runs the release's own 7.0 kernel,
-          # which is what amdgpu-dkms 7.1.9 builds against unaided. Pinning it
-          # to mainline 7.2.x was tried and reverted -- it needs the 7.2 amdgpu
-          # patch series, and with that in place the build still ended with
-          # amdgpu.ko in the initramfs, which the assert in provisioning
-          # correctly refuses to ship. Reinstating it means solving that first;
-          # see the note beside the exclude hook.
+          # Mainline v7.2.6, the same kernel the ionic and ernic-rocjitsu
+          # flavours pin.
+          #
+          # This ran the release's own 7.0 kernel until 2026-10-28. Moving it
+          # to 7.2.x had been tried and reverted once, for two reasons, and
+          # both are now answered by ernic-rocjitsu, which has been shipping
+          # 7.2.6 with this same amdgpu 31.60 and this same provision recipe:
+          #
+          #   * "it needs the 7.2 amdgpu patch series" -- it does, and that
+          #     series (0001, 0002) now lives in assets/shared/patches/amdgpu/
+          #     rather than under assets/ernic-rocjitsu/, so the Dockerfile
+          #     grafts it onto this flavour's payload too.
+          #   * "the build still ended with amdgpu.ko in the initramfs" --
+          #     provision/rocjitsu.sh grew the same amdgpu-exclude hook its
+          #     sibling has, and the shipped ernic-rocjitsu initramfs carries
+          #     no amdgpu.ko. Verified by reading one.
+          kernel_ref: v7.2.6
           amdgpu_driver_version: "31.60"
           guest_rocm_version: "10.1"
+          # One kernel in the image, not two. Every flavour that pins
+          # kernel_ref installs it beside the cloud image's own, and grub is
+          # pinned to the right one -- but the other still costs ~368 MB of
+          # modules, headers, vmlinuz and a 64 MB initramfs nobody boots, and
+          # it is the thing a broken grub pin would fall back to. See
+          # trim/kernel-only.sh.
+          trim: kernel-only.sh
           fio_commit: "d2dcd7e053d1902d2420f151c83990e6acdd9f8c"
 
       # Both devices in one guest, for hipObject's ernic-rocjitsu-gpu lane: an
@@ -1239,6 +1270,14 @@ images:
           # provider, because the kernel half alone advertises an SRQ that
           # ibv_create_srq() then refuses with EOPNOTSUPP.
           post_playbook: vm-ernic-srq.yml
+          # Leaves one kernel installed, and nothing else: the toolchain, the
+          # headers and the DKMS trees all stay, because the jobs that consume
+          # this flavour build ionic-ernic in-guest. Only the release's own
+          # 7.0.x kernel goes -- 368 MB of image, and with it the one thing
+          # the three pinned-kernel assertions in build-vm.sh exist to catch.
+          # Not slim.sh, which also takes the compiler; see that file's
+          # header for why these are separate.
+          trim: kernel-only.sh
           probe_ssh_port: 2225
           release: resolute
           kernel_ref: v7.2.6

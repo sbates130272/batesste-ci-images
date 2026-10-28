@@ -113,8 +113,26 @@ dkms status amdgpu | grep -q '^amdgpu'
 grep -q 'amdgpu_emu_mode == 1' \
     /usr/src/amdgpu-*/amd/amdkfd/kfd_device.c
 
-# The RAS vbios guard: rocjitsu serves no option ROM, so atom_context is NULL
-# and the unguarded query oopses in amdgpu_atom_parse_data_header on probe.
+# The rest of the series, now that this flavour boots mainline 7.2.6 and takes
+# the same assets/shared/patches/amdgpu/ as ernic-rocjitsu. One marker per
+# patch, so a driver bump that silently drops a hunk fails here rather than in
+# a consumer's job. Kept identical to the block in checks/ernic-rocjitsu.sh --
+# the two guests build the same driver from the same patches, and a check that
+# covered one and not the other is the drift these patches were moved to
+# shared/ to prevent.
+#
+# 0001, the unreviewed KFD ptrace gate; needed from 7.2.
+grep -q 'KERNEL_VERSION(7, 2, 0)' \
+    /usr/src/amdgpu-*/amd/amdkfd/kfd_process_queue_manager.c
+# 0002, the panel_type probes.
+grep -q 'AC_AMDGPU_DRM_DISPLAY_INFO_PANEL_TYPE' \
+    /usr/src/amdgpu-*/amd/dkms/m4/drm-display-info.m4
+grep -q 'AC_AMDGPU_DRM_MODE_PANEL_TYPE_LCD' \
+    /usr/src/amdgpu-*/amd/dkms/m4/drm-display-info.m4
+grep -q 'HAVE_DRM_DISPLAY_INFO_PANEL_TYPE' \
+    /usr/src/amdgpu-*/amd/display/amdgpu_dm/amdgpu_dm_connector.c
+# 0003, the RAS vbios guard: rocjitsu serves no option ROM, so atom_context is
+# NULL and the unguarded query oopses in amdgpu_atom_parse_data_header on probe.
 grep -q 'adev->mode_info.atom_context' \
     /usr/src/amdgpu-*/amd/amdgpu/amdgpu_ras.c
 

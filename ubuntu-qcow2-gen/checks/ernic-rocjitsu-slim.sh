@@ -51,6 +51,33 @@ ldconfig -p | grep -q libibverbs
 # compiler still existed -- and this asserts what survived it.
 test -s /etc/ionic-srq.json
 python3 -c 'import json; json.load(open("/etc/ionic-srq.json"))'
+
+# The same source-ref-against-kernel assertion the fat flavour makes, for the
+# same reason and with the same contract; see checks/ernic-rocjitsu.sh for
+# why major.minor is the bar and a point-release gap is only a note. Repeated
+# rather than shared because these two files are deliberately standalone --
+# the slim guest has no compiler and asserts what survived its trim.
+python3 - <<'PY'
+import json, sys
+s = json.load(open("/etc/ionic-srq.json"))
+src = str(s.get("kernel_ref", "")).lstrip("v")
+built = str(s.get("built_for_kernel", ""))
+if not src or not built:
+    sys.exit("ERROR: /etc/ionic-srq.json has no kernel_ref/built_for_kernel")
+mm = lambda v: ".".join(v.split("-")[0].split(".")[:2])
+if mm(src) != mm(built):
+    sys.exit(
+        f"ERROR: ionic sources at v{src} were built against {built}; "
+        f"driver_ionic.yml requires the major.minor to agree"
+    )
+if src.split("-")[0] != built.split("-")[0]:
+    print(
+        f"note: ionic sources are v{src} but the kernel is {built} -- same "
+        f"series, different point release."
+    )
+print(f"ionic: sources v{src}, built for {built}")
+PY
+
 IONIC_KO=$(modinfo -n ionic_rdma)
 case "${IONIC_KO}" in
     */updates/dkms/*) ;;

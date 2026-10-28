@@ -30,6 +30,24 @@ RUN git clone --filter=blob:none \
         > /build/rocm-ernic-commit.txt
 
 # Build rocm-ernic
+#
+# ERNIC_BUILD_P4=ON is off in upstream's CMakeLists, and its stated reason --
+# "it takes a direct dependency on json-c, which a superproject building
+# rocm-ernic should not have to satisfy unasked" -- does not apply here: the
+# base image already carries libjson-c-dev, because libvfio-user requires it.
+# So the engine costs this image nothing it was not already paying for.
+#
+# Building it is not the same as running it. The P4 match-action pipeline sits
+# between the guest's Ethernet queues and the host backend and is inert until
+# the server is started with --p4 or --p4-program; a stack that passes neither
+# gets byte-identical behaviour to a build without this flag. What the flag
+# buys is that `rocm-ernic --p4-program ...` is available at all, rather than
+# needing a rebuild the first time someone wants to load a program.
+#
+# A program the engine will not run stops the server starting, by upstream's
+# design -- a bad program is a startup failure, never a silently inert
+# pipeline -- so nothing here can degrade into "P4 looked enabled and did
+# nothing".
 RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     cmake \
     -B /build/rocm-ernic/build \
@@ -39,11 +57,19 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/usr/local \
+    -DERNIC_BUILD_P4=ON \
     -DERNIC_WERROR=OFF && \
     cmake --build /build/rocm-ernic/build \
           --parallel "$(nproc)" && \
     cmake --install /build/rocm-ernic/build && \
     ldconfig
+
+# Prove the engine is actually in the binary, because a cmake option that
+# silently did nothing -- renamed upstream, or gated on something else -- would
+# leave a server that refuses --p4 at the moment someone needs it, in a stack
+# that has already booted a guest. --help lists the flag only when the engine
+# is compiled in.
+RUN rocm-ernic --help 2>&1 | grep -q -- '--p4-program'
 
 # Save installed binary path and commit info
 # (libvfio-user-commit.txt is already in place, written by the base image)

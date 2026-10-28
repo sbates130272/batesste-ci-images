@@ -98,6 +98,34 @@ RUN git init /build/rocm-systems && \
 # CMAKE_CXX_FLAGS, never the C compile of lib/*.c, so it cannot collide with
 # glibc's own static_assert macro either way.
 #
+# -Wno-error=free-nonheap-object is for upstream's fuzz targets, not for ours.
+#
+# rocjitsu's CMakeLists adds fuzz/{decode,code_object,execution,multiplexer}
+# with bare add_subdirectory() calls -- no option gates them, and the
+# -DBUILD_TESTING=OFF above gates only tests/ -- so they are part of every
+# build whether or not anything here fuzzes. rj_configure_target() then
+# hardcodes -Wall -Wextra -Wpedantic -Werror with no toggle, and at -O3 GCC 14
+# raises a false positive inside std::vector::push_back in
+# execution_fuzz_core.cpp:
+#
+#   new_allocator.h:172:33: error: 'void operator delete(void*, std::size_t)'
+#   called on pointer '<unknown>' with nonzero offset [1, 1024]
+#   ...inlined from rocjitsu::execution_fuzz::random_input(...)
+#
+# which fails the whole build at [747/760]. Seen on 73c3cf3; the fuzzers landed
+# 2026-10-22/23 and nothing upstream has touched them since.
+#
+# -Wno-error= and not -Wno-: a plain -Wno-free-nonheap-object here would be
+# re-enabled by the -Wall that rj_configure_target appends afterwards, because
+# GCC applies warning *enablement* in order. The error/warning classification
+# is a separate per-warning table that a later blanket -Werror does not reset,
+# so demoting it to a warning survives where disabling it would not.
+#
+# Narrow on purpose: one warning, still reported, still visible in the log.
+# Upstream has taken this shape of fix twice before (0644784 for GCC 15,
+# e36e73e for a false-positive maybe-uninitialized), so this should be
+# removable once they do it again.
+#
 # FETCHCONTENT_SOURCE_DIR_LIBVFIO-USER is CMake's documented per-dependency
 # override: FetchContent upper-cases the declared name (`libvfio-user`) and
 # consults this variable before downloading, so a non-empty value makes it use
@@ -115,7 +143,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
-    "-DCMAKE_CXX_FLAGS=-D_Static_assert=static_assert" \
+    "-DCMAKE_CXX_FLAGS=-D_Static_assert=static_assert -Wno-error=free-nonheap-object" \
     "-DCMAKE_SHARED_LINKER_FLAGS=-static-libstdc++" \
     "-DCMAKE_EXE_LINKER_FLAGS=-static-libstdc++" \
     -DCMAKE_INSTALL_PREFIX=/usr/local \

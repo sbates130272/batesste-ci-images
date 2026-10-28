@@ -3194,6 +3194,67 @@ class StatusRow:
     job: str
     description: str
     repo: str
+    stack: str
+
+
+# What a guest's row reports beyond its description: the three pins a consumer
+# has to match something against. They are read per target rather than stated
+# once because the flavours pin them separately on purpose -- the ionic and
+# ernic-rocjitsu kernels are equal today only because all three were moved to
+# v7.2.6 together, and nothing asserts they stay that way.
+STACK_VARS = (
+    ("kernel", "kernel_ref"),
+    ("amdgpu", "amdgpu_driver_version"),
+    ("rocm", "guest_rocm_version"),
+)
+
+
+def status_stack(cfg: Config, target: Target) -> str:
+    """What a row reports beyond its description.
+
+    For a qcow2, the kernel / amdgpu-dkms / ROCm triple. A guest that leaves
+    one unset -- the plain ubuntu-qcow2-gen runs the release's own kernel, and
+    the ionic flavour installs no amdgpu -- says so rather than showing a
+    blank, because blank reads as "not checked" where "release" and "none" are
+    real answers.
+
+    For a vfio-user device server, the BAR it advertises. That is the one
+    number a consumer has to know before deciding whether peer-to-peer DMA is
+    available to a guest: a 256 MiB BAR0 is the small-BAR ceiling and P2P DMA
+    needs the whole of VRAM to be addressable. Reported here rather than left
+    to the image's labels because a BAR that silently shrinks is invisible --
+    the guest still enumerates, still runs, and only P2P stops working.
+    """
+
+    values = resolve_vars(cfg, target)
+    aperture = str(values.get("rocjitsu_vram_aperture", "") or "").strip()
+    if aperture:
+        return f"BAR0 `{aperture}`{'' if aperture == 'max' else ' (small BAR)'}"
+    # Only a guest reports the triple. Every other container would otherwise
+    # report `kernel release`, because kernel_ref is empty for an image that
+    # has no kernel at all and the empty default reads as "the release's own".
+    # That default is right for a qcow2 and meaningless for a container.
+    if not publishes_artifact(cfg, target):
+        return ""
+    parts = []
+    for label, var in STACK_VARS:
+        raw = str(values.get(var, "") or "").strip()
+        if var == "kernel_ref":
+            # The kernel line says what the guest *boots*, which is a grub
+            # question, not a package one: a flavour that pins kernel_ref
+            # installs that kernel beside the cloud image's own and build-vm.sh
+            # pins GRUB_DEFAULT to a menuentry id. Saying "boots" here rather
+            # than naming the pin is the honest summary -- and the manifest's
+            # kernels.default / default_grub_id, read back out of the guest's
+            # own grub.cfg, are what prove it for a given image.
+            raw = raw or "release"
+            trimmed = " (sole kernel)" if values.get("trim") else ""
+            parts.append(f"boots `{raw}`{trimmed}")
+            continue
+        if not raw or raw == "none":
+            continue
+        parts.append(f"{label} `{raw}`")
+    return "<br>".join(parts)
 
 
 def status_description(cfg: Config, target: Target) -> str:
@@ -3232,6 +3293,7 @@ def status_table_rows(cfg: Config) -> list[StatusRow]:
             job=f"Build {t.key}",
             description=status_description(cfg, t),
             repo=repo_name(cfg, t),
+            stack=status_stack(cfg, t),
         )
         if str(target_attr(cfg, t, "job", "matrix")) == "bases":
             # By image, not by target: a variant built in this job shares its
@@ -3285,8 +3347,8 @@ def render_status_block(cfg: Config) -> str:
         "",
         f"**Build by artifact on `{STATUS_BRANCH}`** (container and qcow2)",
         "",
-        "| Artifact | What It Is | Published As | Main Status |",
-        "| --- | --- | --- | --- |",
+        "| Artifact | What It Is | Guest Stack / BAR | Published As | Main Status |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for row in status_table_rows(cfg):
         tag = (
@@ -3305,7 +3367,12 @@ def render_status_block(cfg: Config) -> str:
         # page -- so one link shape serves the whole table.
         pub = f"[`{row.repo}`](https://hub.docker.com/r/{user}/{row.repo})"
         badge = f"[![{name} {STATUS_BRANCH}]({img})]({link})"
-        out.append(f"| {tag} {row.label} | {row.description} | {pub} | {badge} |")
+        # An em dash, not an empty cell: a container has no guest stack, which
+        # is a different statement from "nobody filled this in".
+        stack = row.stack or "&mdash;"
+        out.append(
+            f"| {tag} {row.label} | {row.description} | {stack} | {pub} | {badge} |"
+        )
     out += ["", STATUS_END]
     return "\n".join(out)
 
