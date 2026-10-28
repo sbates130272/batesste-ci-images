@@ -76,7 +76,7 @@ env:
 jobs:
   discover-images:
     name: Discover Images
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       targets: ${{ steps.find-images.outputs.targets }}
       keys: ${{ steps.find-images.outputs.keys }}
@@ -177,7 +177,7 @@ jobs:
   # with the runner, so the jobs below rebuild them rather than consume these.
   build-bases:
     name: Build Base Images
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -261,7 +261,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.target.key }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [discover-images, build-bases]
     # An empty matrix is a hard error ("Matrix vector 'target' does not
     # contain any values"), not an empty job, so a branch that touches only
@@ -789,7 +789,7 @@ jobs:
 
   build-derived:
     name: Build ${{ matrix.target.key }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Deliberately *not* `needs: build`. A derived target consumes exactly one
     # base, named in its own matrix.target.base_scope, but a job-level `needs`
     # cannot say "only that leg" -- so waiting on the whole matrix meant every
@@ -810,6 +810,15 @@ jobs:
       actions: read
     strategy:
       fail-fast: false
+      # A waiting leg still owns its runner, so an unbounded derived tier can
+      # take the whole concurrency pool and starve the very base builds it is
+      # polling for -- a deadlock the wait step can only resolve by timing out.
+      # Run 40128860848 lost all five guests that way: ubuntu-qemu-libvfio-user
+      # did not get a runner until seven minutes after the last leg gave up.
+      # Capping the tier leaves pool-minus-this slots for the base tier, and
+      # legs held back by the cap are queued rather than running, so they cost
+      # nothing. Keep this comfortably below the account's job concurrency.
+      max-parallel: 2
       matrix:
         target: >-
           ${{
@@ -1345,7 +1354,7 @@ jobs:
 
   test-compose:
     name: Test Docker Compose Stack
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [discover-images, build-bases, build, build-derived]
     # The guest comes from the derived tier and the three containers from the
     # matrix tier, so this reads both key lists. Checking ubuntu-qcow2-gen
@@ -1571,3 +1580,103 @@ jobs:
           docker compose \
             -f compose/docker-compose.yml \
             down -v
+
+  publish-build-status:
+    name: Publish Build Status
+    runs-on: ubuntu-24.04
+    needs: [discover-images, build-bases, build, build-derived]
+    permissions:
+      contents: write
+      # To read this run's own job list: the conclusions the badges report are
+      # not available to a job any other way.
+      actions: read
+    # Not `success()`. A run where one image fails is exactly the run whose
+    # table has something to say, and gating on overall success would leave
+    # the failing artifact showing its last green badge. !cancelled() keeps the
+    # one case worth suppressing: a cancelled run can have jobs that never
+    # reached a conclusion, and cancel-in-progress above makes those common on
+    # a branch being pushed to repeatedly.
+    #
+    # main only, and push only. The table is explicitly branch=main&event=push
+    # (STATUS_BRANCH / STATUS_EVENT in ci-images-tool.py); publishing from a PR
+    # would overwrite the branch's answer with a feature branch's.
+    if: >-
+      !cancelled() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v7
+
+      # --paginate because the matrix tiers put this run well over the 30-job
+      # default page, and a short read would silently publish "no run" for
+      # every artifact that fell off the end.
+      - name: Collect job conclusions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api \
+            --paginate \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" \
+            --jq '.jobs[]' \
+            | jq -s '{jobs: .}' > /tmp/jobs.json
+          jq -r '.jobs[] | select(.name | startswith("Build ")) |
+                 "\(.conclusion // .status)\t\(.name)"' /tmp/jobs.json
+
+      - name: Publish to gh-pages
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          set -euo pipefail
+
+          # Same orphan-aware clone as the perf lane: gh-pages may not exist
+          # yet, and the history of a generated site is not worth fetching.
+          if git ls-remote --exit-code --heads origin gh-pages > /dev/null 2>&1; then
+            git clone --depth 1 --branch gh-pages \
+              "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
+              /tmp/gh-pages
+          else
+            git clone --depth 1 \
+              "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
+              /tmp/gh-pages
+            git -C /tmp/gh-pages checkout --orphan gh-pages
+            git -C /tmp/gh-pages rm -rf . > /dev/null 2>&1 || true
+            touch /tmp/gh-pages/.nojekyll
+          fi
+
+          # Up to five attempts, for the same reason the perf lane retries: a
+          # build-status publish and a perf publish can land together, and the
+          # loser rebases onto the winner rather than force-pushing over it.
+          # Re-running the script each attempt is free -- it is a function of
+          # this run's jobs, not of the site's history -- and keeps the retry
+          # identical to the first try.
+          for attempt in 1 2 3 4 5; do
+            python3 scripts/publish-build-status.py \
+              --jobs /tmp/jobs.json \
+              --site /tmp/gh-pages \
+              --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              --sha "${GITHUB_SHA}"
+
+            git -C /tmp/gh-pages add -A
+            if git -C /tmp/gh-pages diff --cached --quiet; then
+              echo "nothing to publish"
+              exit 0
+            fi
+            git -C /tmp/gh-pages commit -m \
+              "builds: status from run ${{ github.run_id }} (${GITHUB_SHA::7})"
+
+            if git -C /tmp/gh-pages push origin gh-pages; then
+              echo "published on attempt ${attempt}"
+              exit 0
+            fi
+
+            echo "push rejected; taking the remote state and retrying"
+            git -C /tmp/gh-pages fetch origin gh-pages
+            git -C /tmp/gh-pages reset --hard FETCH_HEAD
+          done
+
+          echo "::error::could not publish to gh-pages after 5 attempts"
+          exit 1

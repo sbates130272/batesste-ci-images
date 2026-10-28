@@ -328,11 +328,9 @@ refused outright with `phys-bits too low (40)` -- so both have to move
 together, and `qemu-tool` exposes neither. Until it does, `max` produces an
 image whose device a guest is strictly worse off attached to.
 
-So raise this only if you are driving QEMU yourself and can set both. Making
-it usable through the normal path needs two new `qemu-tool run-vm` options --
-one for the guest's physical address bits, one for the q35 64-bit PCI hole --
-and ideally for it to size both from the BARs the attached vfio-user devices
-advertise, since it already knows the socket list.
+So raise this only if you are driving QEMU yourself and can set both. What
+`qemu-tool` would need to grow for the normal path to work is written up in
+[`rocjitsu-large-bar.md`](../rocjitsu-large-bar.md).
 
 Note also that large BAR is a P2P DMA concern rather than a prerequisite for
 ordinary use: gfx1250 agents enumerate and run fine on the shipped 256 MiB
@@ -344,16 +342,10 @@ the stock one.
 Both image variants carry it -- `-sbates-fork` inherits the var -- and the
 window follows whatever `rocjitsu_config` names, computed from that profile's
 own `local_mem_size`, so repointing the var needs no edit. The other 14
-profiles in `configs/` are left alone on purpose:
-
-- `gfx1250_mi455x.json` is the only one upstream gives a `vm.gpu.pci` block at
-  all. The rest model no PCI device, so there is no BAR to size.
-- A block can be added to them and rocjitsu will take it, but every non-120500
-  target then warns `has no IP discovery profile ... a guest driver would find
-  nothing to attach to`. The window would be one no guest can reach.
-- `gfx1250_mi455x_kmd_4gpu.json` is the near miss -- same `gfx_target_version`
-  120500 -- but it exits 1 when served, unmodified and with no aperture set,
-  because it describes four GPUs and this transport presents one function.
+profiles in `configs/` are left alone on purpose: `gfx1250_mi455x.json` is the
+only one upstream gives a `vm.gpu.pci` block, and on the rest the window would
+be one no guest can reach. See
+[`rocjitsu-large-bar.md`](../rocjitsu-large-bar.md) for the per-profile detail.
 
 The helper creates the `pci` block when a config lacks one rather than
 refusing, so repointing `rocjitsu_config` at a profile upstream never gave one
