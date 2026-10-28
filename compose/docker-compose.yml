@@ -1,3 +1,21 @@
+# Capabilities are dropped here but the uid is not pinned, which is the one
+# place this file deliberately diverges from compose/perf-stack.yml and from
+# qemu-minimal's own stacks. Those carry `user: ${CONTAINER_USER:?...}`, and
+# the `:?` is what makes an unset variable an error instead of uid 0. This file
+# is the hand-run smoke test documented below -- `docker compose up` with no
+# preparation beyond extracting a guest -- so requiring two environment
+# variables to start it would cost more than it buys for a stack that opens
+# three sockets. perf-harness.sh resolves them because it is a script and can.
+#
+# Nothing here needs a capability: both device servers open a unix socket on a
+# shared volume, and QEMU's networking is SLIRP, which is userspace. NET_ADMIN
+# was on all three services and was never used by any of them.
+x-hardening: &hardening
+  cap_drop:
+    - ALL
+  security_opt:
+    - "no-new-privileges:true"
+
 services:
   # The qemu image is the toolchain only; it carries no guest. Extract one from
   # a published ubuntu-qcow2-gen payload into compose/vm/ before "up":
@@ -12,9 +30,8 @@ services:
   # Mounted read-write, not :ro -- QEMU opens the qcow2 read-write, so the
   # stack writes back into compose/vm/. Re-extract for a pristine guest.
   qemu:
+    <<: *hardening
     image: batesste-ci-images-ubuntu-qemu-libvfio-user:latest
-    cap_add:
-      - NET_ADMIN
     volumes:
       - vfio-sockets:/tmp/vfio-sockets
       - ./vm:/output
@@ -31,9 +48,8 @@ services:
       - rocm-rocjitsu
 
   rocm-ernic:
+    <<: *hardening
     image: batesste-ci-images-ubuntu-rocm-ernic:latest
-    cap_add:
-      - NET_ADMIN
     volumes:
       - vfio-sockets:/tmp/vfio-sockets
     command:
@@ -46,9 +62,8 @@ services:
       - qemu
 
   rocm-rocjitsu:
+    <<: *hardening
     image: batesste-ci-images-ubuntu-rocm-rocjitsu:latest
-    cap_add:
-      - NET_ADMIN
     volumes:
       - vfio-sockets:/tmp/vfio-sockets
     # gfx1250 is the only target with an IP discovery profile upstream, so it is

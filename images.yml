@@ -79,7 +79,7 @@ defaults:
   # Shared by more than one image, so they cannot be owned by any single one.
   vars:
     libvfio_user_repo: https://gitlab.com/qemu-project/libvfio-user.git
-    libvfio_user_commit: 803924493a7c787b2ba358751f55f07d5dba64b2
+    libvfio_user_commit: 5b9c7220647e45a0bbfc2a22bef05bbfd56e5742
     # The Ubuntu cloud image every guest qcow2 is built from. Ubuntu 26.04 LTS
     # "resolute" ships Linux 7.0. This chooses the *userspace* only: the guest
     # kernel is whatever the release ships unless the flavour sets kernel_ref,
@@ -342,7 +342,7 @@ images:
       # still records the resolved commit in nixl-commit.txt for provenance.
       # version-scrub.sh advances this to the newest stable tag and ignores
       # -rc ones.
-      nixl_tag: "v1.5.0"
+      nixl_tag: "v1.5.1"
       # UCX is built from source rather than apt: the packaged build has no
       # ROCm transport, so it cannot register HIP memory.
       #
@@ -354,7 +354,7 @@ images:
       # whichever branch ucx_branch names.
       ucx_repo: https://github.com/openucx/ucx.git
       ucx_branch: v1.23.x
-      ucx_commit: 8094f699daa0d53ea84d11b6cefd7dffa9c9eb46
+      ucx_commit: e3d43d2cf01f15a7f66a90ca4432a03b8a342034
       etcd_repo: https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git
       etcd_commit: 7c6e714f188f9576e25e0350cac4181139eec23e
       # Abseil and gRPC are built from source because Ubuntu's libgrpc++-dev
@@ -405,7 +405,7 @@ images:
     base: ubuntu-libvfio-user
     artifact: true
     vars:
-      rocm_ernic_commit: 151379b0184b917d18ce367c40942aa5d663e696
+      rocm_ernic_commit: 670248907aefd612e1c52a6e5987e1f9d3b32c2f
     build_args:
       ROCM_ERNIC_COMMIT: "{rocm_ernic_commit}"
     # This image links against libvfio-user, so that pin belongs in the tag:
@@ -477,7 +477,7 @@ images:
       # over a thousand commits ahead of it. Pinning the tag would drop the
       # capability this image exists for.
       rocjitsu_commit:
-        value: 98f6a72dcc49a5f809593deacbe5c9df89cde3b3
+        value: 73c3cf3da4bf65a06bc41421bbd65d5e13baadaf
         env: ROCM_ROCJITSU_COMMIT
       # Compile-time log groups (emulation/rocjitsu/cmake/rj_log.cmake): OFF,
       # ALL, a comma-separated subset of VM, CP, DBT_HOOKS, PLUGINS, DRIVER, or
@@ -503,8 +503,18 @@ images:
         value: gfx1250_mi455x.json
         env: ROCM_ROCJITSU_CONFIG
       # The BAR0 window the vfio-user front end advertises, written into the
-      # served config at build time. Upstream ships 268435456 -- 256 MiB, the
-      # small-BAR ceiling -- and `keep` leaves that alone.
+      # served config at build time.
+      #
+      # `keep` leaves alone whatever the profile carries, and since rocjitsu
+      # 392e4f4 that is *nothing*: gfx1250_mi455x.json used to state
+      # `pci.vram_aperture_bytes: 268435456` and the key was dropped as
+      # redundant once 256 MiB became the built-in default. The window is
+      # unchanged -- config/pci_device_config.h defaults the field to 0, which
+      # it documents as "the largest power of two within 256 MiB and within
+      # local memory" -- but the number is now implied rather than shipped. So
+      # under `keep` the readback below records 0, not 268435456, and the
+      # rocjitsu.vram-aperture label says `keep` either way. Do not read that 0
+      # as "no aperture".
       #
       # `max` resolves to the largest power of two within the modelled device's
       # own vm.gpu.device.local_mem_size, which is 256 GiB for this profile.
@@ -519,7 +529,7 @@ images:
       # pcie-root-port and emits neither a raised phys-bits nor a
       # pci-hole64-size, so a guest attached to a 256 GiB build fails to assign
       # BAR0 *and* BAR2 and ends up with no VRAM window at all, where the
-      # shipped 256 MiB assigns cleanly. Measured in a booted guest; the table
+      # default 256 MiB assigns cleanly. Measured in a booted guest; the table
       # and the two options qemu-tool would need are in the image README.
       #
       # Large BAR is a P2P DMA concern rather than a prerequisite: gfx1250
@@ -746,9 +756,9 @@ images:
     artifact: true
     vars:
       qemu_repo: https://gitlab.com/qemu-project/qemu.git
-      # A release tag (e.g. v11.1.2) or a commit hash; tags are typically
+      # A release tag (e.g. v11.1.3) or a commit hash; tags are typically
       # stable but not as strictly immutable as a full SHA.
-      qemu_commit: v11.1.2
+      qemu_commit: v11.1.3
       # Where the qemu-tool CLI is installed from, and -- inherited by
       # ubuntu-qcow2-gen -- the ansible/ tree its guest builds are driven by, so
       # the CLI and the playbooks always come from one commit.

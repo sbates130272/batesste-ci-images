@@ -297,3 +297,9 @@ configs
 nutanix
 QEMU's
 upstream's
+dkms
+linux
+mmio
+nvcc
+toolkits
+unmerged

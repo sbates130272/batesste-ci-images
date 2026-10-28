@@ -16,7 +16,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     libcmocka-dev
 
 ARG LIBVFIO_USER_REPO=https://gitlab.com/qemu-project/libvfio-user.git
-ARG LIBVFIO_USER_COMMIT=323f4cb6cddc3713fb7aebe44436f28b28b5413a
+ARG LIBVFIO_USER_COMMIT=5b9c7220647e45a0bbfc2a22bef05bbfd56e5742
 ARG CACHE_BUST=
 
 RUN echo "Cache bust: ${CACHE_BUST:-none}" > /tmp/libvfio_user_cache_bust.txt

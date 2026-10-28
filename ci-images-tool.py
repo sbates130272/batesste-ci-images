@@ -25,7 +25,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -3181,43 +3181,80 @@ def _github_slug(cfg: Config) -> str:
     return slug
 
 
-def status_table_rows(cfg: Config) -> list[tuple[str, str, str]]:
-    """``(kind, label, job)`` per README row, in catalogue order.
+@dataclass(frozen=True)
+class StatusRow:
+    """One row of the README's build-status table.
 
-    The bases job builds two targets at once and so collapses to a single row;
-    everything else is one row per target, named by the repository it
-    publishes to rather than by its target key, because the repository is what
-    a reader is looking for.
+    ``job`` is the Actions job name, which is also what names the gh-pages
+    badge file; everything else is what the row says about the artifact.
     """
 
-    rows: list[tuple[str, str, str]] = []
-    bases: list[str] = []
+    kind: str
+    label: str
+    job: str
+    description: str
+    repo: str
+
+
+def status_description(cfg: Config, target: Target) -> str:
+    """``image_description`` made safe for a Markdown table cell.
+
+    The same sentence the OCI label and the Docker Hub page carry, so a reader
+    who meets an image in any of the three places gets one answer. Escaped
+    rather than rewritten: a literal ``|`` would silently end the column and
+    shift every cell after it.
+    """
+
+    return image_description(cfg, target).replace("|", "\\|")
+
+
+def status_table_rows(cfg: Config) -> list[StatusRow]:
+    """One README row per artifact, in catalogue order.
+
+    Named by the repository each target publishes to rather than by its target
+    key, because the repository is what a reader is looking for.
+
+    The bases are built by one shared job, so their rows carry the same badge.
+    They are still one row each: they are two different images with two
+    different descriptions and two different repositories, and collapsing them
+    into ``ubuntu-base + ubuntu-libvfio-user`` left the table unable to say
+    what either one actually is.
+    """
+
+    rows: list[StatusRow] = []
+    base_rows: list[StatusRow] = []
+    seen_bases: set[str] = set()
     for t in discover_targets(cfg):
         kind = "qcow2" if publish_mode(cfg, t) == "artifact" else "container"
+        row = StatusRow(
+            kind=kind,
+            label=target_scope(cfg, t),
+            job=f"Build {t.key}",
+            description=status_description(cfg, t),
+            repo=repo_name(cfg, t),
+        )
         if str(target_attr(cfg, t, "job", "matrix")) == "bases":
             # By image, not by target: a variant built in this job shares its
             # base's directory, which is what put ubuntu-libvfio-user in the
             # label twice once the fork variant arrived.
-            if t.image not in bases:
-                bases.append(t.image)
+            if t.image in seen_bases:
+                continue
+            seen_bases.add(t.image)
+            base_rows.append(
+                replace(
+                    row,
+                    label=f"{t.image} (shared base job)",
+                    job=STATUS_BASES_JOB,
+                )
+            )
             continue
-        label = target_scope(cfg, t)
         # A variant's repository name does not say which job builds it, so
         # spell the target key out too.
         if t.variant:
-            label = f"{label} (job: {t.key})"
-        rows.append((kind, label, f"Build {t.key}"))
+            row = replace(row, label=f"{row.label} (job: {t.key})")
+        rows.append(row)
 
-    if bases:
-        rows.insert(
-            0,
-            (
-                "container",
-                f"{' + '.join(bases)} (shared base job)",
-                STATUS_BASES_JOB,
-            ),
-        )
-    return rows
+    return base_rows + rows
 
 
 def status_badge_slug(job: str) -> str:
@@ -3241,24 +3278,34 @@ def render_status_block(cfg: Config) -> str:
     owner, _, repo = slug.partition("/")
     site = f"https://{owner}.github.io/{repo}"
 
+    user = cfg.registry_username or _github_slug(cfg).partition("/")[0]
+
     out = [
         STATUS_BEGIN,
         "",
         f"**Build by artifact on `{STATUS_BRANCH}`** (container and qcow2)",
         "",
-        "| Artifact | main |",
-        "| --- | --- |",
+        "| Artifact | What It Is | Published As | Main Status |",
+        "| --- | --- | --- | --- |",
     ]
-    for kind, label, job in status_table_rows(cfg):
-        tag = f"![{kind}](https://img.shields.io/badge/type-{kind}-{kinds[kind]})"
+    for row in status_table_rows(cfg):
+        tag = (
+            f"![{row.kind}]"
+            f"(https://img.shields.io/badge/type-{row.kind}-{kinds[row.kind]})"
+        )
         # shields' `endpoint` type, not its `github/actions/workflow/status`
         # one: the latter accepts a `job` parameter and ignores it, so every
         # row of this table reported the whole workflow's conclusion. These
         # files are published per job by the Dockerfile Test lane.
-        endpoint = f"{site}/builds/badge-{status_badge_slug(job)}.json"
+        endpoint = f"{site}/builds/badge-{status_badge_slug(row.job)}.json"
         img = f"https://img.shields.io/endpoint?url={quote(endpoint, safe='')}"
-        name = label.split(" (")[0]
-        out.append(f"| {tag} {label} | [![{name} {STATUS_BRANCH}]({img})]({link}) |")
+        name = row.label.split(" (")[0]
+        # Both kinds land in the same Docker Hub namespace -- a qcow2 goes up
+        # as an ORAS artifact, not an OCI image, but it still has a repository
+        # page -- so one link shape serves the whole table.
+        pub = f"[`{row.repo}`](https://hub.docker.com/r/{user}/{row.repo})"
+        badge = f"[![{name} {STATUS_BRANCH}]({img})]({link})"
+        out.append(f"| {tag} {row.label} | {row.description} | {pub} | {badge} |")
     out += ["", STATUS_END]
     return "\n".join(out)
 

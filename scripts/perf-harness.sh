@@ -305,11 +305,35 @@ extract_payload() {
               -o LogLevel=ERROR)
 }
 
+# Who the stack's containers run as. Every service in perf-stack.yml carries
+# `user: ${CONTAINER_USER:?...}`, so these are not optional -- compose refuses
+# to start with them unset rather than silently running the stack as root,
+# which is the whole point of the `:?` form there.
+#
+# The kvm gid is separate because a container given --user <uid>:<gid> holds no
+# supplementary groups, and /dev/kvm is crw-rw---- root:kvm. On a runner with
+# no kvm group at all there is nothing to join and nothing to run: fail here,
+# naming the reason, rather than thirty minutes later inside a guest that
+# fell back to TCG.
+container_identity() {
+    CONTAINER_USER="$(id -u):$(id -g)"
+    CONTAINER_KVM_GID=$(getent group kvm | cut -d: -f3)
+    [ -n "${CONTAINER_KVM_GID}" ] \
+        || fail "no kvm group on this host; the qemu service cannot reach /dev/kvm"
+    # Root is still root, and on a GitHub-hosted runner that is what we get.
+    # Said out loud so a stack running privileged is a line in the log rather
+    # than an assumption.
+    [ "$(id -u)" -eq 0 ] && log "running the stack as root (uid 0)"
+    return 0
+}
+
 # The .env compose reads. Rewritten between phases: which guest boots, which
 # backend the ernic server serves and how many NVMe namespaces exist are all
 # phase decisions.
 write_env() {
     cat > "${OUT}/.env" <<EOF
+CONTAINER_USER=${CONTAINER_USER}
+CONTAINER_KVM_GID=${CONTAINER_KVM_GID}
 QEMU_IMAGE=${QEMU_IMAGE}
 ERNIC_IMAGE=${ERNIC_IMAGE}
 ROCJITSU_IMAGE=${ROCJITSU_IMAGE}
@@ -377,6 +401,11 @@ start_guest() {
     BOOT_SECONDS=$(( $(date +%s) - start ))
     log "guest up after ${BOOT_SECONDS}s"
 }
+
+# Resolved once, here rather than in preflight: the function is defined above
+# this point and not above line 228, and both phases' write_env read what it
+# sets.
+container_identity
 
 trap teardown EXIT
 
@@ -870,10 +899,22 @@ measure_s3() {
             "the ernic image ships no s3_rdma_client.c; rebuild it"
         return 0
     fi
+    # The client includes parse_int.h, which upstream keeps under src/ rather
+    # than beside it in tests/. Missing it is a compile error in the guest, not
+    # a link error here, so treat it the same way as a missing client: say what
+    # is wrong and skip, rather than letting cc report it 20 lines later.
+    local hdr="${OUT}/parse_int.h"
+    if ! docker cp "${cid}:/usr/local/share/rocm-ernic/parse_int.h" "${hdr}" 2>/dev/null; then
+        docker rm -f "${cid}" > /dev/null
+        record_metric ernic_s3_get_GBs skip GB/s "" \
+            "the ernic image ships no parse_int.h; rebuild it"
+        return 0
+    fi
     docker cp "${cid}:/usr/local/share/rocm-ernic-commit.txt" "${OUT}/ernic-commit.txt" \
         > /dev/null 2>&1 || true
     docker rm -f "${cid}" > /dev/null
     to_guest "${src}" /tmp/s3_rdma_client.c
+    to_guest "${hdr}" /tmp/parse_int.h
 
     log "S3 over RDMA: functional checks and the size sweep"
     if guest_env_sh "S3_DEV=${rdma_dev}" "S3_ADDR=${S3_ADDR}" \

@@ -5,9 +5,9 @@ FROM ${BASE_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive
 
 ARG NIXL_REPO=https://github.com/ai-dynamo/nixl.git
-ARG NIXL_TAG=v1.5.0
+ARG NIXL_TAG=v1.5.1
 ARG UCX_REPO=https://github.com/openucx/ucx.git
-ARG UCX_COMMIT=8094f699daa0d53ea84d11b6cefd7dffa9c9eb46
+ARG UCX_COMMIT=e3d43d2cf01f15a7f66a90ca4432a03b8a342034
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \

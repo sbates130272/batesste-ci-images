@@ -49,6 +49,24 @@ x-vfu-server: &vfu-server
   # means a re-run of the harness gets a clean server rather than a stale
   # socket, and qemu's depends_on waits for the new one.
   restart: on-failure
+  # One uid for both device servers and the guest. rocjitsu does not chmod its
+  # vfio-user socket, so it stays 0755 owned by its creator and connect(2)
+  # needs write on the inode: a qemu on a different uid cannot attach the GPU
+  # at all. rocm-ernic hides this by chmodding its own to 0666; do not
+  # generalise from it.
+  #
+  # `:?` and not `:-`. An unset variable interpolates to empty, `user: ":"` is
+  # not an error to Docker, and the container then runs as uid 0 -- so a
+  # default here would quietly undo the thing this line is for. The harness
+  # sets both vars; `qemu-tool compose` fills them in from the caller.
+  user: "${CONTAINER_USER:?set CONTAINER_USER=<uid>:<gid>}"
+  # Both servers open a unix socket on a tmpfs volume and need no capability
+  # at all. Docker nonetheless grants CHOWN, DAC_OVERRIDE, SETUID, NET_RAW and
+  # ten more by default, which is a default rather than a decision.
+  cap_drop:
+    - ALL
+  security_opt:
+    - "no-new-privileges:true"
 
 services:
   ernic:
@@ -103,6 +121,21 @@ services:
       - "${VM_IMAGES_DIR:?VM_IMAGES_DIR must be set}:${VM_IMAGES_DIR}"
     devices:
       - /dev/kvm
+    # Inherits neither anchor, so it repeats the uid the device servers take.
+    # See the x-vfu-server comment for why the two cannot diverge.
+    user: "${CONTAINER_USER:?set CONTAINER_USER=<uid>:<gid>}"
+    # A container given --user <uid>:<gid> holds no supplementary groups, and
+    # /dev/kvm is crw-rw---- root:kvm, so without this the guest falls back off
+    # KVM -- or fails outright, since run-vm is passed --kvm. The caller has to
+    # be in that group on the host too.
+    group_add:
+      - "${CONTAINER_KVM_GID:?set CONTAINER_KVM_GID to the host kvm gid}"
+    # QEMU configures no network here (SLIRP is userspace), makes no device
+    # nodes, and binds only 2222.
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     # The vfio-user servers reach guest RAM through a shared memfd, so the
     # container's /dev/shm has to be at least as large as the guest.
     shm_size: "${VM_SHM_SIZE:-12g}"

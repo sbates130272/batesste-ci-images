@@ -171,12 +171,37 @@ LIBVFIO_CURRENT=$(current_pin ubuntu-libvfio-user libvfio_user_commit)
 echo "    current: $LIBVFIO_CURRENT  latest: $LIBVFIO_LATEST"
 if check_nonempty "$LIBVFIO_LATEST" "libvfio-user HEAD" && [[ "$LIBVFIO_CURRENT" != "$LIBVFIO_LATEST" ]]; then
     replace_in_yaml "$LIBVFIO_CURRENT" "$LIBVFIO_LATEST"
-    replace_in_files "$LIBVFIO_CURRENT" "$LIBVFIO_LATEST" \
-        "$REPO_ROOT/ubuntu-rocm-ernic/Dockerfile" \
-        "$REPO_ROOT/ubuntu-qemu-libvfio-user/Dockerfile"
+    # ubuntu-libvfio-user is the only Dockerfile here that clones libvfio-user,
+    # so it is the only one with an ARG to keep in step. This named the ernic
+    # and qemu Dockerfiles instead -- both consume the built base image and
+    # have never had the ARG -- so the scrub warned on every bump that two
+    # files it could not have updated had drifted, while the one file that
+    # really had drifted went unmentioned and sat at 323f4cb for months.
+    replace_arg_default LIBVFIO_USER_COMMIT "$LIBVFIO_LATEST" \
+        "$REPO_ROOT/ubuntu-libvfio-user/Dockerfile"
 fi
 
 echo "==> Fetching latest qemu-minimal HEAD..."
+# Reported, not rewritten -- as with rocjitsu, the therock lines and the amdgpu
+# trees below.
+#
+# This pin decides more than which qemu-tool the image carries. ubuntu-qcow2-gen
+# inherits it for the ansible/ tree its guest builds are driven by, and the
+# ernic flavours' post_playbook reaches rocm-ernic's ansible collection through
+# *qemu-minimal's* requirements.yml -- a pin this repo deliberately does not
+# hold. So moving qemu-minimal moves the guest half of SRQ, while the server
+# half moves with rocm_ernic_commit above. Upstream's own requirements.yml
+# spells out what a mismatch costs: ibv_create_srq() fails, UCX declines
+# rc_verbs, and NIXL falls back to TCP -- silently, as a throughput number
+# rather than an error.
+#
+# Held at c079195 as of 2026-10-28 pending a three-repo sequence: rocm-ernic
+# packages its guest half, then qemu-minimal repins onto that, then this moves.
+# An auto-bump here would jump the queue on every scrub run, including CI's,
+# which is how it came to be written into images.yml once already.
+#
+# To lift the hold: take the bump by hand and turn this block back into a
+# replace_in_yaml call.
 QEMU_MINIMAL_LATEST=$(gh_curl \
     "https://api.github.com/repos/sbates130272/qemu-minimal/commits/main" \
     | jq -r '.sha')
@@ -184,7 +209,9 @@ QEMU_MINIMAL_CURRENT=$(current_pin ubuntu-qemu-libvfio-user qemu_minimal_commit)
 echo "    current: $QEMU_MINIMAL_CURRENT  latest: $QEMU_MINIMAL_LATEST"
 if check_nonempty "$QEMU_MINIMAL_LATEST" "qemu-minimal HEAD" \
     && [[ "$QEMU_MINIMAL_CURRENT" != "$QEMU_MINIMAL_LATEST" ]]; then
-    replace_in_yaml "$QEMU_MINIMAL_CURRENT" "$QEMU_MINIMAL_LATEST"
+    echo "    note: main has moved to ${QEMU_MINIMAL_LATEST:0:7}. Held" \
+         "deliberately -- the guest half of SRQ moves with it. See the" \
+         "comment above before bumping."
 fi
 
 echo "==> Fetching latest ROCM_ERNIC HEAD..."
