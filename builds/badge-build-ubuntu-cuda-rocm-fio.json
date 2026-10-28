@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "label": "ubuntu-cuda-rocm-fio",
+  "message": "passing",
+  "color": "brightgreen"
+}

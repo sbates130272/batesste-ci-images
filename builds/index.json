@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "generated": "2026-10-28T18:14:59.003265+00:00",
+  "run_url": "https://github.com/sbates130272/batesste-ci-images/actions/runs/40714897906",
+  "sha": "07e937bd34ed75784f6c58bc22c703c761392db8",
+  "badges": [
+    "build-base-images",
+    "build-ubuntu-cuda-rocm",
+    "build-ubuntu-cuda-rocm-fio",
+    "build-ubuntu-cuda-rocm-fio-async-hipfile",
+    "build-ubuntu-kernel-build",
+    "build-ubuntu-qcow2-gen",
+    "build-ubuntu-qcow2-gen-ernic-rocjitsu",
+    "build-ubuntu-qcow2-gen-ernic-rocjitsu-slim",
+    "build-ubuntu-qcow2-gen-ionic",
+    "build-ubuntu-qcow2-gen-rocjitsu",
+    "build-ubuntu-qemu-libvfio-user",
+    "build-ubuntu-qemu-libvfio-user-sbates-fork",
+    "build-ubuntu-rocm-ernic",
+    "build-ubuntu-rocm-ernic-sbates-fork",
+    "build-ubuntu-rocm-nixl",
+    "build-ubuntu-rocm-rocjitsu",
+    "build-ubuntu-rocm-rocjitsu-sbates-fork",
+    "build-ubuntu-spdk-libvfio-user",
+    "build-ubuntu-spdk-libvfio-user-sbates-fork"
+  ]
+}

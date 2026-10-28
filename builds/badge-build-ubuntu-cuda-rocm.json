@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "label": "ubuntu-cuda-rocm",
+  "message": "passing",
+  "color": "brightgreen"
+}

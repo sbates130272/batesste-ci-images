@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "label": "ubuntu-cuda-rocm-fio@async-hipfile",
+  "message": "passing",
+  "color": "brightgreen"
+}
