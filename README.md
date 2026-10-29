@@ -49,7 +49,7 @@ independently.
 **Pinned Commits**
 
 [![libvfio-user 5b9c722](https://img.shields.io/badge/libvfio--user-5b9c722-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/5b9c7220647e45a0bbfc2a22bef05bbfd56e5742)
-[![qemu-minimal 333246f](https://img.shields.io/badge/qemu--minimal-333246f-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/333246f4e240d628d2f89090cd52fb17908ab3e6)
+[![qemu-minimal 15a9b83](https://img.shields.io/badge/qemu--minimal-15a9b83-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/15a9b834aaed877e504672ae438a7236a8da4ff2)
 [![rocm-ernic 8f35f4a](https://img.shields.io/badge/rocm--ernic-8f35f4a-006F62)](https://github.com/ROCm/rocm-ernic/commit/8f35f4a8ae1c3de5330805ebb92f58596d9519a2)
 [![rocjitsu 73c3cf3](https://img.shields.io/badge/rocjitsu-73c3cf3-006F62)](https://github.com/ROCm/rocm-systems/commit/73c3cf3da4bf65a06bc41421bbd65d5e13baadaf)
 [![spdk 18d1d8d](https://img.shields.io/badge/spdk-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
