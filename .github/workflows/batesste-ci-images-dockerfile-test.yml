@@ -238,6 +238,20 @@ jobs:
               && format('type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref={0}:ubuntu-base', env.CACHE_REGISTRY)
               || '' }}
 
+      # ci-images-tool.py imports the docker SDK at module scope, so the
+      # build-args call below needs the requirements even though it only
+      # reads images.yml. This job had no Python at all -- it builds two
+      # images and nothing else -- which is why the first attempt at passing
+      # the pins died on ModuleNotFoundError rather than on a wrong value.
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install tool dependencies
+        run: pip install -r requirements.txt
+
       # The pins the Dockerfile needs, asked of images.yml rather than
       # repeated here -- the same `build-args` subcommand the matrix job uses
       # below. This step is not optional: ubuntu-libvfio-user's ARGs carry no
