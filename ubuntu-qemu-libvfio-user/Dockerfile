@@ -39,7 +39,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 # Accept QEMU tags or commit SHAs
 ARG QEMU_REPO=https://gitlab.com/qemu-project/qemu.git
-ARG QEMU_COMMIT=v11.1.1
+ARG QEMU_COMMIT
+
+# The pin(s) above carry no default on purpose -- images.yml is the only place
+# a pin is written. See "Why the Dockerfiles have no pin defaults" in the
+# README. An undefaulted ARG is empty rather than an error, so this asserts.
+RUN : "${QEMU_COMMIT:?set from images.yml by ci-images-tool.py; pass --build-arg QEMU_COMMIT=... for a bare docker build}"
 
 # The qemu-minimal checkout the qemu-tool CLI is installed from.  Guest
 # provisioning parameters (release, size, packages, playbook, kernel) are not

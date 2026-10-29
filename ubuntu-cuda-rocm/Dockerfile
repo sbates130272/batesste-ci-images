@@ -5,8 +5,13 @@ FROM ${BASE_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive
 ENV UBUNTU_CODENAME=noble
 
-ARG CUDA_VERSION=13-4
-ARG ROCM_VERSION=10.0
+ARG CUDA_VERSION
+ARG ROCM_VERSION
+
+# The pin(s) above carry no default on purpose -- images.yml is the only place
+# a pin is written. See "Why the Dockerfiles have no pin defaults" in the
+# README. An undefaulted ARG is empty rather than an error, so this asserts.
+RUN : "${CUDA_VERSION:?set from images.yml by ci-images-tool.py; pass --build-arg CUDA_VERSION=... for a bare docker build}" "${ROCM_VERSION:?set from images.yml by ci-images-tool.py; pass --build-arg ROCM_VERSION=... for a bare docker build}"
 # ROCM_STREAM: 'therock' (repo.amd.com, ROCm 7.13+) or 'legacy' (repo.radeon.com, ROCm ≤7.2)
 ARG ROCM_STREAM=therock
 ARG CACHE_BUST=

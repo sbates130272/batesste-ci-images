@@ -1385,8 +1385,17 @@ images:
 # Deleting an entry drops the badge; no code change is involved either way.
 badges:
   rows:
-    - title: Pinned versions
+    - title: Pinned Versions
       entries:
+        # Colours are brand hints, not status. shields renders these beside
+        # the workflow badges at the top of the README, where red and green
+        # already mean failed and passed -- so no pinned-version badge may be
+        # red. The three ROCm-family badges (rocm, rocm-ernic, rocjitsu) were
+        # AMD red ED1C24 and were read as failures; they share 006F62 instead,
+        # which keeps them visually grouped without borrowing the failure
+        # colour. Green is likewise avoided for anything that is not NVIDIA's
+        # own 76B900, for the same reason in reverse: a green pin badge reads
+        # as "this passed" when it only means "this is the version".
         - label: ubuntu
           target: ubuntu-base
           var: ubuntu_version
@@ -1395,7 +1404,7 @@ badges:
         - label: rocm
           target: ubuntu-cuda-rocm
           var: rocm_version
-          colour: ED1C24
+          colour: 006F62
           link: https://rocm.docs.amd.com/
         - label: cuda
           target: ubuntu-cuda-rocm
@@ -1428,6 +1437,14 @@ badges:
           var: libfabric_tag
           colour: 0F4C81
           link: https://github.com/ofiwg/libfabric/releases/tag/{value}
+    # What is inside a published qcow2, kept apart from the two groups above
+    # because it answers a different question. Those say what the *containers*
+    # were built from; these say what a guest boots and carries once you pull
+    # it. A reader chasing "which ROCm is in the VM" was previously landing on
+    # the container's rocm badge, which is a different number for a different
+    # artifact.
+    - title: Pinned In The Guest
+      entries:
         - label: guest
           target: ubuntu-qcow2-gen
           var: release
@@ -1447,7 +1464,20 @@ badges:
           var: kernel_ref
           colour: 772953
           link: https://kernel.ubuntu.com/mainline/{value}/
-    - title: Pinned commits
+        # The driver tree and ROCm line the GPU flavours install. Read off
+        # ernic-rocjitsu, which the rocjitsu flavour is kept equal to; the
+        # ionic flavour installs no amdgpu at all and so has nothing here.
+        - label: guest amdgpu
+          target: ubuntu-qcow2-gen@ernic-rocjitsu
+          var: amdgpu_driver_version
+          colour: 772953
+          link: https://repo.radeon.com/amdgpu/{value}/ubuntu/
+        - label: guest rocm
+          target: ubuntu-qcow2-gen@ernic-rocjitsu
+          var: guest_rocm_version
+          colour: 772953
+          link: https://rocm.docs.amd.com/
+    - title: Pinned Commits
       entries:
         - label: libvfio-user
           target: ubuntu-libvfio-user
@@ -1465,13 +1495,13 @@ badges:
           target: ubuntu-rocm-ernic
           var: rocm_ernic_commit
           short: true
-          colour: ED1C24
+          colour: 006F62
           link: https://github.com/ROCm/rocm-ernic/commit/{value}
         - label: rocjitsu
           target: ubuntu-rocm-rocjitsu
           var: rocjitsu_commit
           short: true
-          colour: ED1C24
+          colour: 006F62
           link: https://github.com/ROCm/rocm-systems/commit/{value}
         # Links into the fork, not spdk/spdk: the commit only exists there.
         - label: spdk

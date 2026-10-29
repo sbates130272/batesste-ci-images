@@ -22,7 +22,12 @@ ARG ROCJITSU_BRANCH=develop
 # bdc4aea25 "harden PCI and VFIO compute transport" and d5927b503 "qualify the
 # QEMU VFIO compute workflow", and then deleted, so the old pin is not an
 # ancestor of anything that still exists.
-ARG ROCJITSU_COMMIT=73c3cf3da4bf65a06bc41421bbd65d5e13baadaf
+ARG ROCJITSU_COMMIT
+
+# The pin(s) above carry no default on purpose -- images.yml is the only place
+# a pin is written. See "Why the Dockerfiles have no pin defaults" in the
+# README. An undefaulted ARG is empty rather than an error, so this asserts.
+RUN : "${ROCJITSU_COMMIT:?set from images.yml by ci-images-tool.py; pass --build-arg ROCJITSU_COMMIT=... for a bare docker build}"
 # Which config the vfio-user probe below and the default CMD serve. A build
 # variant pinned to a different upstream ref can point at a renamed or newly
 # added profile from images.yml without editing this file.

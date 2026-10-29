@@ -16,7 +16,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     librdmacm-dev
 
 ARG ROCM_ERNIC_REPO=https://github.com/ROCm/rocm-ernic.git
-ARG ROCM_ERNIC_COMMIT=670248907aefd612e1c52a6e5987e1f9d3b32c2f
+ARG ROCM_ERNIC_COMMIT
+
+# The pin(s) above carry no default on purpose -- images.yml is the only place
+# a pin is written. See "Why the Dockerfiles have no pin defaults" in the
+# README. An undefaulted ARG is empty rather than an error, so this asserts.
+RUN : "${ROCM_ERNIC_COMMIT:?set from images.yml by ci-images-tool.py; pass --build-arg ROCM_ERNIC_COMMIT=... for a bare docker build}"
 
 WORKDIR /build
 
