@@ -799,7 +799,7 @@ sudo tee /etc/ernic-rocjitsu-guest.json > /dev/null <<EOF
   "render_video_groups": true,
   "rdma_core_version": "${INSTALLED}",
   "memlock": "unlimited",
-  "rdma_driver": "in-tree ionic_rdma from the booted kernel when this script ends; see /etc/ionic-srq.json, written by the post-provision playbook that replaces it with an SRQ-capable build"
+  "rdma_driver": "in-tree ionic_rdma from the booted kernel when this script ends; see /etc/ionic-srq-p4.json, written by the post-provision playbook that replaces it with an SRQ-capable build"
 }
 EOF
 cat /etc/ernic-rocjitsu-guest.json
@@ -852,7 +852,8 @@ correct answers before that happens.
 both** with an SRQ-capable build: rocm-ernic's \`patches/srq\` on top of the
 matching mainline tag, installed as the \`ionic-ernic\` DKMS package into
 \`updates/dkms\`, plus rocm-ernic's \`patches/rdma-core\` built into
-\`/usr/local\`. \`/etc/ionic-srq.json\` records both pins.
+\`/usr/local\`, and rocm-ernic's \`ernic_p4\` DKMS module alongside them.
+\`/etc/ionic-srq-p4.json\` records the pins.
 
 That is not a nicety. Without the series \`max_srq\` is 0, and UCX's
 \`rc_verbs\` transport is built on a shared receive queue -- it declines the

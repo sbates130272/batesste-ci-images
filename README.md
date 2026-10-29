@@ -1589,7 +1589,7 @@ read `schema_version` before reaching for anything newer:
 - **v9** adds `provisioning.post_playbook`, the qemu-minimal playbook run
   against the provisioned guest. For the `ernic-rocjitsu` flavours that is
   what replaces the in-tree ionic drivers with SRQ-capable ones; the guest's
-  own `/etc/ionic-srq.json` records what they were built from.
+  own `/etc/ionic-srq-p4.json` records what they were built from.
 
 Most of this is hoisted into the pushed artifact's annotations as well, so
 `oras manifest fetch` answers the common questions without the referrer — see

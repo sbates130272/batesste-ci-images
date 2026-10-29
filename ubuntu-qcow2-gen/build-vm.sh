@@ -1510,7 +1510,7 @@ BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # playbook run against the provisioned guest, and for ernic-rocjitsu that is
 # what replaces the in-tree ionic drivers with SRQ-capable ones. A consumer
 # asking "does this guest do SRQ" should read the guest's own
-# /etc/ionic-srq.json; this field is how the manifest says the step ran at
+# /etc/ionic-srq-p4.json; this field is how the manifest says the step ran at
 # all.
 #
 # v8's two keys answer "is this the guest it looks like": provision_flavour
