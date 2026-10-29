@@ -148,13 +148,17 @@ RUN git init /build/etcd-cpp-apiv3 && \
 ARG LIBFABRIC_REPO=https://github.com/ofiwg/libfabric.git
 ARG LIBFABRIC_TAG
 
-# libfabric is what makes the ROCm support in 
-
 # The pin(s) above carry no default on purpose -- images.yml is the only place
 # a pin is written. See "Why the Dockerfiles have no pin defaults" in the
 # README. An undefaulted ARG is empty rather than an error, so this asserts.
-RUN : "${ABSL_TAG:?set from images.yml by ci-images-tool.py; pass --build-arg ABSL_TAG=... for a bare docker build}" "${ETCD_COMMIT:?set from images.yml by ci-images-tool.py; pass --build-arg ETCD_COMMIT=... for a bare docker build}" "${GRPC_TAG:?set from images.yml by ci-images-tool.py; pass --build-arg GRPC_TAG=... for a bare docker build}" "${LIBFABRIC_TAG:?set from images.yml by ci-images-tool.py; pass --build-arg LIBFABRIC_TAG=... for a bare docker build}" "${NIXL_TAG:?set from images.yml by ci-images-tool.py; pass --build-arg NIXL_TAG=... for a bare docker build}" "${UCX_COMMIT:?set from images.yml by ci-images-tool.py; pass --build-arg UCX_COMMIT=... for a bare docker build}"
-his image NIXL's own rather than
+RUN : "${ABSL_TAG:?set from images.yml by ci-images-tool.py; pass --build-arg ABSL_TAG=...}" \
+    "${ETCD_COMMIT:?set from images.yml by ci-images-tool.py; pass --build-arg ETCD_COMMIT=...}" \
+    "${GRPC_TAG:?set from images.yml by ci-images-tool.py; pass --build-arg GRPC_TAG=...}" \
+    "${LIBFABRIC_TAG:?set from images.yml by ci-images-tool.py; pass --build-arg LIBFABRIC_TAG=...}" \
+    "${NIXL_TAG:?set from images.yml by ci-images-tool.py; pass --build-arg NIXL_TAG=...}" \
+    "${UCX_COMMIT:?set from images.yml by ci-images-tool.py; pass --build-arg UCX_COMMIT=...}"
+
+# libfabric is what makes the ROCm support in this image NIXL's own rather than
 # just UCX's: NIXL consumes rocm_dep and hipify only under src/utils/libfabric
 # and src/plugins/libfabric, so without libfabric nothing in NIXL links HIP.
 # Providers are trimmed to match upstream's ROCm image.

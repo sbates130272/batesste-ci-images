@@ -391,10 +391,40 @@ install_amdgpu_dkms() {
     # is exactly what must survive this.  Unset on noble, where the HWE kernel
     # is installed afterwards and the expansion is harmlessly empty.
     dkms_hide_foreign_kernels "${HWE_KVER:-}"
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y amdgpu-dkms || {
-        sudo tail -n 60 /var/lib/dkms/amdgpu/*/build/make.log || true
-        exit 1
-    }
+    # On a pinned mainline kernel the postinst's own build is *expected* to
+    # fail, and must not stop the install.
+    #
+    # amdgpu-dkms 7.1.9 does not compile against 7.2 headers unpatched:
+    # kfd_process_queue_manager.c calls get_dumpable() and reads mm->user_ns,
+    # neither of which survives into 7.2, and that is exactly what
+    # patches/amdgpu/0001 fixes. But the postinst builds from /usr/src before
+    # this script has patched anything, so on a KERNEL_REF flavour it always
+    # fails, the `exit 1` below fired, and the patch loop further down never
+    # ran -- the patches were sitting in /tmp/payload the whole time.
+    #
+    # /etc/dkms/no-autoinstall-errors is the autoinstaller's documented escape
+    # hatch: still attempt the build, do not propagate the error. The build
+    # that matters is the patched one below and it is still not allowed to
+    # fail. ernic-rocjitsu has done exactly this since it moved to mainline;
+    # this is that, conditioned on the same thing rather than on the release.
+    #
+    # Keyed on KERNEL_REF and not on RELEASE. The comment this replaces said
+    # the hatch was "not wanted on resolute, where a failing amdgpu build for
+    # a new kernel is a real regression" -- true while this flavour ran
+    # resolute's own 7.0 kernel, and false the moment it pinned one. A guest
+    # with no kernel_ref still gets the strict behaviour.
+    if [ -n "${KERNEL_REF:-}" ]; then
+        sudo install -d -m 0755 /etc/dkms
+        sudo touch /etc/dkms/no-autoinstall-errors
+        echo "kernel_ref ${KERNEL_REF}: tolerating the postinst amdgpu build;" \
+             "the patched build below is the one that must succeed"
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y amdgpu-dkms
+    else
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y amdgpu-dkms || {
+            sudo tail -n 60 /var/lib/dkms/amdgpu/*/build/make.log || true
+            exit 1
+        }
+    fi
 }
 
 if [ "${RELEASE}" = noble ]; then
