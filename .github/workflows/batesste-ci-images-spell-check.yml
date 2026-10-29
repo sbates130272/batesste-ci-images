@@ -25,5 +25,5 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v7
       - name: GitHub Spellcheck Action
-        uses: rojopolis/spellcheck-github-actions@0.66.0
+        uses: rojopolis/spellcheck-github-actions@0.68.0
         continue-on-error: true
