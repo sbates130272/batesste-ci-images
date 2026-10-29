@@ -1143,11 +1143,20 @@ ROCM_PATH='${FINAL_ROCM_PATH}'
 ROCM_VERSION='${FINAL_ROCM_VERSION}'
 KERNEL_REF='${FINAL_KERNEL_REF}'
 EOF
-    # Shared trim steps, prepended so every flavour's trim gets them without
+    cat "${TRIM_SCRIPT}" >> "${TRIMSH}"
+    # Shared trim steps, *appended* so every flavour's trim gets them without
     # having to remember. A *quoted* heredoc: the variables below belong to
     # the guest script, and the preamble above is unquoted precisely so its
     # ${FINAL_*} do expand here. Mixing the two in one heredoc is how this
     # first went in with ${_i} silently expanded to empty.
+    #
+    # After the flavour script rather than before it, which is the second
+    # half of the same bug. Prepended, this only swept orphans that
+    # provisioning had already made; trim/slim.sh makes its own -- bake
+    # 68212196 shows "Generating /boot/initrd.img-added" 18s *into* slim.sh,
+    # long after a prepended sweep would have run and found nothing. So the
+    # slim guest shipped the 28 MB anyway while kernel-only.sh flavours, whose
+    # orphan predates the trim, were clean. Appending catches both.
     cat >> "${TRIMSH}" <<'SHARED_TRIM_EOF'
 # An initramfs whose kernel has no modules tree is nobody's: no grub entry
 # references it, nothing regenerates it, and `update-initramfs -d` refuses it
@@ -1166,8 +1175,20 @@ for _i in /boot/initrd.img-*; do
     echo "trim: removing orphaned ${_i} ($(sudo du -h "${_i}" | cut -f1))"
     sudo rm -f "${_i}"
 done
+
+# Give the freed space back to the qcow2, for every flavour and after every
+# deletion above.  probe-guest attaches the disk with discard=unmap, so this
+# reaches the image file rather than stopping at the guest filesystem;
+# build-vm's convert afterwards is what rewrites it compactly.
+#
+# Shared rather than per-flavour because trim/slim.sh was the only script that
+# ran it, so kernel-only.sh flavours deleted packages and then handed convert
+# a disk where every deleted block was still an allocated cluster to copy.
+# That is the gap between slim's -4.9 GB in bake 68212196 and kernel-only's
+# -1.3 and -0.2 GB on the same run.  It also has to come after the sweep
+# above, which is the reason the sweep could not simply move here.
+sudo fstrim -av
 SHARED_TRIM_EOF
-    cat "${TRIM_SCRIPT}" >> "${TRIMSH}"
     echo "Trimming the guest with trim/${TRIM_NAME}"
     PROBE_PERSIST=1 probe-guest "/output/${FINAL_VM_NAME}.qcow2" \
         "${FINAL_USERNAME}" "${TRIMSH}"

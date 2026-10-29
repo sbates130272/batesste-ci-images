@@ -696,8 +696,7 @@ chmod 0644 "/home/${USERNAME}/WELCOME.md"
 
 echo "root filesystem used: ${USED_BEFORE} -> ${USED_AFTER} MiB"
 
-# And give the freed space back to the qcow2.  probe-guest attaches the disk
-# with discard=unmap, so this reaches the image file rather than stopping at
-# the guest filesystem; build-vm's convert afterwards is what rewrites it
-# compactly.
-sudo fstrim -av
+# The fstrim that used to be here now lives in build-vm.sh's shared trim tail,
+# which runs after this script and after the orphaned-initramfs sweep. Here it
+# ran before that sweep, so the 28 MB the sweep frees was never discarded; and
+# being here at all meant the kernel-only.sh flavours never got one.
