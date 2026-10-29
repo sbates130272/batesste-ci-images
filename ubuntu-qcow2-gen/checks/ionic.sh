@@ -31,14 +31,17 @@ command -v ibv_devinfo
 #
 # With no post_playbook the guest carries the in-tree ionic from its own
 # kernel and nothing built -- which is what this flavour has shipped for most
-# of its life, and what it ships again now that vm-ernic-p4.yml turned out to
-# need an emulated NIC on the bus that an image build does not have.
+# of its life. It ships the DKMS form now: vm-ernic-srq-p4.yml builds ionic
+# once with patches/srq and patches/p4 combined, and builds ernic_p4.ko
+# against that same tree. The branch stays because the empty case was real
+# until 2026-10-29 -- vm-ernic-p4.yml needed an emulated NIC on the bus that
+# an image build does not have -- and a flavour can be configured either way.
 #
 # With one, ernic_guest_setup rebuilds ionic-ernic and installs both halves
 # into updates/dkms, displacing the in-tree modules, and ernic_p4_dkms adds
 # ernic_p4.ko.
 #
-# Branching on /etc/ionic-p4.json, not on modinfo output: the stamp is written
+# Branching on /etc/ionic-srq-p4.json, not on modinfo output: the stamp is written
 # by the playbook and is the only thing here that says what was *intended*.
 # Deciding from modinfo would make this check agree with whatever the image
 # happens to contain, which is not a test.
@@ -47,21 +50,21 @@ command -v ibv_devinfo
 # written for a post_playbook that was then reverted, and the check was not
 # revisited -- it failed bake 68210285 in the verification boot, correctly, on
 # an image that was right.
-if [ -s /etc/ionic-p4.json ]; then
+if [ -s /etc/ionic-srq-p4.json ]; then
     echo "ionic: post-playbook stamp present; expecting the DKMS stack"
     for _m in ionic ionic_rdma ernic_p4; do
         _ko=$(modinfo -n "${_m}")
         case "${_ko}" in
             */updates/dkms/*) echo "  ${_m}: ${_ko}" ;;
             *)
-                echo "ERROR: /etc/ionic-p4.json says this guest was built" \
-                     "with the P4 playbook, but modprobe would load" \
+                echo "ERROR: /etc/ionic-srq-p4.json says this guest was built" \
+                     "with vm-ernic-srq-p4.yml, but modprobe would load" \
                      "${_ko:-nothing} for ${_m} rather than a DKMS module" >&2
                 exit 1
                 ;;
         esac
     done
-    python3 -c 'import json;print("  stamp:", json.dumps(json.load(open("/etc/ionic-p4.json")), sort_keys=True)[:200])'
+    python3 -c 'import json;print("  stamp:", json.dumps(json.load(open("/etc/ionic-srq-p4.json")), sort_keys=True)[:200])'
 else
     # No playbook ran. The in-tree ionic_rdma is the contract, and the reason
     # this flavour exists: drivers/infiniband/hw/ionic merged in 6.18, so a
@@ -73,7 +76,7 @@ else
         case "${_ko}" in
             */updates/dkms/*)
                 echo "ERROR: ${_m} resolves to ${_ko}, a DKMS module, but no" \
-                     "/etc/ionic-p4.json says a playbook installed one." \
+                     "/etc/ionic-srq-p4.json says a playbook installed one." \
                      "Something built a driver this flavour does not track." >&2
                 exit 1
                 ;;

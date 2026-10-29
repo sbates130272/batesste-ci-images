@@ -49,8 +49,8 @@ ldconfig -p | grep -q libibverbs
 # flavour: binutils went with the toolchain, so there is no nm to run.  The
 # symbol check belongs to the build -- it ran before the trim, while a
 # compiler still existed -- and this asserts what survived it.
-test -s /etc/ionic-srq.json
-python3 -c 'import json; json.load(open("/etc/ionic-srq.json"))'
+test -s /etc/ionic-srq-p4.json
+python3 -c 'import json; json.load(open("/etc/ionic-srq-p4.json"))'
 
 # The same source-ref-against-kernel assertion the fat flavour makes, for the
 # same reason and with the same contract; see checks/ernic-rocjitsu.sh for
@@ -59,11 +59,11 @@ python3 -c 'import json; json.load(open("/etc/ionic-srq.json"))'
 # the slim guest has no compiler and asserts what survived its trim.
 python3 - <<'PY'
 import json, sys
-s = json.load(open("/etc/ionic-srq.json"))
+s = json.load(open("/etc/ionic-srq-p4.json"))
 src = str(s.get("kernel_ref", "")).lstrip("v")
 built = str(s.get("built_for_kernel", ""))
 if not src or not built:
-    sys.exit("ERROR: /etc/ionic-srq.json has no kernel_ref/built_for_kernel")
+    sys.exit("ERROR: /etc/ionic-srq-p4.json has no kernel_ref/built_for_kernel")
 mm = lambda v: ".".join(v.split("-")[0].split(".")[:2])
 if mm(src) != mm(built):
     sys.exit(
@@ -83,7 +83,7 @@ case "${IONIC_KO}" in
     */updates/dkms/*) ;;
     *)
         echo "ERROR: modprobe would load ${IONIC_KO}, not the SRQ-capable" \
-             "DKMS module; /etc/ionic-srq.json says this guest has one" >&2
+             "DKMS module; /etc/ionic-srq-p4.json says this guest has one" >&2
         exit 1
         ;;
 esac
@@ -492,6 +492,25 @@ test "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 20
 # regenerate the file if it is wrong.
 sudo -n grep -q 'name: *"\?en\*' /etc/netplan/50-cloud-init.yaml
 test -z "$(sudo -n grep -l macaddress /etc/netplan/*.yaml || true)"
+
+# ernic_p4.ko, which this flavour gained when post_playbook moved from
+# vm-ernic-srq.yml to vm-ernic-srq-p4.yml. The server image is built with
+# -DERNIC_BUILD_P4=ON; without this module `rocm-ernic --p4-program` loads a
+# program with no guest-side consumer.
+#
+# Asserted for the same reason the ionic pair is: the combined playbook builds
+# ernic_p4.ko against the same srq+p4 ionic it installs, and a module built
+# against one ionic and loaded against another is the symbol-version failure
+# this repo spent a week on.
+_P4KO=$(modinfo -n ernic_p4)
+case "${_P4KO}" in
+    */updates/dkms/*) echo "ernic_p4: ${_P4KO}" ;;
+    *)
+        echo "ERROR: ernic_p4 is ${_P4KO:-absent}, not a DKMS module." \
+             "/etc/ionic-srq-p4.json says vm-ernic-srq-p4.yml built it." >&2
+        exit 1
+        ;;
+esac
 
 # No ionic module in any initramfs, asserted against the FINISHED image.
 #

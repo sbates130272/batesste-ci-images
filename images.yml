@@ -763,7 +763,7 @@ images:
       # ubuntu-qcow2-gen -- the ansible/ tree its guest builds are driven by, so
       # the CLI and the playbooks always come from one commit.
       qemu_minimal_repo: https://github.com/sbates130272/qemu-minimal.git
-      qemu_minimal_commit: 9e984d205c6ddbef39012b6bcfa4623c8c8eb806
+      qemu_minimal_commit: 656952bd4708f5483b14d51bd21aa18001fd3dd7
       # Provenance only, and empty here: the default target builds a release
       # tag, which belongs to no branch. A fork variant fills it in and the
       # label appears only there.
@@ -1090,35 +1090,24 @@ images:
           flavour: ionic
           vm_packages: ionic.txt
           probe_ssh_port: 2223
-          # No post_playbook yet, and the gap is upstream rather than here.
+          # SRQ and P4 from one ionic build.
           #
-          # This flavour wants the same SRQ *and* P4 stack ernic-rocjitsu
-          # wants, and no single qemu-minimal playbook builds both.
+          # vm-ernic-srq-p4.yml exists because neither of the two playbooks it
+          # replaces could give a guest both. vm-ernic-srq.yml builds ionic
+          # with patches/srq and knows nothing of P4; vm-ernic-p4.yml goes
+          # through ernic_guest_setup, whose preflight asserts the emulated NIC
+          # is on the PCI bus -- which an image build does not have, and which
+          # failed bake 68210052 here. Running both in sequence does not work
+          # either: each rebuilds ionic from its own series and the second one
+          # wins.
           #
-          #   vm-ernic-srq.yml  calls ernic_srq_dkms with patches/srq. Safe at
-          #                     image-build time; no P4.
-          #   vm-ernic-p4.yml   calls ernic_guest_setup, whose preflight.yml
-          #                     asserts the emulated NIC is on the PCI bus.
-          #                     There is no vfio-user device in a provisioning
-          #                     boot, so it fails:
-          #                       "No PCI device 0x1dd8:0x1002 ... in this
-          #                        guest"
-          #                     Tried on 2026-10-29, bake 68210052. The assert
-          #                     is unconditional -- main.yml includes
-          #                     preflight.yml with no `when:` and no default
-          #                     disables it -- even though that playbook's own
-          #                     header says it runs at image-build time with no
-          #                     device attached.
-          #
-          # Running both is not the answer either: they rebuild ionic by
-          # different routes and neither knows about the other's series, so the
-          # second one wins and the first one's patches are gone.
-          #
-          # What would work is one playbook that skips ernic_guest_setup and
-          # hands ernic_p4_dkms every series at once -- that role has no NIC
-          # preflight and its ernic_p4_dkms_patches_dirs is already a list.
-          # Asked for; see the note to qemu-minimal.
-          post_playbook: ""
+          # The combined playbook stages patches/srq and patches/p4 into one
+          # directory, hands that to ernic_srq_dkms as its single
+          # --patches-dir, and then builds ernic_p4.ko against the *same*
+          # srq+p4 tree. That last part is the one that matters: a module
+          # compiled against one ionic and loaded against another is the
+          # symbol-version failure this repo spent a week on.
+          post_playbook: vm-ernic-srq-p4.yml
           kernel_ref: v7.2.6
           # This flavour installs no amdgpu at all -- provision/ionic.sh does
           # not mention it, and there is no GPU in an ionic guest to drive.
@@ -1298,7 +1287,9 @@ images:
           # SRQ. Both halves are built: the kernel modules and the rdma-core
           # provider, because the kernel half alone advertises an SRQ that
           # ibv_create_srq() then refuses with EOPNOTSUPP.
-          post_playbook: vm-ernic-srq.yml
+          # SRQ *and* P4 now, from one ionic build; see the ionic flavour
+          # above for why a combined playbook rather than two.
+          post_playbook: vm-ernic-srq-p4.yml
           # Leaves one kernel installed, and nothing else: the toolchain, the
           # headers and the DKMS trees all stay, because the jobs that consume
           # this flavour build ionic-ernic in-guest. Only the release's own
@@ -1389,9 +1380,9 @@ images:
           vm_packages: ernic-rocjitsu.txt
           # Equal to the fat flavour's, and load-bearing here in a way it is
           # not there: this guest has no toolchain, so a consumer cannot build
-          # the SRQ stack itself afterwards. The playbook runs before the
-          # trim, while the compiler it needs is still installed.
-          post_playbook: vm-ernic-srq.yml
+          # the SRQ or P4 stack itself afterwards. The playbook runs before
+          # the trim, while the compiler it needs is still installed.
+          post_playbook: vm-ernic-srq-p4.yml
           probe_ssh_port: 2226
           release: resolute
           kernel_ref: v7.2.6
