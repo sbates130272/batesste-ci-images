@@ -175,26 +175,21 @@ if check_nonempty "$LIBVFIO_LATEST" "libvfio-user HEAD" && [[ "$LIBVFIO_CURRENT"
 fi
 
 echo "==> Fetching latest qemu-minimal HEAD..."
-# Reported, not rewritten -- as with rocjitsu, the therock lines and the amdgpu
-# trees below.
+# Scrubbed again as of 2026-10-29. This was held at c079195 and *reported*
+# rather than rewritten while a three-repo sequence ran: rocm-ernic had to
+# clean up its guest half, then qemu-minimal had to repin onto that, and
+# taking this bump first would have moved the guest half of SRQ onto a tree
+# chosen before the cleanup. qemu-minimal 5ee7176 completed that -- its
+# requirements.yml and vars/ernic-pins.yml now name one rocm-ernic SHA rather
+# than two, and ionic_kernel_pin reached v7.2.6 -- so the gate is gone.
 #
-# This pin decides more than which qemu-tool the image carries. ubuntu-qcow2-gen
-# inherits it for the ansible/ tree its guest builds are driven by, and the
-# ernic flavours' post_playbook reaches rocm-ernic's ansible collection through
-# *qemu-minimal's* requirements.yml -- a pin this repo deliberately does not
-# hold. So moving qemu-minimal moves the guest half of SRQ, while the server
-# half moves with rocm_ernic_commit above. Upstream's own requirements.yml
-# spells out what a mismatch costs: ibv_create_srq() fails, UCX declines
-# rc_verbs, and NIXL falls back to TCP -- silently, as a throughput number
-# rather than an error.
-#
-# Held at c079195 as of 2026-10-28 pending a three-repo sequence: rocm-ernic
-# packages its guest half, then qemu-minimal repins onto that, then this moves.
-# An auto-bump here would jump the queue on every scrub run, including CI's,
-# which is how it came to be written into images.yml once already.
-#
-# To lift the hold: take the bump by hand and turn this block back into a
-# replace_in_yaml call.
+# One coupling outlives it and is the reason this sits next to the ernic
+# block below rather than anywhere else: moving qemu-minimal moves the guest
+# half of SRQ, while rocm_ernic_commit moves the server half. Upstream's own
+# requirements.yml says a guest ahead of its server fails ibv_create_srq(),
+# UCX declines rc_verbs and NIXL falls back to TCP -- silently, as a
+# throughput number rather than an error. Both pins track HEAD here, which
+# keeps the server at or ahead of the guest, which is the safe direction.
 QEMU_MINIMAL_LATEST=$(gh_curl \
     "https://api.github.com/repos/sbates130272/qemu-minimal/commits/main" \
     | jq -r '.sha')
@@ -202,9 +197,7 @@ QEMU_MINIMAL_CURRENT=$(current_pin ubuntu-qemu-libvfio-user qemu_minimal_commit)
 echo "    current: $QEMU_MINIMAL_CURRENT  latest: $QEMU_MINIMAL_LATEST"
 if check_nonempty "$QEMU_MINIMAL_LATEST" "qemu-minimal HEAD" \
     && [[ "$QEMU_MINIMAL_CURRENT" != "$QEMU_MINIMAL_LATEST" ]]; then
-    echo "    note: main has moved to ${QEMU_MINIMAL_LATEST:0:7}. Held" \
-         "deliberately -- the guest half of SRQ moves with it. See the" \
-         "comment above before bumping."
+    replace_in_yaml "$QEMU_MINIMAL_CURRENT" "$QEMU_MINIMAL_LATEST"
 fi
 
 echo "==> Fetching latest ROCM_ERNIC HEAD..."

@@ -30,9 +30,11 @@ guest.
 - **`ansible-core`**, installed with pipx into `/usr/local/bin` so both
   `ansible-playbook` and `ansible-galaxy` are on `PATH` for
   `qemu-tool --ansible-playbook`
-- **Docker CLI, buildx and compose plugins** -- the CLI only, no engine.
-  `qemu-tool compose` shells out to `docker compose`, and jobs running in this
-  image drive the host daemon over a bind-mounted `/var/run/docker.sock`.
+- **No Docker CLI.** It was here until 2026-10-29 so `qemu-tool compose`
+  could drive a bind-mounted `/var/run/docker.sock` from inside this image --
+  149 MB for a path nothing in this repo takes. `qemu-tool compose` runs on
+  the host, where Docker already is. A real docker-in-docker consumer is the
+  reason to bring it back.
 - **`oras` and `zstd`**, pinned by version and SHA256, for pulling published
   guest artifacts without installing them on the critical path of every job
 - **`pip3`** (`python3-pip`), so a consumer job does not have to `apt-get

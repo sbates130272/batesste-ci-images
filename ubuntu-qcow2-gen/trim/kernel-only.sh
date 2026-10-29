@@ -65,22 +65,6 @@ else
     ${APT} purge -y ${STALE}
 fi
 
-# A stray initramfs built for a kernel called "added".
-#
-# Something in the amdgpu-dkms install path calls update-initramfs with a bad
-# -k argument: the build log carries "depmod: ERROR: Bad version passed added"
-# and a cat of /var/tmp/mkinitramfs_*/lib/modules/added/modules.builtin that
-# cannot exist, and what lands is /boot/initrd.img-added -- 29 MB for a kernel
-# that was never installed. No grub entry references it, nothing regenerates
-# it, and update-initramfs -d cannot remove it because "added" is not a kernel
-# it knows. Deleted by name.
-#
-# Removed here rather than fixed because the call is upstream of this repo.
-if [ -f /boot/initrd.img-added ]; then
-    echo "removing /boot/initrd.img-added ($(sudo du -h /boot/initrd.img-added | cut -f1))"
-    sudo rm -f /boot/initrd.img-added
-fi
-
 ${APT} autoremove -y --purge
 sudo update-grub
 

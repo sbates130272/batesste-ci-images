@@ -97,30 +97,24 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     wget \
     openssh-client
 
-# Docker CLI (no daemon): qemu-tool's "compose" subcommand shells out to
-# "docker compose", and CI jobs running inside this image drive the host's
-# daemon over a bind-mounted /var/run/docker.sock.  Ubuntu's docker.io package
-# would pull in the engine, so take the CLI-only packages from Docker's own
-# repository instead.
-# apt reads an ASCII-armoured key directly from a .asc, so there is no need to
-# pull gnupg in just to dearmor it.
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    . /etc/os-release && \
-    install -m 0755 -d /etc/apt/keyrings && \
-    curl -fsSL -o /etc/apt/keyrings/docker.asc \
-        https://download.docker.com/linux/ubuntu/gpg && \
-    chmod a+r /etc/apt/keyrings/docker.asc && \
-    printf 'Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: %s\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n' \
-        "${VERSION_CODENAME}" > /etc/apt/sources.list.d/docker.sources && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends \
-        docker-ce-cli \
-        docker-buildx-plugin \
-        docker-compose-plugin && \
-    docker --version && \
-    docker compose version
-
+# No Docker CLI here, deliberately.
+#
+# This image carried docker-ce-cli, docker-buildx-plugin and
+# docker-compose-plugin -- 149 MB of a 1.5 GB image, about 10% -- so that
+# `qemu-tool compose` could shell out to `docker compose` for a job running
+# *inside* this container against a bind-mounted /var/run/docker.sock.
+#
+# Nothing in this repo has ever done that. `qemu-tool compose` is invoked
+# nowhere; the only two subcommands used are gen-vm and run-vm. Every buildx
+# call in .github/workflows runs on the runner, not in this image, and no
+# compose file or workflow bind-mounts the docker socket into it.
+#
+# Adopting `qemu-tool compose` would not bring it back either: that wrapper
+# runs on the host, where Docker already is. What would bring it back is a
+# real docker-in-docker consumer -- a job that runs in this image and drives
+# the host daemon. If one appears, restore this block rather than reaching for
+# docker.io, which pulls the engine in too.
+#
 # oras and zstd: guest disks are published as bare OCI artifacts, and this is
 # the image that consumes them.  Without these a consuming CI job installs both
 # on every run, on the critical path, before it can fetch a guest.

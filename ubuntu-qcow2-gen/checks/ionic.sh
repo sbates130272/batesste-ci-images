@@ -23,10 +23,49 @@ command -v gcc make cmake ninja dkms git
 python3 -c 'import docutils'
 pkg-config --exists libnl-3.0 libnl-route-3.0 libudev libsystemd
 
-# Verbs userspace is present, and the ionic RDMA module ships with the guest
-# kernel rather than needing to be built.
+# Verbs userspace is present.
 command -v ibv_devinfo
-modinfo ionic_rdma > /dev/null
+
+# The ionic pair is the DKMS one, not the in-tree driver.
+#
+# This flavour used to assert only that `modinfo ionic_rdma` resolved to
+# something, with the comment "ships with the guest kernel rather than needing
+# to be built". That stopped being true when post_playbook gained
+# vm-ernic-p4.yml: ernic_guest_setup rebuilds ionic-ernic with the base plus
+# P4 patch series and installs both halves into updates/dkms, displacing the
+# in-tree modules. A bare modinfo would pass either way, which is exactly the
+# gap that let a stale in-tree ionic ride in an initramfs for weeks on the
+# ernic-rocjitsu flavour.
+for _m in ionic ionic_rdma; do
+    _ko=$(modinfo -n "${_m}")
+    case "${_ko}" in
+        */updates/dkms/*) echo "${_m}: ${_ko}" ;;
+        *)
+            echo "ERROR: modprobe would load ${_ko} for ${_m}, not the" \
+                 "DKMS module vm-ernic-p4.yml installed" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# And ernic_p4.ko, the guest half of the P4 engine. The server container is
+# built with -DERNIC_BUILD_P4=ON; without this module a `rocm-ernic
+# --p4-program` loads a program with no guest-side consumer.
+_P4=$(modinfo -n ernic_p4)
+case "${_P4}" in
+    */updates/dkms/*) echo "ernic_p4: ${_P4}" ;;
+    *) echo "ERROR: ernic_p4 is ${_P4:-absent}, not a DKMS module" >&2; exit 1 ;;
+esac
+
+# The stamp vm-ernic-p4.yml writes, and the two version fields in it -- the
+# same contract checks/ernic-rocjitsu.sh asserts on /etc/ionic-srq.json, for
+# the same reason: they were being written and never read.
+test -s /etc/ionic-p4.json
+python3 - <<'PY'
+import json, sys
+s = json.load(open("/etc/ionic-p4.json"))
+print("ionic-p4 stamp:", json.dumps(s, sort_keys=True)[:200])
+PY
 
 # providers/ionic, which is what makes the emulated NIC usable through
 # libibverbs. Upstream first shipped it in v61 and resolute packages 61.0, so
@@ -93,3 +132,31 @@ test "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 20
 # boot via cloud-init write_files defer; this asserts it landed.
 sudo -n grep -q 'name: *"\?en\*' /etc/netplan/50-cloud-init.yaml
 test -z "$(sudo -n grep -l macaddress /etc/netplan/*.yaml || true)"
+
+# No ionic module in any initramfs, asserted against the FINISHED image.
+#
+# This runs in the verification boot, which is the only place that sees the
+# final state: the DKMS pair is installed by the post-provision playbook and
+# the kernel trim runs after that, both later than any provision script. The
+# hook that prevents this lives in provision/ionic.sh; this is what proves it
+# took.
+#
+# Why it matters: a stale in-tree ionic.ko in the initramfs loads before any
+# rootfs modules.dep is consulted, so ionic_rdma -- built against the patched
+# DKMS ionic -- fails on a symbol version mismatch, and nothing in that
+# failure names the initramfs. It shipped that way for weeks.
+#
+# Written as an if/exit rather than `! lsinitramfs ... | grep -q`: a command
+# whose status is inverted with `!` never trips `set -e`.
+for _img in /boot/initrd.img-*; do
+    [ -e "${_img}" ] || continue
+    if lsinitramfs "${_img}" | grep -qE '(^|/)(ionic|ionic_rdma|ernic_p4)\.ko(\.[a-z]+)?$'; then
+        echo "ERROR: an ionic module is present in ${_img}" >&2
+        echo "       the initramfs would load it before the DKMS pair on the" >&2
+        echo "       rootfs, and ionic_rdma would fail on a symbol version" >&2
+        echo "       mismatch. See /etc/initramfs-tools/hooks/ionic-exclude" >&2
+        lsinitramfs "${_img}" | grep -E 'ionic|ernic_p4' >&2 || true
+        exit 1
+    fi
+done
+echo "initramfs: no ionic modules in $(ls -1 /boot/initrd.img-* | wc -l) image(s)"

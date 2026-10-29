@@ -49,12 +49,12 @@ independently.
 **Pinned Commits**
 
 [![libvfio-user 5b9c722](https://img.shields.io/badge/libvfio--user-5b9c722-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/5b9c7220647e45a0bbfc2a22bef05bbfd56e5742)
-[![qemu-minimal c079195](https://img.shields.io/badge/qemu--minimal-c079195-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/c0791954aec508bfd3f26d11d6960f279d4b175a)
-[![rocm-ernic 6702489](https://img.shields.io/badge/rocm--ernic-6702489-006F62)](https://github.com/ROCm/rocm-ernic/commit/670248907aefd612e1c52a6e5987e1f9d3b32c2f)
+[![qemu-minimal 5ee7176](https://img.shields.io/badge/qemu--minimal-5ee7176-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/5ee7176beb785c0068c76d0e5dd2b0cdc32546ca)
+[![rocm-ernic 8f35f4a](https://img.shields.io/badge/rocm--ernic-8f35f4a-006F62)](https://github.com/ROCm/rocm-ernic/commit/8f35f4a8ae1c3de5330805ebb92f58596d9519a2)
 [![rocjitsu 73c3cf3](https://img.shields.io/badge/rocjitsu-73c3cf3-006F62)](https://github.com/ROCm/rocm-systems/commit/73c3cf3da4bf65a06bc41421bbd65d5e13baadaf)
 [![spdk 18d1d8d](https://img.shields.io/badge/spdk-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
 [![fio d2dcd7e](https://img.shields.io/badge/fio-d2dcd7e-4B8BBE)](https://github.com/axboe/fio/commit/d2dcd7e053d1902d2420f151c83990e6acdd9f8c)
-[![ucx e3d43d2](https://img.shields.io/badge/ucx-e3d43d2-4B8BBE)](https://github.com/openucx/ucx/commit/e3d43d2cf01f15a7f66a90ca4432a03b8a342034)
+[![ucx 5ee910c](https://img.shields.io/badge/ucx-5ee910c-4B8BBE)](https://github.com/openucx/ucx/commit/5ee910c113954a8b3805d67d4c416c04caec0ff5)
 [![etcd-cpp-apiv3 7c6e714](https://img.shields.io/badge/etcd--cpp--apiv3-7c6e714-419EDA)](https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3/commit/7c6e714f188f9576e25e0350cac4181139eec23e)
 
 <!-- END PINNED BADGES -->

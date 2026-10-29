@@ -128,8 +128,23 @@ RUN git init /build/rocm-systems && \
 #
 # Narrow on purpose: one warning, still reported, still visible in the log.
 # Upstream has taken this shape of fix twice before (0644784 for GCC 15,
-# e36e73e for a false-positive maybe-uninitialized), so this should be
-# removable once they do it again.
+# e36e73e for a false-positive maybe-uninitialized), and is taking it again:
+# ROCm/rocm-systems#14530 "[rocjitsu] Fill execution fuzz inputs without
+# vector growth" sizes the vector up front and fills it with a cursor, so the
+# reserve/push_back reallocation path GCC 14 misreads is gone entirely. Open
+# and blocked as of 2026-10-29, not merged.
+#
+# REMOVE THIS FLAG once rocjitsu_commit is past that merge -- and promptly.
+# It reaches CMAKE_CXX_FLAGS for the whole build, so while it is here a
+# genuine free-nonheap-object anywhere in rocjitsu is demoted to a warning
+# too. That is an acceptable trade against an unbuildable image and a bad one
+# against nothing.
+#
+# Note what #14530 does *not* do: it fixes this instance, not the class. The
+# four fuzz/ subdirectories are still added unconditionally and
+# rj_configure_target still hardcodes -Werror, so the next compiler false
+# positive anywhere under fuzz/ breaks every consumer again. That half of the
+# report was not taken.
 #
 # FETCHCONTENT_SOURCE_DIR_LIBVFIO-USER is CMake's documented per-dependency
 # override: FetchContent upper-cases the declared name (`libvfio-user`) and

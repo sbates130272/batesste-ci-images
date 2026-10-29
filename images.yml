@@ -354,7 +354,7 @@ images:
       # whichever branch ucx_branch names.
       ucx_repo: https://github.com/openucx/ucx.git
       ucx_branch: v1.23.x
-      ucx_commit: e3d43d2cf01f15a7f66a90ca4432a03b8a342034
+      ucx_commit: 5ee910c113954a8b3805d67d4c416c04caec0ff5
       etcd_repo: https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git
       etcd_commit: 7c6e714f188f9576e25e0350cac4181139eec23e
       # Abseil and gRPC are built from source because Ubuntu's libgrpc++-dev
@@ -405,7 +405,7 @@ images:
     base: ubuntu-libvfio-user
     artifact: true
     vars:
-      rocm_ernic_commit: 670248907aefd612e1c52a6e5987e1f9d3b32c2f
+      rocm_ernic_commit: 8f35f4a8ae1c3de5330805ebb92f58596d9519a2
     build_args:
       ROCM_ERNIC_COMMIT: "{rocm_ernic_commit}"
     # This image links against libvfio-user, so that pin belongs in the tag:
@@ -763,7 +763,7 @@ images:
       # ubuntu-qcow2-gen -- the ansible/ tree its guest builds are driven by, so
       # the CLI and the playbooks always come from one commit.
       qemu_minimal_repo: https://github.com/sbates130272/qemu-minimal.git
-      qemu_minimal_commit: c0791954aec508bfd3f26d11d6960f279d4b175a
+      qemu_minimal_commit: 5ee7176beb785c0068c76d0e5dd2b0cdc32546ca
       # Provenance only, and empty here: the default target builds a release
       # tag, which belongs to no branch. A fork variant fills it in and the
       # label appears only there.
@@ -1090,6 +1090,24 @@ images:
           flavour: ionic
           vm_packages: ionic.txt
           probe_ssh_port: 2223
+          # The P4-capable ionic stack, baked in rather than left to the
+          # consumer. This flavour shipped with no post_playbook and an empty
+          # dkms list until 2026-10-29 -- the in-tree ionic_rdma from the
+          # guest kernel and nothing built -- because the playbook that could
+          # change that did not exist. qemu-minimal 5ee7176 adds
+          # vm-ernic-p4.yml, which is self-sufficient: it runs ernic_source,
+          # then ernic_guest_setup with patches/p4 on top of the base series
+          # (which reinstalls ionic-ernic as a DKMS package), then
+          # ernic_p4_dkms for ernic_p4.ko.
+          #
+          # NOT vm-ernic-srq.yml as well. Both playbooks rebuild ionic, by
+          # different routes -- srq through ernic_srq_dkms with patches/srq,
+          # p4 through ernic_guest_setup with patches/p4 -- and neither knows
+          # about the other's series, so whichever runs last wins and the
+          # first one's patches are gone. A guest wanting both needs one
+          # playbook that passes both directories; see the note to
+          # qemu-minimal.
+          post_playbook: vm-ernic-p4.yml
           kernel_ref: v7.2.6
           # This flavour installs no amdgpu at all -- provision/ionic.sh does
           # not mention it, and there is no GPU in an ionic guest to drive.

@@ -1143,6 +1143,30 @@ ROCM_PATH='${FINAL_ROCM_PATH}'
 ROCM_VERSION='${FINAL_ROCM_VERSION}'
 KERNEL_REF='${FINAL_KERNEL_REF}'
 EOF
+    # Shared trim steps, prepended so every flavour's trim gets them without
+    # having to remember. A *quoted* heredoc: the variables below belong to
+    # the guest script, and the preamble above is unquoted precisely so its
+    # ${FINAL_*} do expand here. Mixing the two in one heredoc is how this
+    # first went in with ${_i} silently expanded to empty.
+    cat >> "${TRIMSH}" <<'SHARED_TRIM_EOF'
+# An initramfs whose kernel has no modules tree is nobody's: no grub entry
+# references it, nothing regenerates it, and `update-initramfs -d` refuses it
+# because the "kernel" is not one initramfs-tools knows. The amdgpu-dkms
+# install path produces exactly one, /boot/initrd.img-added, from an
+# update-initramfs call with a bad -k -- the build log carries the matching
+# "depmod: ERROR: Bad version passed added".
+#
+# This lived in trim/kernel-only.sh first, which meant the slim flavour -- the
+# one image built to be small -- kept 29 MB of it. The verify probe's
+# initramfs_orphans list is what caught that.
+for _i in /boot/initrd.img-*; do
+    [ -e "${_i}" ] || continue
+    _k=${_i#/boot/initrd.img-}
+    [ -d "/lib/modules/${_k}" ] && continue
+    echo "trim: removing orphaned ${_i} ($(sudo du -h "${_i}" | cut -f1))"
+    sudo rm -f "${_i}"
+done
+SHARED_TRIM_EOF
     cat "${TRIM_SCRIPT}" >> "${TRIMSH}"
     echo "Trimming the guest with trim/${TRIM_NAME}"
     PROBE_PERSIST=1 probe-guest "/output/${FINAL_VM_NAME}.qcow2" \

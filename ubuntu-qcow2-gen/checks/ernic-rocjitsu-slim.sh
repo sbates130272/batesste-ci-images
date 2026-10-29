@@ -492,3 +492,31 @@ test "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 20
 # regenerate the file if it is wrong.
 sudo -n grep -q 'name: *"\?en\*' /etc/netplan/50-cloud-init.yaml
 test -z "$(sudo -n grep -l macaddress /etc/netplan/*.yaml || true)"
+
+# No ionic module in any initramfs, asserted against the FINISHED image.
+#
+# This runs in the verification boot, which is the only place that sees the
+# final state: the DKMS pair is installed by the post-provision playbook and
+# the kernel trim runs after that, both later than any provision script. The
+# hook that prevents this lives in provision/ernic-rocjitsu.sh; this is what proves it
+# took.
+#
+# Why it matters: a stale in-tree ionic.ko in the initramfs loads before any
+# rootfs modules.dep is consulted, so ionic_rdma -- built against the patched
+# DKMS ionic -- fails on a symbol version mismatch, and nothing in that
+# failure names the initramfs. It shipped that way for weeks.
+#
+# Written as an if/exit rather than `! lsinitramfs ... | grep -q`: a command
+# whose status is inverted with `!` never trips `set -e`.
+for _img in /boot/initrd.img-*; do
+    [ -e "${_img}" ] || continue
+    if lsinitramfs "${_img}" | grep -qE '(^|/)(ionic|ionic_rdma|ernic_p4)\.ko(\.[a-z]+)?$'; then
+        echo "ERROR: an ionic module is present in ${_img}" >&2
+        echo "       the initramfs would load it before the DKMS pair on the" >&2
+        echo "       rootfs, and ionic_rdma would fail on a symbol version" >&2
+        echo "       mismatch. See /etc/initramfs-tools/hooks/ionic-exclude" >&2
+        lsinitramfs "${_img}" | grep -E 'ionic|ernic_p4' >&2 || true
+        exit 1
+    fi
+done
+echo "initramfs: no ionic modules in $(ls -1 /boot/initrd.img-* | wc -l) image(s)"
