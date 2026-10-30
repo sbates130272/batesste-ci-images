@@ -409,6 +409,38 @@ find "${DESTDIR}" -name 'ionic_rdma.ko*' -delete
 HOOK
 sudo chmod 0755 /etc/initramfs-tools/hooks/ionic-exclude
 
+# Load the RDMA half at boot. Only `ionic` autoloads: modules.alias binds it to
+# the PCI id the vfio-user NIC presents, while ionic_rdma and ernic_p4 are
+# reachable only through auxiliary devices `ionic` has to register first.
+#
+#   alias pci:v00001DD8d00001002sv*sd*bc*sc*i*  ionic
+#   alias auxiliary:ionic.rdma                  ionic_rdma
+#   alias auxiliary:ionic.p4                    ernic_p4
+#
+# So udev binds the NIC, loads ionic, and stops. ionic_rdma is never loaded and
+# `ibv_devinfo -l` reports "0 HCAs found" until something modprobes it by hand
+# -- which reads as a broken verbs stack rather than an unloaded module.
+#
+# One module per line rather than a single modprobe: `modprobe -a ionic
+# ionic_rdma` fails EINVAL because ionic_rdma probes before ionic has finished
+# registering the auxiliary device. systemd-modules-load runs one modprobe per
+# line, which is exactly the sequencing that needs.
+#
+# ernic_p4 is deliberately not here. Its auxiliary device only exists once a P4
+# program is loaded, so naming it would mean a boot-time modprobe for a device
+# that usually is not there -- the same reasoning that set
+# ernic_p4_dkms_load: false in the playbook. A consumer running P4 loads it.
+#
+# Unrelated to the initramfs hook above: that stops a *stale* ionic winning on
+# srcversion, this loads a module nothing else would.
+sudo tee /etc/modules-load.d/rocm-ernic-ionic.conf > /dev/null <<'MODLOAD'
+# The ionic DKMS pair from rocm-ernic. Order matters: ionic_rdma binds an
+# auxiliary device that ionic registers.
+ionic
+ionic_rdma
+MODLOAD
+sudo chmod 0644 /etc/modules-load.d/rocm-ernic-ionic.conf
+
 # amdgpu-dkms, installed for its *source* -- the postinst's own build cannot
 # succeed here.  It builds the unpatched tree against the 7.2.4 headers, that
 # fails, and without this the failure propagates through run-parts into dpkg

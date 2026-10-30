@@ -512,6 +512,27 @@ case "${_P4KO}" in
         ;;
 esac
 
+# ionic_rdma has no alias udev can act on -- it binds `auxiliary:ionic.rdma`,
+# which exists only after ionic registers it -- so without this file nothing
+# loads it and ibv_devinfo reports "0 HCAs found". Checked here because the
+# symptom surfaces in a consumer's job rather than in the build.
+_conf=/etc/modules-load.d/rocm-ernic-ionic.conf
+if [ ! -s "${_conf}" ]; then
+    echo "ERROR: ${_conf} is missing. ionic autoloads on its PCI id but" \
+         "ionic_rdma does not, so this guest would boot with no verbs" \
+         "device." >&2
+    exit 1
+fi
+_want=$(printf 'ionic\nionic_rdma\n')
+_got=$(grep -vE '^\s*#|^\s*$' "${_conf}")
+if [ "${_got}" != "${_want}" ]; then
+    echo "ERROR: ${_conf} should list ionic then ionic_rdma, in that order;" \
+         "it has:" >&2
+    printf '%s\n' "${_got}" >&2
+    exit 1
+fi
+echo "modules-load.d: ionic, ionic_rdma"
+
 # No ionic module in any initramfs, asserted against the FINISHED image.
 #
 # This runs in the verification boot, which is the only place that sees the

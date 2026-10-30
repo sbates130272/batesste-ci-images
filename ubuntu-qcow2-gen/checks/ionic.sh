@@ -65,6 +65,27 @@ if [ -s /etc/ionic-srq-p4.json ]; then
         esac
     done
     python3 -c 'import json;print("  stamp:", json.dumps(json.load(open("/etc/ionic-srq-p4.json")), sort_keys=True)[:200])'
+
+    # ionic_rdma has no alias of its own that udev can act on -- it binds
+    # `auxiliary:ionic.rdma`, which only exists after ionic registers it -- so
+    # without this file nothing loads it and ibv_devinfo finds 0 HCAs. Checked
+    # here because the symptom appears in a consumer's job, not in the build.
+    _conf=/etc/modules-load.d/rocm-ernic-ionic.conf
+    if [ ! -s "${_conf}" ]; then
+        echo "ERROR: ${_conf} is missing. ionic autoloads on its PCI id but" \
+             "ionic_rdma does not, so this guest would boot with no verbs" \
+             "device." >&2
+        exit 1
+    fi
+    _want=$(printf 'ionic\nionic_rdma\n')
+    _got=$(grep -vE '^\s*#|^\s*$' "${_conf}")
+    if [ "${_got}" != "${_want}" ]; then
+        echo "ERROR: ${_conf} should list ionic then ionic_rdma, in that" \
+             "order; it has:" >&2
+        printf '%s\n' "${_got}" >&2
+        exit 1
+    fi
+    echo "  modules-load.d: ionic, ionic_rdma"
 else
     # No playbook ran. The in-tree ionic_rdma is the contract, and the reason
     # this flavour exists: drivers/infiniband/hw/ionic merged in 6.18, so a

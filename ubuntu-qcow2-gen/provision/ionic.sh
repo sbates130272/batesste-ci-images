@@ -163,4 +163,21 @@ find "${DESTDIR}" -name 'ionic_rdma.ko*' -delete
 find "${DESTDIR}" -name 'ernic_p4.ko*' -delete
 HOOK
 sudo chmod 0755 /etc/initramfs-tools/hooks/ionic-exclude
+
+# Load the RDMA half at boot -- see the identical block in
+# provision/ernic-rocjitsu.sh for the full reasoning. In short: modules.alias
+# binds `ionic` to the NIC's PCI id, but ionic_rdma is reachable only through
+# the `auxiliary:ionic.rdma` device ionic registers afterwards, so nothing
+# loads it and `ibv_devinfo -l` finds 0 HCAs. One per line because
+# `modprobe -a ionic ionic_rdma` fails EINVAL; systemd-modules-load runs one
+# modprobe per line. ernic_p4 is left out on purpose: its auxiliary device
+# exists only once a P4 program is loaded.
+sudo tee /etc/modules-load.d/rocm-ernic-ionic.conf > /dev/null <<'MODLOAD'
+# The ionic DKMS pair from rocm-ernic. Order matters: ionic_rdma binds an
+# auxiliary device that ionic registers.
+ionic
+ionic_rdma
+MODLOAD
+sudo chmod 0644 /etc/modules-load.d/rocm-ernic-ionic.conf
+
 sudo update-initramfs -u -k all
