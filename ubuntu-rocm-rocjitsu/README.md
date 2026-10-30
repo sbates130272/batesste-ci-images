@@ -333,16 +333,13 @@ Since qemu-minimal `ae551b3`, `run-vm` takes both:
 --cpu-phys-bits 41 --pci-hole64-size 512G
 ```
 
-[`compose/perf-stack.yml`](../compose/perf-stack.yml) passes exactly that pair,
-so the normal path works without the caller doing anything. This is what made
-`max` safe to default to; before those options existed, `max` produced an image
-whose device a guest was strictly worse off attached to, and the default was
-`keep` for that reason.
+[`compose/perf-stack.yml`](../compose/perf-stack.yml) passes that pair, so the
+normal path needs nothing from the caller. Their arrival is what made `max`
+safe to default to; until then it was `keep`.
 
-**A caller that attaches this image without setting both is worse off than with
-a small BAR** -- not merely capped, but left with no 64-bit window at all, per
-the table above. If you are driving QEMU yourself, set both or build with
-`rocjitsu_vram_aperture: keep`. The measurements behind this are in
+**Attaching this image without setting both is worse than a small BAR** -- not
+capped, but no 64-bit window at all, per the table. Driving QEMU yourself, set
+both or build with `rocjitsu_vram_aperture: keep`. Measurements in
 [`rocjitsu-large-bar.md`](../rocjitsu-large-bar.md).
 
 Note also that large BAR is a P2P DMA concern rather than a prerequisite for
