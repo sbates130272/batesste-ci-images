@@ -97,24 +97,44 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     wget \
     openssh-client
 
-# No Docker CLI here, deliberately.
+# Docker CLI (no daemon): jobs running *inside* this image drive the host's
+# daemon over a bind-mounted /var/run/docker.sock -- `docker pull` for the CI
+# images they need, and `docker compose up` via `qemu-tool compose` to bring up
+# the vfio-user stacks. Ubuntu's docker.io package would pull in the engine, so
+# take the CLI-only packages from Docker's own repository instead.
+# apt reads an ASCII-armoured key directly from a .asc, so there is no need to
+# pull gnupg in just to dearmor it.
 #
-# This image carried docker-ce-cli, docker-buildx-plugin and
-# docker-compose-plugin -- 149 MB of a 1.5 GB image, about 10% -- so that
-# `qemu-tool compose` could shell out to `docker compose` for a job running
-# *inside* this container against a bind-mounted /var/run/docker.sock.
+# This block was removed in c7ebf98 and restored here. The removal measured the
+# cost correctly -- 149 MB of a 1.5 GB image -- and checked the right things,
+# but checked them all in *this* repository: `qemu-tool compose` is invoked
+# nowhere here, every buildx call in .github/workflows runs on the runner
+# rather than in this image, and nothing here bind-mounts the socket. All true,
+# and all irrelevant to how the image is actually used, because the consumers
+# are in other repositories. They use it as a GitHub Actions *container*, where
+# the lanes pull images and run compose stacks from inside it, and they broke
+# on `docker: not found` the moment qemu11.1.3-vfu.5b9c722 shipped.
 #
-# Nothing in this repo has ever done that. `qemu-tool compose` is invoked
-# nowhere; the only two subcommands used are gen-vm and run-vm. Every buildx
-# call in .github/workflows runs on the runner, not in this image, and no
-# compose file or workflow bind-mounts the docker socket into it.
-#
-# Adopting `qemu-tool compose` would not bring it back either: that wrapper
-# runs on the host, where Docker already is. What would bring it back is a
-# real docker-in-docker consumer -- a job that runs in this image and drives
-# the host daemon. If one appears, restore this block rather than reaching for
-# docker.io, which pulls the engine in too.
-#
+# So the 149 MB stays. A published image's contract is what its consumers run,
+# not what this repository happens to exercise, and that cannot be established
+# by grepping this tree -- which is the whole lesson of the removal.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    . /etc/os-release && \
+    install -m 0755 -d /etc/apt/keyrings && \
+    curl -fsSL -o /etc/apt/keyrings/docker.asc \
+        https://download.docker.com/linux/ubuntu/gpg && \
+    chmod a+r /etc/apt/keyrings/docker.asc && \
+    printf 'Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: %s\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n' \
+        "${VERSION_CODENAME}" > /etc/apt/sources.list.d/docker.sources && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        docker-ce-cli \
+        docker-buildx-plugin \
+        docker-compose-plugin && \
+    docker --version && \
+    docker compose version
+
 # oras and zstd: guest disks are published as bare OCI artifacts, and this is
 # the image that consumes them.  Without these a consuming CI job installs both
 # on every run, on the critical path, before it can fetch a guest.
