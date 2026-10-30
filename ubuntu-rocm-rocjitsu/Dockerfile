@@ -22,7 +22,12 @@ ARG ROCJITSU_BRANCH=develop
 # bdc4aea25 "harden PCI and VFIO compute transport" and d5927b503 "qualify the
 # QEMU VFIO compute workflow", and then deleted, so the old pin is not an
 # ancestor of anything that still exists.
-ARG ROCJITSU_COMMIT=98f6a72dcc49a5f809593deacbe5c9df89cde3b3
+ARG ROCJITSU_COMMIT
+
+# The pin(s) above carry no default on purpose -- images.yml is the only place
+# a pin is written. See "Why the Dockerfiles have no pin defaults" in the
+# README. An undefaulted ARG is empty rather than an error, so this asserts.
+RUN : "${ROCJITSU_COMMIT:?set from images.yml by ci-images-tool.py; pass --build-arg ROCJITSU_COMMIT=... for a bare docker build}"
 # Which config the vfio-user probe below and the default CMD serve. A build
 # variant pinned to a different upstream ref can point at a renamed or newly
 # added profile from images.yml without editing this file.
@@ -98,6 +103,49 @@ RUN git init /build/rocm-systems && \
 # CMAKE_CXX_FLAGS, never the C compile of lib/*.c, so it cannot collide with
 # glibc's own static_assert macro either way.
 #
+# -Wno-error=free-nonheap-object is for upstream's fuzz targets, not for ours.
+#
+# rocjitsu's CMakeLists adds fuzz/{decode,code_object,execution,multiplexer}
+# with bare add_subdirectory() calls -- no option gates them, and the
+# -DBUILD_TESTING=OFF above gates only tests/ -- so they are part of every
+# build whether or not anything here fuzzes. rj_configure_target() then
+# hardcodes -Wall -Wextra -Wpedantic -Werror with no toggle, and at -O3 GCC 14
+# raises a false positive inside std::vector::push_back in
+# execution_fuzz_core.cpp:
+#
+#   new_allocator.h:172:33: error: 'void operator delete(void*, std::size_t)'
+#   called on pointer '<unknown>' with nonzero offset [1, 1024]
+#   ...inlined from rocjitsu::execution_fuzz::random_input(...)
+#
+# which fails the whole build at [747/760]. Seen on 73c3cf3; the fuzzers landed
+# 2026-10-22/23 and nothing upstream has touched them since.
+#
+# -Wno-error= and not -Wno-: a plain -Wno-free-nonheap-object here would be
+# re-enabled by the -Wall that rj_configure_target appends afterwards, because
+# GCC applies warning *enablement* in order. The error/warning classification
+# is a separate per-warning table that a later blanket -Werror does not reset,
+# so demoting it to a warning survives where disabling it would not.
+#
+# Narrow on purpose: one warning, still reported, still visible in the log.
+# Upstream has taken this shape of fix twice before (0644784 for GCC 15,
+# e36e73e for a false-positive maybe-uninitialized), and is taking it again:
+# ROCm/rocm-systems#14530 "[rocjitsu] Fill execution fuzz inputs without
+# vector growth" sizes the vector up front and fills it with a cursor, so the
+# reserve/push_back reallocation path GCC 14 misreads is gone entirely. Open
+# and blocked as of 2026-10-29, not merged.
+#
+# REMOVE THIS FLAG once rocjitsu_commit is past that merge -- and promptly.
+# It reaches CMAKE_CXX_FLAGS for the whole build, so while it is here a
+# genuine free-nonheap-object anywhere in rocjitsu is demoted to a warning
+# too. That is an acceptable trade against an unbuildable image and a bad one
+# against nothing.
+#
+# Note what #14530 does *not* do: it fixes this instance, not the class. The
+# four fuzz/ subdirectories are still added unconditionally and
+# rj_configure_target still hardcodes -Werror, so the next compiler false
+# positive anywhere under fuzz/ breaks every consumer again. That half of the
+# report was not taken.
+#
 # FETCHCONTENT_SOURCE_DIR_LIBVFIO-USER is CMake's documented per-dependency
 # override: FetchContent upper-cases the declared name (`libvfio-user`) and
 # consults this variable before downloading, so a non-empty value makes it use
@@ -115,7 +163,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
-    "-DCMAKE_CXX_FLAGS=-D_Static_assert=static_assert" \
+    "-DCMAKE_CXX_FLAGS=-D_Static_assert=static_assert -Wno-error=free-nonheap-object" \
     "-DCMAKE_SHARED_LINKER_FLAGS=-static-libstdc++" \
     "-DCMAKE_EXE_LINKER_FLAGS=-static-libstdc++" \
     -DCMAKE_INSTALL_PREFIX=/usr/local \

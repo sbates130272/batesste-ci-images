@@ -14,7 +14,7 @@ ARG FIO_REPO=https://github.com/axboe/fio.git
 # or on master: the ubuntu-cuda-rocm-fio@async-hipfile variant overrides both
 # args to build it from a ROCm fork branch. Everything below is written to
 # work either way.
-ARG FIO_COMMIT=d2dcd7e053d1902d2420f151c83990e6acdd9f8c
+ARG FIO_COMMIT
 # The therock component line the base image was built on. hipFile has to be
 # installed from that same line: therock serves several side by side out of one
 # versionless "stable" suite, /opt/rocm is an alternatives symlink pointing at
@@ -22,7 +22,12 @@ ARG FIO_COMMIT=d2dcd7e053d1902d2420f151c83990e6acdd9f8c
 # When 10.1 appeared, bare amdrocm-hipfile-dev put its headers in
 # /opt/rocm/core-10.1 while /opt/rocm still resolved to core-10.0, and fio's
 # configure failed to find hipfile.h that was sitting on disk.
-ARG ROCM_VERSION=10.1
+ARG ROCM_VERSION
+
+# The pin(s) above carry no default on purpose -- images.yml is the only place
+# a pin is written. See "Why the Dockerfiles have no pin defaults" in the
+# README. An undefaulted ARG is empty rather than an error, so this asserts.
+RUN : "${FIO_COMMIT:?set from images.yml by ci-images-tool.py; pass --build-arg FIO_COMMIT=... for a bare docker build}" "${ROCM_VERSION:?set from images.yml by ci-images-tool.py; pass --build-arg ROCM_VERSION=... for a bare docker build}"
 ARG CACHE_BUST=
 
 RUN echo "Cache bust: ${CACHE_BUST:-none}" > /tmp/fio_cache_bust.txt

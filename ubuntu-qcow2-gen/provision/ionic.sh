@@ -116,3 +116,68 @@ sudo install -d -m 0755 /usr/local/share/rocm-ernic
 printf '%s:none\n' "${RDMA_CORE_VERSION}" |
     sudo tee /usr/local/share/rocm-ernic/provider.stamp > /dev/null
 sudo chmod 0644 /usr/local/share/rocm-ernic/provider.stamp
+
+# --- keep the in-tree ionic out of the initramfs --------------------------
+#
+# This flavour shipped with the in-tree ionic and nothing built until
+# post_playbook gained vm-ernic-p4.yml, which installs a *patched* ionic pair
+# into updates/dkms and displaces the in-tree modules. That is the same shape
+# that broke ernic-rocjitsu, and it breaks the same way:
+#
+#   MODULES=most sweeps the stock in-tree ionic.ko into the initramfs at bake
+#   time. The initramfs runs before any rootfs modules.dep is consulted, so
+#   the stale module is resident first, and ionic_rdma -- built against the
+#   patched one -- then fails to load on a symbol version mismatch. The
+#   srcversions differ (4C88CEF against the DKMS build's 451442B); neither
+#   `depmod -a` nor an /etc/modules-load.d entry helps, because depmod is
+#   already correct and modules-load.d runs after the damage.
+#
+# Installed here even though the DKMS install happens later, in the
+# post-provision playbook: a hook is a file, and it applies to every
+# update-initramfs that runs after it -- including the playbook's. The
+# matching assertion cannot live here for the same reason, because at this
+# point there is nothing wrong yet; it is in checks/ionic.sh, which runs in
+# the verification boot against the finished image.
+#
+# Dropping them is safe: root is on virtio and the emulated NIC is not a boot
+# device. The DKMS pair then loads from the rootfs, where modules.dep already
+# points at both halves.
+sudo install -d -m 0755 /etc/initramfs-tools/hooks
+sudo tee /etc/initramfs-tools/hooks/ionic-exclude > /dev/null <<'HOOK'
+#!/bin/sh
+PREREQ=""
+prereqs() { echo "${PREREQ}"; }
+case "${1}" in prereqs) prereqs; exit 0 ;; esac
+[ -n "${DESTDIR}" ] || exit 0
+# The queue first: at the time a hook runs the module has not been copied
+# yet, it is pending in mkinitramfs' __MODULES_TO_ADD as a bare name, and the
+# apply_add_modules *after* the hooks is what copies it. A find alone sees
+# nothing. The find still runs, for the copies already staged.
+if [ -n "${__MODULES_TO_ADD:-}" ] && [ -f "${__MODULES_TO_ADD}" ]; then
+    grep -vxE 'ionic|ionic_rdma|ernic_p4' "${__MODULES_TO_ADD}" \
+        > "${__MODULES_TO_ADD}.keep" || true
+    mv "${__MODULES_TO_ADD}.keep" "${__MODULES_TO_ADD}"
+fi
+find "${DESTDIR}" -name 'ionic.ko*' -delete
+find "${DESTDIR}" -name 'ionic_rdma.ko*' -delete
+find "${DESTDIR}" -name 'ernic_p4.ko*' -delete
+HOOK
+sudo chmod 0755 /etc/initramfs-tools/hooks/ionic-exclude
+
+# Load the RDMA half at boot -- see the identical block in
+# provision/ernic-rocjitsu.sh for the full reasoning. In short: modules.alias
+# binds `ionic` to the NIC's PCI id, but ionic_rdma is reachable only through
+# the `auxiliary:ionic.rdma` device ionic registers afterwards, so nothing
+# loads it and `ibv_devinfo -l` finds 0 HCAs. One per line because
+# `modprobe -a ionic ionic_rdma` fails EINVAL; systemd-modules-load runs one
+# modprobe per line. ernic_p4 is left out on purpose: its auxiliary device
+# exists only once a P4 program is loaded.
+sudo tee /etc/modules-load.d/rocm-ernic-ionic.conf > /dev/null <<'MODLOAD'
+# The ionic DKMS pair from rocm-ernic. Order matters: ionic_rdma binds an
+# auxiliary device that ionic registers.
+ionic
+ionic_rdma
+MODLOAD
+sudo chmod 0644 /etc/modules-load.d/rocm-ernic-ionic.conf
+
+sudo update-initramfs -u -k all

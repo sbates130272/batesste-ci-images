@@ -39,7 +39,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 # Accept QEMU tags or commit SHAs
 ARG QEMU_REPO=https://gitlab.com/qemu-project/qemu.git
-ARG QEMU_COMMIT=v11.1.1
+ARG QEMU_COMMIT
+
+# The pin(s) above carry no default on purpose -- images.yml is the only place
+# a pin is written. See "Why the Dockerfiles have no pin defaults" in the
+# README. An undefaulted ARG is empty rather than an error, so this asserts.
+RUN : "${QEMU_COMMIT:?set from images.yml by ci-images-tool.py; pass --build-arg QEMU_COMMIT=... for a bare docker build}"
 
 # The qemu-minimal checkout the qemu-tool CLI is installed from.  Guest
 # provisioning parameters (release, size, packages, playbook, kernel) are not
@@ -92,13 +97,27 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     wget \
     openssh-client
 
-# Docker CLI (no daemon): qemu-tool's "compose" subcommand shells out to
-# "docker compose", and CI jobs running inside this image drive the host's
-# daemon over a bind-mounted /var/run/docker.sock.  Ubuntu's docker.io package
-# would pull in the engine, so take the CLI-only packages from Docker's own
-# repository instead.
+# Docker CLI (no daemon): jobs running *inside* this image drive the host's
+# daemon over a bind-mounted /var/run/docker.sock -- `docker pull` for the CI
+# images they need, and `docker compose up` via `qemu-tool compose` to bring up
+# the vfio-user stacks. Ubuntu's docker.io package would pull in the engine, so
+# take the CLI-only packages from Docker's own repository instead.
 # apt reads an ASCII-armoured key directly from a .asc, so there is no need to
 # pull gnupg in just to dearmor it.
+#
+# This block was removed in c7ebf98 and restored here. The removal measured the
+# cost correctly -- 149 MB of a 1.5 GB image -- and checked the right things,
+# but checked them all in *this* repository: `qemu-tool compose` is invoked
+# nowhere here, every buildx call in .github/workflows runs on the runner
+# rather than in this image, and nothing here bind-mounts the socket. All true,
+# and all irrelevant to how the image is actually used, because the consumers
+# are in other repositories. They use it as a GitHub Actions *container*, where
+# the lanes pull images and run compose stacks from inside it, and they broke
+# on `docker: not found` the moment qemu11.1.3-vfu.5b9c722 shipped.
+#
+# So the 149 MB stays. A published image's contract is what its consumers run,
+# not what this repository happens to exercise, and that cannot be established
+# by grepping this tree -- which is the whole lesson of the removal.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     . /etc/os-release && \

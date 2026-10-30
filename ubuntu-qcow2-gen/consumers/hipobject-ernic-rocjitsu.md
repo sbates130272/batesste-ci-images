@@ -216,7 +216,7 @@ Neither alone is any use. With only the kernel half the device advertises
 dispatches into a provider with no `create_srq` op — no rdma-core release, nor
 `master`, has one ([`linux-rdma/rdma-core#1799`][pr] is still open).
 
-`/etc/ionic-srq.json` records both pins. Three things to know:
+`/etc/ionic-srq-p4.json` records the pins. Three things to know:
 
 1. **Rebuilding `ionic-ernic` here silently removes SRQ** unless you pass
    `fetch-ionic-sources.sh --patches-dir .../patches/srq`. A stock rebuild

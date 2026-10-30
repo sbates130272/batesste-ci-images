@@ -30,9 +30,19 @@ guest.
 - **`ansible-core`**, installed with pipx into `/usr/local/bin` so both
   `ansible-playbook` and `ansible-galaxy` are on `PATH` for
   `qemu-tool --ansible-playbook`
-- **Docker CLI, buildx and compose plugins** -- the CLI only, no engine.
-  `qemu-tool compose` shells out to `docker compose`, and jobs running in this
-  image drive the host daemon over a bind-mounted `/var/run/docker.sock`.
+- **The Docker CLI** -- `docker-ce-cli`, `docker-buildx-plugin` and
+  `docker-compose-plugin`, 149 MB -- so a job running *inside* this image can
+  drive the host's daemon over a bind-mounted `/var/run/docker.sock`: `docker
+  pull` for the images it needs, and `docker compose up` via `qemu-tool
+  compose`. Taken from Docker's own repository rather than Ubuntu's
+  `docker.io`, which would pull the engine in too.
+
+  It was removed on 2026-10-29 and restored the next day. The removal checked
+  that nothing *in this repository* used it, which was correct and beside the
+  point: the consumers are other repositories that run this image as a GitHub
+  Actions container, and they broke on `docker: not found` as soon as
+  `qemu11.1.3-vfu.5b9c722` shipped. Treat the CLI as part of this image's
+  published contract.
 - **`oras` and `zstd`**, pinned by version and SHA256, for pulling published
   guest artifacts without installing them on the critical path of every job
 - **`pip3`** (`python3-pip`), so a consumer job does not have to `apt-get

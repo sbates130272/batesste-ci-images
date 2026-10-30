@@ -119,20 +119,15 @@ replace_yaml_var() {
     changed=1
 }
 
-# Same idea for a Dockerfile `ARG NAME=value` default.
-replace_arg_default() {
-    local name="$1" new="$2" file="$3"
-    if ! grep -qE "^ARG ${name}=" "$file"; then
-        echo "  WARNING: $(basename "$file") has no ARG ${name} — not tracked."
-        return
-    fi
-    sed -i -E "s|^ARG ${name}=.*|ARG ${name}=${new}|" "$file"
-    echo "  updated $(basename "$file"): ARG ${name}=${new}"
-    changed=1
-}
-
-# The Dockerfile ARG default is the fallback for a bare `docker build`; keep it
-# aligned with images.yml so the two cannot drift apart silently.
+# A literal string in a file that is not images.yml.
+#
+# There used to be a replace_arg_default() beside this, and a dozen calls to
+# both, keeping every Dockerfile `ARG NAME=<pin>` default in step with
+# images.yml. The Dockerfiles carry no pin defaults any more -- see "Why the
+# Dockerfiles have no pin defaults" in the README -- so there is nothing left
+# to keep in step and both the helper and its callers are gone. What remains
+# is this, for the one case that is a literal rather than a pin: the
+# cuda-keyring .deb filename, which appears inside a RUN.
 replace_in_files() {
     local old="$1"
     local new="$2"
@@ -171,12 +166,30 @@ LIBVFIO_CURRENT=$(current_pin ubuntu-libvfio-user libvfio_user_commit)
 echo "    current: $LIBVFIO_CURRENT  latest: $LIBVFIO_LATEST"
 if check_nonempty "$LIBVFIO_LATEST" "libvfio-user HEAD" && [[ "$LIBVFIO_CURRENT" != "$LIBVFIO_LATEST" ]]; then
     replace_in_yaml "$LIBVFIO_CURRENT" "$LIBVFIO_LATEST"
-    replace_in_files "$LIBVFIO_CURRENT" "$LIBVFIO_LATEST" \
-        "$REPO_ROOT/ubuntu-rocm-ernic/Dockerfile" \
-        "$REPO_ROOT/ubuntu-qemu-libvfio-user/Dockerfile"
+    # ubuntu-libvfio-user is the only Dockerfile here that clones libvfio-user,
+    # so it is the only one with an ARG to keep in step. This named the ernic
+    # and qemu Dockerfiles instead -- both consume the built base image and
+    # have never had the ARG -- so the scrub warned on every bump that two
+    # files it could not have updated had drifted, while the one file that
+    # really had drifted went unmentioned and sat at 323f4cb for months.
 fi
 
 echo "==> Fetching latest qemu-minimal HEAD..."
+# Scrubbed again as of 2026-10-29. This was held at c079195 and *reported*
+# rather than rewritten while a three-repo sequence ran: rocm-ernic had to
+# clean up its guest half, then qemu-minimal had to repin onto that, and
+# taking this bump first would have moved the guest half of SRQ onto a tree
+# chosen before the cleanup. qemu-minimal 5ee7176 completed that -- its
+# requirements.yml and vars/ernic-pins.yml now name one rocm-ernic SHA rather
+# than two, and ionic_kernel_pin reached v7.2.6 -- so the gate is gone.
+#
+# One coupling outlives it and is the reason this sits next to the ernic
+# block below rather than anywhere else: moving qemu-minimal moves the guest
+# half of SRQ, while rocm_ernic_commit moves the server half. Upstream's own
+# requirements.yml says a guest ahead of its server fails ibv_create_srq(),
+# UCX declines rc_verbs and NIXL falls back to TCP -- silently, as a
+# throughput number rather than an error. Both pins track HEAD here, which
+# keeps the server at or ahead of the guest, which is the safe direction.
 QEMU_MINIMAL_LATEST=$(gh_curl \
     "https://api.github.com/repos/sbates130272/qemu-minimal/commits/main" \
     | jq -r '.sha')
@@ -195,8 +208,6 @@ ERNIC_CURRENT=$(current_pin ubuntu-rocm-ernic rocm_ernic_commit)
 echo "    current: $ERNIC_CURRENT  latest: $ERNIC_LATEST"
 if check_nonempty "$ERNIC_LATEST" "ROCM_ERNIC HEAD" && [[ "$ERNIC_CURRENT" != "$ERNIC_LATEST" ]]; then
     replace_in_yaml "$ERNIC_CURRENT" "$ERNIC_LATEST"
-    replace_in_files "$ERNIC_CURRENT" "$ERNIC_LATEST" \
-        "$REPO_ROOT/ubuntu-rocm-ernic/Dockerfile"
 fi
 
 echo "==> Fetching latest ROCJITSU HEAD..."
@@ -277,8 +288,6 @@ echo "    current: $SPDK_CURRENT  latest: $SPDK_LATEST  (${SPDK_SLUG}@${SPDK_BRA
 if check_nonempty "$SPDK_LATEST" "SPDK HEAD" \
     && [[ "$SPDK_CURRENT" != "$SPDK_LATEST" ]]; then
     replace_in_yaml "$SPDK_CURRENT" "$SPDK_LATEST"
-    replace_in_files "$SPDK_CURRENT" "$SPDK_LATEST" \
-        "$REPO_ROOT/ubuntu-spdk-libvfio-user/Dockerfile"
 fi
 
 echo "==> Fetching latest fio release..."
@@ -310,8 +319,6 @@ echo "    current: ${FIO_CURRENT:0:7} (${FIO_TAG_CURRENT:-no tag recorded})" \
 if check_nonempty "$FIO_LATEST" "fio release commit" \
     && [[ "$FIO_CURRENT" != "$FIO_LATEST" ]]; then
     replace_in_yaml "$FIO_CURRENT" "$FIO_LATEST"
-    replace_in_files "$FIO_CURRENT" "$FIO_LATEST" \
-        "$REPO_ROOT/ubuntu-cuda-rocm-fio/Dockerfile"
     # An `if` rather than `[[ ... ]] &&`: as the last statement in this block
     # a false test would be the block's exit status, and `set -e` would end
     # the scrub here with every pin below unscrubbed.
@@ -374,8 +381,6 @@ echo "    current: $NIXL_CURRENT  latest: $NIXL_LATEST"
 if check_nonempty "$NIXL_LATEST" "NIXL release tag" \
     && [[ "$NIXL_CURRENT" != "$NIXL_LATEST" ]]; then
     replace_yaml_var nixl_tag "$NIXL_LATEST" "$NIXL_CURRENT"
-    replace_arg_default NIXL_TAG "$NIXL_LATEST" \
-        "$REPO_ROOT/ubuntu-rocm-nixl/Dockerfile"
     NIXL_PINNED="$NIXL_LATEST"
 else
     NIXL_PINNED="$NIXL_CURRENT"
@@ -394,8 +399,6 @@ UCX_CURRENT=$(current_pin ubuntu-rocm-nixl ucx_commit)
 echo "    current: $UCX_CURRENT  latest: $UCX_LATEST  (branch: $UCX_BRANCH)"
 if check_nonempty "$UCX_LATEST" "UCX HEAD" && [[ "$UCX_CURRENT" != "$UCX_LATEST" ]]; then
     replace_in_yaml "$UCX_CURRENT" "$UCX_LATEST"
-    replace_in_files "$UCX_CURRENT" "$UCX_LATEST" \
-        "$REPO_ROOT/ubuntu-rocm-nixl/Dockerfile"
 fi
 
 echo "==> Fetching latest etcd-cpp-apiv3 HEAD..."
@@ -407,8 +410,6 @@ echo "    current: $ETCD_CURRENT  latest: $ETCD_LATEST"
 if check_nonempty "$ETCD_LATEST" "etcd-cpp-apiv3 HEAD" \
     && [[ "$ETCD_CURRENT" != "$ETCD_LATEST" ]]; then
     replace_in_yaml "$ETCD_CURRENT" "$ETCD_LATEST"
-    replace_in_files "$ETCD_CURRENT" "$ETCD_LATEST" \
-        "$REPO_ROOT/ubuntu-rocm-nixl/Dockerfile"
 fi
 
 # Abseil, gRPC and libfabric exist in this image only to satisfy NIXL, and
@@ -467,8 +468,6 @@ else
     if check_nonempty "$ABSL_UPSTREAM" "abseil tag from NIXL" \
         && [[ "$ABSL_CURRENT" != "$ABSL_UPSTREAM" ]]; then
         replace_yaml_var absl_tag "$ABSL_UPSTREAM" "$ABSL_CURRENT"
-        replace_arg_default ABSL_TAG "$ABSL_UPSTREAM" \
-            "$REPO_ROOT/ubuntu-rocm-nixl/Dockerfile"
     fi
 
     GRPC_UPSTREAM=$(nixl_arg GRPC_TAG)
@@ -477,8 +476,6 @@ else
     if check_nonempty "$GRPC_UPSTREAM" "gRPC tag from NIXL" \
         && [[ "$GRPC_CURRENT" != "$GRPC_UPSTREAM" ]]; then
         replace_yaml_var grpc_tag "$GRPC_UPSTREAM" "$GRPC_CURRENT"
-        replace_arg_default GRPC_TAG "$GRPC_UPSTREAM" \
-            "$REPO_ROOT/ubuntu-rocm-nixl/Dockerfile"
     fi
 
     LIBFABRIC_UPSTREAM=$(nixl_arg LIBFABRIC_VERSION)
@@ -488,8 +485,6 @@ else
     if check_nonempty "$LIBFABRIC_UPSTREAM" "libfabric tag from NIXL" \
         && [[ "$LIBFABRIC_CURRENT" != "$LIBFABRIC_UPSTREAM" ]]; then
         replace_yaml_var libfabric_tag "$LIBFABRIC_UPSTREAM" "$LIBFABRIC_CURRENT"
-        replace_arg_default LIBFABRIC_TAG "$LIBFABRIC_UPSTREAM" \
-            "$REPO_ROOT/ubuntu-rocm-nixl/Dockerfile"
     fi
 fi
 
@@ -519,8 +514,6 @@ echo "    current: $CUDA_CURRENT  latest: $CUDA_LATEST"
 if check_nonempty "$CUDA_LATEST" "CUDA toolkit version" \
     && [[ "$CUDA_CURRENT" != "$CUDA_LATEST" ]]; then
     replace_yaml_var cuda_version "$CUDA_LATEST" "$CUDA_CURRENT"
-    replace_arg_default CUDA_VERSION "$CUDA_LATEST" \
-        "$REPO_ROOT/ubuntu-cuda-rocm/Dockerfile"
 fi
 
 echo "==> Checking the therock component lines the pins name..."

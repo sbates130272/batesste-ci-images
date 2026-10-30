@@ -16,7 +16,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     libcmocka-dev
 
 ARG LIBVFIO_USER_REPO=https://gitlab.com/qemu-project/libvfio-user.git
-ARG LIBVFIO_USER_COMMIT=323f4cb6cddc3713fb7aebe44436f28b28b5413a
+ARG LIBVFIO_USER_COMMIT
+
+# The pin(s) above carry no default on purpose -- images.yml is the only place
+# a pin is written. See "Why the Dockerfiles have no pin defaults" in the
+# README. An undefaulted ARG is empty rather than an error, so this asserts.
+RUN : "${LIBVFIO_USER_COMMIT:?set from images.yml by ci-images-tool.py; pass --build-arg LIBVFIO_USER_COMMIT=... for a bare docker build}"
 ARG CACHE_BUST=
 
 RUN echo "Cache bust: ${CACHE_BUST:-none}" > /tmp/libvfio_user_cache_bust.txt

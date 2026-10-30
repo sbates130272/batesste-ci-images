@@ -238,6 +238,41 @@ jobs:
               && format('type=registry,mode=max,image-manifest=true,oci-mediatypes=true,ref={0}:ubuntu-base', env.CACHE_REGISTRY)
               || '' }}
 
+      # ci-images-tool.py imports the docker SDK at module scope, so the
+      # build-args call below needs the requirements even though it only
+      # reads images.yml. This job had no Python at all -- it builds two
+      # images and nothing else -- which is why the first attempt at passing
+      # the pins died on ModuleNotFoundError rather than on a wrong value.
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install tool dependencies
+        run: pip install -r requirements.txt
+
+      # The pins the Dockerfile needs, asked of images.yml rather than
+      # repeated here -- the same `build-args` subcommand the matrix job uses
+      # below. This step is not optional: ubuntu-libvfio-user's ARGs carry no
+      # defaults (see "Why the Dockerfiles have no pin defaults" in the
+      # README), so a build that does not pass LIBVFIO_USER_COMMIT stops at
+      # the assert rather than silently cloning something else. That is what
+      # it did on PR #123, because this job builds the bases directly instead
+      # of through bake and was the one caller nothing supplied.
+      #
+      # BASE_IMAGE is appended after, so the ref this run just built wins over
+      # the published default the tool emits.
+      - name: Compute base build args
+        id: baseargs
+        run: |
+          {
+            echo 'args<<ARGS_EOF'
+            ./ci-images-tool.py build-args ubuntu-libvfio-user
+            echo "BASE_IMAGE=${{ steps.refs.outputs.base }}"
+            echo ARGS_EOF
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push ubuntu-libvfio-user
         uses: docker/build-push-action@v7
         with:
@@ -246,7 +281,7 @@ jobs:
           push: true
           tags: ${{ steps.refs.outputs.vfu }}
           build-args: |
-            BASE_IMAGE=${{ steps.refs.outputs.base }}
+            ${{ steps.baseargs.outputs.args }}
           cache-from: >-
             type=registry,ref=${{ env.CACHE_REGISTRY }}:ubuntu-libvfio-user
           cache-to: >-
@@ -469,8 +504,14 @@ jobs:
           VFU="${LOCAL_REGISTRY}/ci-base:ubuntu-libvfio-user-${GITHUB_SHA}"
           docker buildx build --push -f ubuntu-base/Dockerfile -t "${BASE}" \
             --cache-from "type=registry,ref=${CACHE_REGISTRY}:ubuntu-base" .
+          # Same reason as the GHCR path above: these ARGs carry no defaults,
+          # so the pins have to be passed or the build stops at the assert.
+          ARGS=()
+          while IFS= read -r a; do
+              [ -n "${a}" ] && ARGS+=(--build-arg "${a}")
+          done < <(./ci-images-tool.py build-args ubuntu-libvfio-user)
           docker buildx build --push -f ubuntu-libvfio-user/Dockerfile -t "${VFU}" \
-            --build-arg "BASE_IMAGE=${BASE}" \
+            "${ARGS[@]}" --build-arg "BASE_IMAGE=${BASE}" \
             --cache-from "type=registry,ref=${CACHE_REGISTRY}:ubuntu-libvfio-user" .
           echo "BASE_IMAGE_FOR_UBUNTU_BASE=${BASE}" >> "$GITHUB_ENV"
           echo "BASE_IMAGE_FOR_UBUNTU_LIBVFIO_USER=${VFU}" >> "$GITHUB_ENV"

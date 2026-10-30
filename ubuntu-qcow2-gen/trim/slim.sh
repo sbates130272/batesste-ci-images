@@ -460,8 +460,20 @@ done
 # No nm here, unlike the playbook that built it: binutils went with the
 # toolchain in section 3.  The symbol check belongs to the build, which ran
 # while a compiler still existed; this asserts the artefacts survived.
-SRQ_STAMP=/etc/ionic-srq.json
-if [ -f "${SRQ_STAMP}" ]; then
+# Two stamp names, because two playbooks write one.  vm-ernic-srq.yml writes
+# /etc/ionic-srq.json and vm-ernic-srq-p4.yml writes /etc/ionic-srq-p4.json;
+# our flavours moved to the latter and this line did not follow, so bake
+# 68211951 took the else branch on a guest that had the full stack, skipped
+# all four assertions below, and stamped ionic_srq_stack_kept: false.  Nothing
+# was lost -- checks/ernic-rocjitsu-slim.sh caught it on the stamp -- but the
+# protection this section exists to give had silently stopped applying.
+# Matching both rather than renaming: this file is flavour-agnostic machinery
+# and vm-ernic-srq.yml still exists upstream.
+SRQ_STAMP=
+for _s in /etc/ionic-srq-p4.json /etc/ionic-srq.json; do
+    [ -f "${_s}" ] && { SRQ_STAMP=${_s}; break; }
+done
+if [ -n "${SRQ_STAMP}" ]; then
     IONIC_KO=$(modinfo -n ionic_rdma)
     case "${IONIC_KO}" in
         */updates/dkms/*) ;;
@@ -489,13 +501,14 @@ if [ -f "${SRQ_STAMP}" ]; then
         exit 1
     fi
     SRQ_KEPT=true
-    echo "ionic SRQ stack: ${IONIC_KO}, provider in /usr/local"
+    echo "ionic SRQ stack (${SRQ_STAMP}): ${IONIC_KO}, provider in /usr/local"
 else
     # Not an error.  trim/slim.sh is flavour-agnostic machinery and a future
     # flavour may run it over a guest with no SRQ stack at all; what must not
     # happen is a guest that had one and lost it, which is the branch above.
     SRQ_KEPT=false
-    echo "no ${SRQ_STAMP}; this guest was built without the SRQ stack"
+    echo "no /etc/ionic-srq-p4.json or /etc/ionic-srq.json;" \
+         "this guest was built without the SRQ stack"
 fi
 
 # --- 5. boot speed -------------------------------------------------------
@@ -672,7 +685,7 @@ What is **not** gone:
 - **The ionic SRQ stack**, which matters because it cannot be rebuilt here at
   all. The \`ionic-ernic\` DKMS modules under \`updates/dkms\` and the patched
   rdma-core in \`/usr/local\` both survive the trim, and
-  \`/etc/ionic-srq.json\` still records what they were built from. No source
+  \`/etc/ionic-srq-p4.json\` still records what they were built from. No source
   for these is kept, so a kernel installed in this guest would have an
   SRQ-capable ionic nowhere -- use the fat \`ernic-rocjitsu\` flavour for any
   lane that needs to rebuild it.
@@ -683,8 +696,7 @@ chmod 0644 "/home/${USERNAME}/WELCOME.md"
 
 echo "root filesystem used: ${USED_BEFORE} -> ${USED_AFTER} MiB"
 
-# And give the freed space back to the qcow2.  probe-guest attaches the disk
-# with discard=unmap, so this reaches the image file rather than stopping at
-# the guest filesystem; build-vm's convert afterwards is what rewrites it
-# compactly.
-sudo fstrim -av
+# The fstrim that used to be here now lives in build-vm.sh's shared trim tail,
+# which runs after this script and after the orphaned-initramfs sweep. Here it
+# ran before that sweep, so the 28 MB the sweep frees was never discarded; and
+# being here at all meant the kernel-only.sh flavours never got one.

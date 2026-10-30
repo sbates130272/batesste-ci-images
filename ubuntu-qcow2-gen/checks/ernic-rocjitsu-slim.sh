@@ -49,14 +49,41 @@ ldconfig -p | grep -q libibverbs
 # flavour: binutils went with the toolchain, so there is no nm to run.  The
 # symbol check belongs to the build -- it ran before the trim, while a
 # compiler still existed -- and this asserts what survived it.
-test -s /etc/ionic-srq.json
-python3 -c 'import json; json.load(open("/etc/ionic-srq.json"))'
+test -s /etc/ionic-srq-p4.json
+python3 -c 'import json; json.load(open("/etc/ionic-srq-p4.json"))'
+
+# The same source-ref-against-kernel assertion the fat flavour makes, for the
+# same reason and with the same contract; see checks/ernic-rocjitsu.sh for
+# why major.minor is the bar and a point-release gap is only a note. Repeated
+# rather than shared because these two files are deliberately standalone --
+# the slim guest has no compiler and asserts what survived its trim.
+python3 - <<'PY'
+import json, sys
+s = json.load(open("/etc/ionic-srq-p4.json"))
+src = str(s.get("kernel_ref", "")).lstrip("v")
+built = str(s.get("built_for_kernel", ""))
+if not src or not built:
+    sys.exit("ERROR: /etc/ionic-srq-p4.json has no kernel_ref/built_for_kernel")
+mm = lambda v: ".".join(v.split("-")[0].split(".")[:2])
+if mm(src) != mm(built):
+    sys.exit(
+        f"ERROR: ionic sources at v{src} were built against {built}; "
+        f"driver_ionic.yml requires the major.minor to agree"
+    )
+if src.split("-")[0] != built.split("-")[0]:
+    print(
+        f"note: ionic sources are v{src} but the kernel is {built} -- same "
+        f"series, different point release."
+    )
+print(f"ionic: sources v{src}, built for {built}")
+PY
+
 IONIC_KO=$(modinfo -n ionic_rdma)
 case "${IONIC_KO}" in
     */updates/dkms/*) ;;
     *)
         echo "ERROR: modprobe would load ${IONIC_KO}, not the SRQ-capable" \
-             "DKMS module; /etc/ionic-srq.json says this guest has one" >&2
+             "DKMS module; /etc/ionic-srq-p4.json says this guest has one" >&2
         exit 1
         ;;
 esac
@@ -465,3 +492,71 @@ test "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 20
 # regenerate the file if it is wrong.
 sudo -n grep -q 'name: *"\?en\*' /etc/netplan/50-cloud-init.yaml
 test -z "$(sudo -n grep -l macaddress /etc/netplan/*.yaml || true)"
+
+# ernic_p4.ko, which this flavour gained when post_playbook moved from
+# vm-ernic-srq.yml to vm-ernic-srq-p4.yml. The server image is built with
+# -DERNIC_BUILD_P4=ON; without this module `rocm-ernic --p4-program` loads a
+# program with no guest-side consumer.
+#
+# Asserted for the same reason the ionic pair is: the combined playbook builds
+# ernic_p4.ko against the same srq+p4 ionic it installs, and a module built
+# against one ionic and loaded against another is the symbol-version failure
+# this repo spent a week on.
+_P4KO=$(modinfo -n ernic_p4)
+case "${_P4KO}" in
+    */updates/dkms/*) echo "ernic_p4: ${_P4KO}" ;;
+    *)
+        echo "ERROR: ernic_p4 is ${_P4KO:-absent}, not a DKMS module." \
+             "/etc/ionic-srq-p4.json says vm-ernic-srq-p4.yml built it." >&2
+        exit 1
+        ;;
+esac
+
+# ionic_rdma has no alias udev can act on -- it binds `auxiliary:ionic.rdma`,
+# which exists only after ionic registers it -- so without this file nothing
+# loads it and ibv_devinfo reports "0 HCAs found". Checked here because the
+# symptom surfaces in a consumer's job rather than in the build.
+_conf=/etc/modules-load.d/rocm-ernic-ionic.conf
+if [ ! -s "${_conf}" ]; then
+    echo "ERROR: ${_conf} is missing. ionic autoloads on its PCI id but" \
+         "ionic_rdma does not, so this guest would boot with no verbs" \
+         "device." >&2
+    exit 1
+fi
+_want=$(printf 'ionic\nionic_rdma\n')
+_got=$(grep -vE '^\s*#|^\s*$' "${_conf}")
+if [ "${_got}" != "${_want}" ]; then
+    echo "ERROR: ${_conf} should list ionic then ionic_rdma, in that order;" \
+         "it has:" >&2
+    printf '%s\n' "${_got}" >&2
+    exit 1
+fi
+echo "modules-load.d: ionic, ionic_rdma"
+
+# No ionic module in any initramfs, asserted against the FINISHED image.
+#
+# This runs in the verification boot, which is the only place that sees the
+# final state: the DKMS pair is installed by the post-provision playbook and
+# the kernel trim runs after that, both later than any provision script. The
+# hook that prevents this lives in provision/ernic-rocjitsu.sh; this is what proves it
+# took.
+#
+# Why it matters: a stale in-tree ionic.ko in the initramfs loads before any
+# rootfs modules.dep is consulted, so ionic_rdma -- built against the patched
+# DKMS ionic -- fails on a symbol version mismatch, and nothing in that
+# failure names the initramfs. It shipped that way for weeks.
+#
+# Written as an if/exit rather than `! lsinitramfs ... | grep -q`: a command
+# whose status is inverted with `!` never trips `set -e`.
+for _img in /boot/initrd.img-*; do
+    [ -e "${_img}" ] || continue
+    if lsinitramfs "${_img}" | grep -qE '(^|/)(ionic|ionic_rdma|ernic_p4)\.ko(\.[a-z]+)?$'; then
+        echo "ERROR: an ionic module is present in ${_img}" >&2
+        echo "       the initramfs would load it before the DKMS pair on the" >&2
+        echo "       rootfs, and ionic_rdma would fail on a symbol version" >&2
+        echo "       mismatch. See /etc/initramfs-tools/hooks/ionic-exclude" >&2
+        lsinitramfs "${_img}" | grep -E 'ionic|ernic_p4' >&2 || true
+        exit 1
+    fi
+done
+echo "initramfs: no ionic modules in $(ls -1 /boot/initrd.img-* | wc -l) image(s)"

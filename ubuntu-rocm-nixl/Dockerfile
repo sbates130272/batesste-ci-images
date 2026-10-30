@@ -5,9 +5,9 @@ FROM ${BASE_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive
 
 ARG NIXL_REPO=https://github.com/ai-dynamo/nixl.git
-ARG NIXL_TAG=v1.5.0
+ARG NIXL_TAG
 ARG UCX_REPO=https://github.com/openucx/ucx.git
-ARG UCX_COMMIT=8094f699daa0d53ea84d11b6cefd7dffa9c9eb46
+ARG UCX_COMMIT
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
@@ -73,9 +73,9 @@ RUN git init /build/nixl && \
     git -C /build/nixl rev-parse HEAD > /build/nixl-commit.txt
 
 ARG ABSL_REPO=https://github.com/abseil/abseil-cpp.git
-ARG ABSL_TAG=20250814.2
+ARG ABSL_TAG
 ARG GRPC_REPO=https://github.com/grpc/grpc.git
-ARG GRPC_TAG=v1.73.0
+ARG GRPC_TAG
 
 # Abseil and gRPC are built from source, and libgrpc++-dev is deliberately absent
 # from the apt list above: it is the only package that pulls libabsl-dev, whose
@@ -124,7 +124,7 @@ RUN set -eux; \
     ldconfig
 
 ARG ETCD_REPO=https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git
-ARG ETCD_COMMIT=7c6e714f188f9576e25e0350cac4181139eec23e
+ARG ETCD_COMMIT
 
 RUN git init /build/etcd-cpp-apiv3 && \
     git -C /build/etcd-cpp-apiv3 remote add origin "${ETCD_REPO}" && \
@@ -146,7 +146,17 @@ RUN git init /build/etcd-cpp-apiv3 && \
     ldconfig
 
 ARG LIBFABRIC_REPO=https://github.com/ofiwg/libfabric.git
-ARG LIBFABRIC_TAG=v1.21.0
+ARG LIBFABRIC_TAG
+
+# The pin(s) above carry no default on purpose -- images.yml is the only place
+# a pin is written. See "Why the Dockerfiles have no pin defaults" in the
+# README. An undefaulted ARG is empty rather than an error, so this asserts.
+RUN : "${ABSL_TAG:?set from images.yml by ci-images-tool.py; pass --build-arg ABSL_TAG=...}" \
+    "${ETCD_COMMIT:?set from images.yml by ci-images-tool.py; pass --build-arg ETCD_COMMIT=...}" \
+    "${GRPC_TAG:?set from images.yml by ci-images-tool.py; pass --build-arg GRPC_TAG=...}" \
+    "${LIBFABRIC_TAG:?set from images.yml by ci-images-tool.py; pass --build-arg LIBFABRIC_TAG=...}" \
+    "${NIXL_TAG:?set from images.yml by ci-images-tool.py; pass --build-arg NIXL_TAG=...}" \
+    "${UCX_COMMIT:?set from images.yml by ci-images-tool.py; pass --build-arg UCX_COMMIT=...}"
 
 # libfabric is what makes the ROCm support in this image NIXL's own rather than
 # just UCX's: NIXL consumes rocm_dep and hipify only under src/utils/libfabric

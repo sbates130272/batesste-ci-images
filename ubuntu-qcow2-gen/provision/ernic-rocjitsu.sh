@@ -358,6 +358,89 @@ find "${DESTDIR}" -name 'amdgpu.ko*' -delete
 HOOK
 sudo chmod 0755 /etc/initramfs-tools/hooks/amdgpu-exclude
 
+# The same treatment for the *stock* ionic, for a different reason.
+#
+# amdgpu is excluded because it must not autoload. ionic is excluded because
+# the copy the initramfs would carry is the wrong one, and carrying it breaks
+# ionic_rdma outright.
+#
+# The ionic-ernic DKMS package builds a patched pair -- ionic and ionic_rdma
+# together -- into updates/dkms/ and displaces the in-tree modules, so on the
+# rootfs there is nothing to get wrong:
+#
+#   $ cat /lib/modules/<k>/modules.dep | grep ionic
+#   updates/dkms/ionic_rdma.ko.zst: updates/dkms/ionic.ko.zst kernel/.../ib_core.ko.zst
+#   updates/dkms/ionic.ko.zst:
+#
+#   $ ls /lib/modules/<k>/kernel/drivers/net/ethernet/pensando/ionic/
+#   (empty -- DKMS took it)
+#
+# The initramfs is the exception. MODULES=most sweeps every network driver in
+# at image-build time, and the copy it took is the stock in-tree one from
+# before DKMS displaced it -- a module at a path that no longer exists on the
+# rootfs, with a different srcversion (4C88CEF... against the DKMS build's
+# 451442B...). The initramfs runs before any of the above is consulted, so
+# that stale ionic is resident first, and ionic_rdma -- compiled against the
+# patched one -- then fails to load on a symbol version mismatch.
+#
+# This is why the symptom reads as "the in-tree ionic is winning" when nothing
+# on the rootfs could produce that, and why neither `depmod -a` nor an
+# /etc/modules-load.d/ entry fixes it: depmod has already run and is correct,
+# and modules-load.d runs after the initramfs has done the damage.
+#
+# Dropping it is safe: root is on virtio, the emulated NIC is not a boot
+# device, and nothing in the initramfs needs it. The DKMS pair then loads from
+# the rootfs, where modules.dep already points at both halves.
+sudo tee /etc/initramfs-tools/hooks/ionic-exclude > /dev/null <<'HOOK'
+#!/bin/sh
+PREREQ=""
+prereqs() { echo "${PREREQ}"; }
+case "${1}" in prereqs) prereqs; exit 0 ;; esac
+[ -n "${DESTDIR}" ] || exit 0
+# Queue first, staging tree second -- see the amdgpu-exclude hook beside this
+# one for why both are needed and why a find alone achieves nothing.
+if [ -n "${__MODULES_TO_ADD:-}" ] && [ -f "${__MODULES_TO_ADD}" ]; then
+    grep -vxE 'ionic|ionic_rdma' "${__MODULES_TO_ADD}" \
+        > "${__MODULES_TO_ADD}.keep" || true
+    mv "${__MODULES_TO_ADD}.keep" "${__MODULES_TO_ADD}"
+fi
+find "${DESTDIR}" -name 'ionic.ko*' -delete
+find "${DESTDIR}" -name 'ionic_rdma.ko*' -delete
+HOOK
+sudo chmod 0755 /etc/initramfs-tools/hooks/ionic-exclude
+
+# Load the RDMA half at boot. Only `ionic` autoloads: modules.alias binds it to
+# the PCI id the vfio-user NIC presents, while ionic_rdma and ernic_p4 are
+# reachable only through auxiliary devices `ionic` has to register first.
+#
+#   alias pci:v00001DD8d00001002sv*sd*bc*sc*i*  ionic
+#   alias auxiliary:ionic.rdma                  ionic_rdma
+#   alias auxiliary:ionic.p4                    ernic_p4
+#
+# So udev binds the NIC, loads ionic, and stops. ionic_rdma is never loaded and
+# `ibv_devinfo -l` reports "0 HCAs found" until something modprobes it by hand
+# -- which reads as a broken verbs stack rather than an unloaded module.
+#
+# One module per line rather than a single modprobe: `modprobe -a ionic
+# ionic_rdma` fails EINVAL because ionic_rdma probes before ionic has finished
+# registering the auxiliary device. systemd-modules-load runs one modprobe per
+# line, which is exactly the sequencing that needs.
+#
+# ernic_p4 is deliberately not here. Its auxiliary device only exists once a P4
+# program is loaded, so naming it would mean a boot-time modprobe for a device
+# that usually is not there -- the same reasoning that set
+# ernic_p4_dkms_load: false in the playbook. A consumer running P4 loads it.
+#
+# Unrelated to the initramfs hook above: that stops a *stale* ionic winning on
+# srcversion, this loads a module nothing else would.
+sudo tee /etc/modules-load.d/rocm-ernic-ionic.conf > /dev/null <<'MODLOAD'
+# The ionic DKMS pair from rocm-ernic. Order matters: ionic_rdma binds an
+# auxiliary device that ionic registers.
+ionic
+ionic_rdma
+MODLOAD
+sudo chmod 0644 /etc/modules-load.d/rocm-ernic-ionic.conf
+
 # amdgpu-dkms, installed for its *source* -- the postinst's own build cannot
 # succeed here.  It builds the unpatched tree against the 7.2.4 headers, that
 # fails, and without this the failure propagates through run-parts into dpkg
@@ -509,6 +592,19 @@ for img in /boot/initrd.img-*; do
         echo "ERROR: amdgpu.ko is present in ${img}" >&2
         echo "       the initramfs exclude hook did not take; see the note" >&2
         echo "       beside /etc/initramfs-tools/hooks/amdgpu-exclude" >&2
+        exit 1
+    fi
+    # Same assert for ionic, and it is the more important of the two: a stale
+    # ionic here is not a tidiness problem, it is ionic_rdma failing to load
+    # in the consumer's guest with a symbol version mismatch and nothing in
+    # the message naming the initramfs.
+    if lsinitramfs "${img}" | grep -qE '(^|/)ionic(_rdma)?\.ko(\.[a-z]+)?$'; then
+        echo "ERROR: ionic.ko or ionic_rdma.ko is present in ${img}" >&2
+        echo "       the initramfs would load the stock in-tree module before" >&2
+        echo "       the DKMS pair on the rootfs, and ionic_rdma would then" >&2
+        echo "       fail on a symbol version mismatch. See the note beside" >&2
+        echo "       /etc/initramfs-tools/hooks/ionic-exclude" >&2
+        lsinitramfs "${img}" | grep -E 'ionic' >&2 || true
         exit 1
     fi
 done
@@ -735,7 +831,7 @@ sudo tee /etc/ernic-rocjitsu-guest.json > /dev/null <<EOF
   "render_video_groups": true,
   "rdma_core_version": "${INSTALLED}",
   "memlock": "unlimited",
-  "rdma_driver": "in-tree ionic_rdma from the booted kernel when this script ends; see /etc/ionic-srq.json, written by the post-provision playbook that replaces it with an SRQ-capable build"
+  "rdma_driver": "in-tree ionic_rdma from the booted kernel when this script ends; see /etc/ionic-srq-p4.json, written by the post-provision playbook that replaces it with an SRQ-capable build"
 }
 EOF
 cat /etc/ernic-rocjitsu-guest.json
@@ -788,7 +884,8 @@ correct answers before that happens.
 both** with an SRQ-capable build: rocm-ernic's \`patches/srq\` on top of the
 matching mainline tag, installed as the \`ionic-ernic\` DKMS package into
 \`updates/dkms\`, plus rocm-ernic's \`patches/rdma-core\` built into
-\`/usr/local\`. \`/etc/ionic-srq.json\` records both pins.
+\`/usr/local\`, and rocm-ernic's \`ernic_p4\` DKMS module alongside them.
+\`/etc/ionic-srq-p4.json\` records the pins.
 
 That is not a nicety. Without the series \`max_srq\` is 0, and UCX's
 \`rc_verbs\` transport is built on a shared receive queue -- it declines the

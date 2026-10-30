@@ -55,7 +55,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # spdk/spdk once that work lands; see images.yml.
 ARG SPDK_REPO=https://github.com/mmgaggle/spdk.git
 ARG SPDK_BRANCH=rados-nkv
-ARG SPDK_COMMIT=18d1d8dab4f2020e10349009e69f94d47de100f9
+ARG SPDK_COMMIT
+
+# The pin(s) above carry no default on purpose -- images.yml is the only place
+# a pin is written. See "Why the Dockerfiles have no pin defaults" in the
+# README. An undefaulted ARG is empty rather than an error, so this asserts.
+RUN : "${SPDK_COMMIT:?set from images.yml by ci-images-tool.py; pass --build-arg SPDK_COMMIT=... for a bare docker build}"
 
 # Optional, and empty by default: check the libvfio-user submodule out at a ref
 # of its own instead of the one SPDK pins. Set only by the -sbates-fork variant,
