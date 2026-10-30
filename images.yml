@@ -512,9 +512,12 @@ images:
       # config/pci_device_config.h defaults the field to 0 and documents 0 as
       # "the largest power of two within 256 MiB and within local memory".
       #
-      # Same aperture, implied rather than shipped. So the readback below
-      # records 0, not 268435456, while the rocjitsu.vram-aperture label still
-      # says `keep`. Do not read that 0 as "no aperture".
+      # Same aperture, implied rather than shipped. So a `keep` build's
+      # readback records 0, not 268435456, while the rocjitsu.vram-aperture
+      # label still says `keep`. Do not read that 0 as "no aperture". This
+      # stopped describing the default when it moved to `max` below -- a `max`
+      # build reads back the resolved byte count, 274877906944 for this
+      # profile.
       #
       # `max` resolves to the largest power of two within the modelled device's
       # own vm.gpu.device.local_mem_size, which is 256 GiB for this profile.
@@ -524,18 +527,28 @@ images:
       # gets the right window without an edit. An explicit power-of-two byte
       # count is also accepted.
       #
-      # Defaulted to `keep`, not `max`, because a large BAR this stack cannot
-      # place is worse than no large BAR. qemu-tool puts the device behind a
-      # pcie-root-port and emits neither a raised phys-bits nor a
-      # pci-hole64-size, so a guest attached to a 256 GiB build fails to assign
-      # BAR0 *and* BAR2 and ends up with no VRAM window at all, where the
-      # default 256 MiB assigns cleanly. Measured in a booted guest; the table
-      # and the two options qemu-tool would need are in the image README.
+      # `max` since qemu-minimal ae551b3, which added the two run-vm options
+      # this needs: --cpu-phys-bits and --pci-hole64-size.
+      #
+      # This was `keep` for as long as the stack could not place a large BAR,
+      # on the grounds that a BAR nothing can assign is worse than no large
+      # BAR -- a guest attached to a 256 GiB build failed to assign BAR0 *and*
+      # BAR2 and came up with no VRAM window at all, where the implied 256 MiB
+      # assigns cleanly. That reasoning held against qemu-tool emitting plain
+      # `-cpu EPYC` (40 phys-bits) and q35's default 32 GiB 64-bit hole, and it
+      # stops holding now that both can be raised. compose/perf-stack.yml
+      # passes 41 and 512G, the smallest measured-good pair.
+      #
+      # The dependency runs the other way from most of this file: a consumer
+      # that attaches these images with neither option set gets the broken
+      # assignment rather than a smaller window, so this default assumes a
+      # caller like perf-stack.yml. The image README carries the measured
+      # table.
       #
       # Large BAR is a P2P DMA concern rather than a prerequisite: gfx1250
-      # agents enumerate and run on the 256 MiB aperture.
+      # agents enumerate and run on the 256 MiB aperture either way.
       rocjitsu_vram_aperture:
-        value: keep
+        value: max
         env: ROCM_ROCJITSU_VRAM_APERTURE
       # Empty means "whatever emulation/rocjitsu/cmake/rj_libvfio_user.cmake
       # pins", which is nutanix/libvfio-user at v0.8. The sbates-fork variant

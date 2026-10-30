@@ -277,9 +277,9 @@ It is a config field and nothing else: `vm.gpu.pci.vram_aperture_bytes` in
 `gfx1250_mi455x.json`. There is no CLI flag and no environment variable
 rocjitsu reads instead, which is why the only place this can be set is in the
 image, before it is sealed. `rocjitsu_vram_aperture` in
-[`images.yml`](../images.yml) is the knob; it defaults to `keep`, which leaves
-upstream's value untouched, and takes `max` or an explicit power-of-two byte
-count to raise it.
+[`images.yml`](../images.yml) is the knob; it defaults to `max`, and also takes
+`keep` -- which leaves upstream's value untouched -- or an explicit
+power-of-two byte count.
 
 `max` is the largest power of two that is not larger than the profile's own
 `vm.gpu.device.local_mem_size` -- 256 GiB against this profile's 432 GiB --
@@ -296,14 +296,14 @@ Both of those are warnings, not errors -- the device still serves -- so the
 build-time probe fails on any line mentioning `aperture`, and the resolved byte
 count is written into `rocjitsu-build.json` and
 `/usr/local/share/rocjitsu-vram-aperture.txt`. The `…rocjitsu.vram-aperture`
-label carries what was asked for, which is `keep` on a default build.
+label carries what was asked for, which is `max` on a default build.
 
-### Why it is off by default
+### What the guest needs for this to be usable
 
-A BAR the server advertises is not a BAR the guest can use, and on the command
-line `qemu-tool` builds today it cannot. The device sits behind a
-`pcie-root-port`, so BAR0 and BAR2 share one bridge window of 256 GiB + 2 MiB,
-and the guest kernel has nowhere to put it:
+A BAR the server advertises is not automatically a BAR the guest can use. The
+device sits behind a `pcie-root-port`, so BAR0 and BAR2 share one bridge window
+of 256 GiB + 2 MiB, and unless the guest's address space and 64-bit PCI hole
+are both raised, the kernel has nowhere to put it:
 
 ```text
 pci 0000:00:02.0: bridge window [mem size 0x4000200000 64bit pref]: can't assign; no space
@@ -321,15 +321,28 @@ ones. Measured in a booted guest against this image, all four cases:
 | 256 GiB | `pci-hole64-size=512G` | both fail to assign |
 | 256 GiB | `phys-bits=41` + `pci-hole64-size=512G` | BAR0 `[256G]` + BAR2 `[2M]`, 0 failures |
 
-`qemu-tool` emits `-cpu EPYC`, which gives the guest 40 physical address bits,
-and no `pci-hole64-size`, which leaves q35 on its 32 GiB default. Raising only
-the hole does not help -- at 40 phys-bits its maximum is 512G, since `1T` is
-refused outright with `phys-bits too low (40)` -- so both have to move
-together, and `qemu-tool` exposes neither. Until it does, `max` produces an
-image whose device a guest is strictly worse off attached to.
+By default `qemu-tool` emits `-cpu EPYC`, which gives the guest 40 physical
+address bits, and no `pci-hole64-size`, which leaves q35 on its 32 GiB default.
+Raising only the hole does not help -- at 40 phys-bits its maximum is 512G,
+since `1T` is refused outright with `phys-bits too low (40)` -- so both have to
+move together.
 
-So raise this only if you are driving QEMU yourself and can set both. What
-`qemu-tool` would need to grow for the normal path to work is written up in
+Since qemu-minimal `ae551b3`, `run-vm` takes both:
+
+```
+--cpu-phys-bits 41 --pci-hole64-size 512G
+```
+
+[`compose/perf-stack.yml`](../compose/perf-stack.yml) passes exactly that pair,
+so the normal path works without the caller doing anything. This is what made
+`max` safe to default to; before those options existed, `max` produced an image
+whose device a guest was strictly worse off attached to, and the default was
+`keep` for that reason.
+
+**A caller that attaches this image without setting both is worse off than with
+a small BAR** -- not merely capped, but left with no 64-bit window at all, per
+the table above. If you are driving QEMU yourself, set both or build with
+`rocjitsu_vram_aperture: keep`. The measurements behind this are in
 [`rocjitsu-large-bar.md`](../rocjitsu-large-bar.md).
 
 Note also that large BAR is a P2P DMA concern rather than a prerequisite for

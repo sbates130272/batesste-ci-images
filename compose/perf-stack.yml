@@ -144,6 +144,17 @@ services:
     # The image's own entrypoint.sh builds a fixed qemu-system command line
     # and attaches at most one vfio-user socket, so it is replaced rather than
     # passed arguments. qemu-tool is what gives us two devices and --nvme.
+    #
+    # --cpu-phys-bits and --pci-hole64-size are what let rocjitsu's 256 GiB
+    # BAR0 be assigned at all. qemu-tool defaults to `-cpu EPYC` (40 phys-bits,
+    # a 1 TiB space) and q35's default 32 GiB 64-bit hole, which cannot host a
+    # 256 GiB + 2 MiB window -- the guest then fails to assign *both* BAR0 and
+    # BAR2 and ends up with no VRAM window at all, which is worse than the
+    # small-BAR default it replaced. 41 + 512G is the smallest combination
+    # measured to work; 40 phys-bits cannot host it at any legal hole size,
+    # and 512G is already the maximum a 40-bit space will accept. The two
+    # have to move together, which is why both are set here rather than one.
+    # Overridable for a host or a device profile that needs more.
     entrypoint:
       - /bin/sh
       - -c
@@ -168,6 +179,8 @@ services:
           --vmem "${VM_VMEM:-8192}" \
           --ssh-port 2222 \
           --kvm \
+          --cpu-phys-bits "${VM_CPU_PHYS_BITS:-41}" \
+          --pci-hole64-size "${VM_PCI_HOLE64_SIZE:-512G}" \
           --vfio-userdev "$$socks" \
           --nvme "${VM_NVME_COUNT:-1}"
 
