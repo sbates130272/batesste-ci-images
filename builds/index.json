@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "generated": "2026-10-28T18:14:59.003265+00:00",
-  "run_url": "https://github.com/sbates130272/batesste-ci-images/actions/runs/40714897906",
-  "sha": "07e937bd34ed75784f6c58bc22c703c761392db8",
+  "generated": "2026-10-30T03:44:02.421343+00:00",
+  "run_url": "https://github.com/sbates130272/batesste-ci-images/actions/runs/40984139481",
+  "sha": "aa10341ef21a844e74ce2967ead6211e31ba7dd2",
   "badges": [
     "build-base-images",
     "build-ubuntu-cuda-rocm",
