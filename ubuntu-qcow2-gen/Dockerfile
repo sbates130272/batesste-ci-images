@@ -42,6 +42,13 @@ ARG ROCM_PATH=
 ARG ROCM_VERSION=
 ARG RDMA_CORE_VERSION=
 ARG FIO_COMMIT=
+# The rocm-systems tree and commit the guest builds the SDXI char/perf kernel
+# modules and the sdxi-cli Python package from, or empty for a flavour that
+# wants no SDXI at all -- which is every flavour but rocjitsu. Both or neither:
+# a commit with no repo has nothing to fetch it from, and a repo with no commit
+# would track a force-pushed branch.
+ARG SDXI_REPO=
+ARG SDXI_COMMIT=
 # Whose provision script and assets to use (empty: this flavour's own), and
 # the trim/<file> that takes things back out afterwards (empty: none).
 ARG PROVISION_FLAVOUR=
@@ -159,6 +166,9 @@ ARG ROCM_PATH=
 ARG ROCM_VERSION=
 ARG RDMA_CORE_VERSION=
 ARG FIO_COMMIT=
+# See the note on these in the base stage above.
+ARG SDXI_REPO=
+ARG SDXI_COMMIT=
 # Whose provision script and assets to use (empty: this flavour's own), and
 # the trim/<file> that takes things back out afterwards (empty: none).
 ARG PROVISION_FLAVOUR=
@@ -192,6 +202,8 @@ ENV QEMU_MINIMAL_REPO=${QEMU_MINIMAL_REPO} \
     ROCM_VERSION=${ROCM_VERSION} \
     RDMA_CORE_VERSION=${RDMA_CORE_VERSION} \
     FIO_COMMIT=${FIO_COMMIT} \
+    SDXI_REPO=${SDXI_REPO} \
+    SDXI_COMMIT=${SDXI_COMMIT} \
     PROVISION_FLAVOUR=${PROVISION_FLAVOUR} \
     TRIM=${TRIM} \
     CACHE_BUST=${CACHE_BUST} \

@@ -744,6 +744,114 @@ else
     FIO_VERSION=""
 fi
 
+# SDXI: the guest half of the emulated data-mover ubuntu-rocm-sdxi serves.
+#
+# Built here rather than shipped from that image because a kernel module has to
+# be compiled against the kernel this guest actually boots, and that is the
+# pinned KERNEL_REF one, not the builder's.  SDXI_COMMIT must equal
+# ubuntu-rocm-sdxi's sdxi_commit -- sdxi_user.h is the uapi both sides agree
+# on, and a renumbered ioctl surfaces as a bare EINVAL from sdxi-cli rather
+# than as anything naming the cause.  version-scrub.sh warns when they diverge.
+#
+# No device is on the PCI bus during an image build, so nothing here loads a
+# module or opens a node; this builds, installs and depmods, and checks/ then
+# asserts the artefacts exist.  That is the same wall the ernic P4 work hit --
+# ernic_guest_setup's preflight asserts the emulated NIC is present, which an
+# image build cannot satisfy.
+if [ -n "${SDXI_COMMIT:-}" ]; then
+    echo "=== SDXI ${SDXI_COMMIT} ==="
+    rm -rf /tmp/sdxi
+    git init /tmp/sdxi
+    git -C /tmp/sdxi remote add origin "${SDXI_REPO}"
+    git -C /tmp/sdxi fetch --depth 1 origin "${SDXI_COMMIT}"
+    git -C /tmp/sdxi checkout FETCH_HEAD
+    SDXI_SRC=/tmp/sdxi/emulation/sdxi
+
+    # sdxi_char only, deliberately -- sdxi_perf is NOT built, and this is a
+    # property of upstream rather than a preference here.  Three things stop
+    # it, any one of which fails the build:
+    #
+    #   * drivers/sdxi_perf/sdxi_perf.c:194 declares MODULE_LICENSE("MIT").
+    #     Plain "MIT" is not on the kernel's GPL-compatible list, and every
+    #     debugfs symbol the module uses -- debugfs_create_dir,
+    #     debugfs_create_file, debugfs_remove_recursive, debugfs_lookup -- is
+    #     EXPORT_SYMBOL_GPL, so modpost refuses to resolve them.
+    #     "Dual MIT/GPL" is the one-word fix and keeps the SPDX tag as is.
+    #   * sdxi_perf.c:66 declares `u64 val` after a statement, and the kernel
+    #     builds out-of-tree modules with -Wdeclaration-after-statement under
+    #     CONFIG_WERROR, which has defaulted to y since 6.1.
+    #   * it reads BAR0 through pcim_iomap_table(), deprecated since ~6.11 and
+    #     slated for deletion; the replacement returns an ERR_PTR, so the port
+    #     is not a rename.
+    #
+    # Nothing is lost that the guest needs: both modules claim the same PCI ID
+    # (1022:149f), so only one could ever bind the device anyway, and
+    # sdxi_char already exposes the same counters through SDXI_IOC_STATS.
+    # Fix the three upstream and add sdxi_perf here in one commit.
+    echo "--- building sdxi_char against $(uname -r)"
+    make -C "${SDXI_SRC}/drivers/sdxi_char" \
+        KDIR="/lib/modules/$(uname -r)/build"
+    sudo install -D -m 0644 "${SDXI_SRC}/drivers/sdxi_char/sdxi_char.ko" \
+        "/lib/modules/$(uname -r)/updates/sdxi_char.ko"
+    sudo depmod -a "$(uname -r)"
+
+    # No modules-load.d entry, on purpose.  sdxi_char carries
+    # MODULE_DEVICE_TABLE(pci, ...), so kmod and udev autoload it the moment a
+    # matching function appears on the bus -- which is what a consumer
+    # attaching the vfio-user device actually does.  A modules-load.d drop-in
+    # would only force a load at boot when no device is present, where probe()
+    # never runs and the module sits resident doing nothing.  That is the
+    # opposite of the ionic_rdma case, where the module had to be resident
+    # before the device appeared.
+
+    # The userspace tool.  Python rather than the C sdxi-cli.c beside it: the
+    # Python front end is the newer one and the only one with the info, stats
+    # and stress subcommands.
+    #
+    # The sed is a workaround for an upstream typo, not a preference.
+    # tools/sdxi-cli/pyproject.toml declares
+    #   build-backend = "setuptools.backends.legacy:build"
+    # and there is no setuptools.backends module -- setuptools exposes
+    # setuptools.build_meta and setuptools.build_meta:__legacy__ and nothing
+    # else -- so pip dies in the PEP 517 hook import before any of the package
+    # is read.  Verified against setuptools 80.9.0.
+    #
+    # Guarded by a grep so it is self-retiring: once the pin moves to a commit
+    # that spells the backend correctly, the condition is false, the file is
+    # left alone, and this block can be deleted.  Written as a test rather than
+    # an unconditional sed precisely so it cannot silently keep "fixing" a file
+    # that no longer needs it.
+    PYPROJECT="${SDXI_SRC}/tools/sdxi-cli/pyproject.toml"
+    if grep -q 'setuptools\.backends\.legacy:build' "${PYPROJECT}"; then
+        echo "--- patching the bogus PEP 517 backend in pyproject.toml"
+        echo "    (upstream fix: build-backend = \"setuptools.build_meta\")"
+        sed -i 's|setuptools\.backends\.legacy:build|setuptools.build_meta|' \
+            "${PYPROJECT}"
+        SDXI_CLI_PATCHED=true
+    else
+        echo "--- pyproject.toml backend looks sane; no patch applied"
+        SDXI_CLI_PATCHED=false
+    fi
+
+    # pipx, not pip: resolute is PEP 668 externally-managed, and pipx and
+    # python3-venv are already in packages/rocjitsu.txt for exactly this.
+    pipx install "${SDXI_SRC}/tools/sdxi-cli"
+    # pipx installs under ~/.local/bin, which is on PATH for login shells only.
+    # Symlink into /usr/local/bin for the same reason ROCM_PATH is in
+    # /etc/environment: every CI step and Ansible command task lands on a
+    # non-login shell, and a tool only those cannot find is a tool that is not
+    # installed.
+    sudo ln -sf "/home/${USERNAME}/.local/bin/sdxi-cli" /usr/local/bin/sdxi-cli
+
+    SDXI_CLI_VERSION=$(sdxi-cli --help > /dev/null 2>&1 && echo ok || echo failed)
+    rm -rf /tmp/sdxi
+    echo "sdxi_char installed; sdxi-cli --help: ${SDXI_CLI_VERSION}"
+else
+    echo "note: SDXI_COMMIT unset -- no SDXI driver or CLI in this guest"
+    SDXI_CLI_PATCHED=false
+    SDXI_CLI_VERSION=""
+fi
+
 # What this image is, recorded where a consumer inside the guest can read it.
 # vm-info.json stays flavour-agnostic; this is the flavour's own record, and
 # the driver version is the thing a consumer most needs to compare against.
@@ -787,7 +895,13 @@ sudo tee /etc/rocjitsu-guest.json > /dev/null <<EOF
   "fio_version": "${FIO_VERSION}",
   "fio_libhipfile": $([ -n "${FIO_VERSION}" ] && echo true || echo false),
   "fio_hipfile_async": "$(cat /usr/local/share/fio-hipfile-async.txt 2>/dev/null || echo unknown)",
-  "rdma_driver": "none -- rdma-core userspace only; ionic-ernic is a DKMS build the consumer does"
+  "rdma_driver": "none -- rdma-core userspace only; ionic-ernic is a DKMS build the consumer does",
+  "sdxi_commit": "${SDXI_COMMIT:-}",
+  "sdxi_modules": $([ -n "${SDXI_COMMIT:-}" ] && echo '["sdxi_char"]' || echo '[]'),
+  "sdxi_perf_module": "not built -- upstream MODULE_LICENSE(\"MIT\") against GPL-only debugfs symbols; see provision/rocjitsu.sh",
+  "sdxi_char_device_node": "/dev/sdxi<devfn>, created by probe() when a device binds -- absent until one is attached",
+  "sdxi_cli": "${SDXI_CLI_VERSION}",
+  "sdxi_cli_pyproject_patched": ${SDXI_CLI_PATCHED}
 }
 EOF
 cat /etc/rocjitsu-guest.json
