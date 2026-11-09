@@ -33,6 +33,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && \
     apt-get install -y --no-install-recommends \
     libaio-dev \
+    libibverbs-dev \
+    librdmacm-dev \
     libcmocka-dev \
     libcunit1-dev \
     libfuse3-dev \
@@ -148,6 +150,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     fi && \
     PATH=/usr/lib/ccache:${PATH} ./configure \
         --with-vfio-user \
+        --with-rdma \
         --without-nvme-cuse \
         --target-arch=corei7 && \
     PATH=/usr/lib/ccache:${PATH} make -j"$(nproc)" && \
@@ -190,7 +193,7 @@ RUN ln -sf "${SPDK_DIR}/build/bin/nvmf_tgt" /usr/local/bin/nvmf_tgt && \
   "libvfio_user_commit": "%s",\n\
   "libvfio_user_source": "%s",\n\
   "local_patches": [%s],\n\
-  "configure_flags": ["--with-vfio-user", "--without-nvme-cuse",\n\
+  "configure_flags": ["--with-vfio-user", "--with-rdma", "--without-nvme-cuse",\n\
                       "--target-arch=corei7"],\n\
   "rbd_enabled": false,\n\
   "kv_backends": ["mem"],\n\
