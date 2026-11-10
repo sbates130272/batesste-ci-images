@@ -98,6 +98,37 @@ CHARTS: list[dict] = [
         ),
     },
     {
+        "key": "sdxi_memcpy_ioctl_GBs",
+        "title": "SDXI memcpy (ioctl)",
+        "unit": "GB/s",
+        "badge": "sdxi-ioctl",
+        "colour": "#006F62",
+        "higher_is_better": True,
+        "blurb": (
+            "64&nbsp;KiB memcpy descriptors through the emulated SDXI "
+            "data-mover, one <code>ioctl()</code> per operation. The baseline "
+            "the io_uring number below is read against: both move the same "
+            "bytes through the same engine, and the only difference is how "
+            "the descriptors reach it."
+        ),
+    },
+    {
+        "key": "sdxi_memcpy_uring_GBs",
+        "title": "SDXI memcpy (io_uring_cmd, batched)",
+        "unit": "GB/s",
+        "badge": "sdxi-uring",
+        "colour": "#006F62",
+        "higher_is_better": True,
+        "blurb": (
+            "The same transfers submitted in batches through "
+            "<code>IORING_OP_URING_CMD</code>. Phase 1 of the driver's "
+            "io_uring support completes synchronously under the device mutex, "
+            "so what this measures is the submission saving, not asynchrony; "
+            "true async needs per-operation completion blocks and MSI "
+            "injection from the emulator."
+        ),
+    },
+    {
         "key": "boot_seconds",
         "title": "Guest boot to SSH",
         "unit": "s",

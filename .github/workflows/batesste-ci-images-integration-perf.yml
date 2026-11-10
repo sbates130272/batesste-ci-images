@@ -198,12 +198,14 @@ jobs:
           QEMU_IMAGE=$(resolve ubuntu-qemu-libvfio-user)
           ERNIC_IMAGE=$(resolve ubuntu-rocm-ernic)
           ROCJITSU_IMAGE=$(resolve ubuntu-rocm-rocjitsu)
+          SDXI_IMAGE=$(resolve ubuntu-rocm-sdxi)
           QCOW2_IMAGE=$(resolve 'ubuntu-qcow2-gen@rocjitsu')
           QCOW2_IONIC_IMAGE=$(resolve 'ubuntu-qcow2-gen@ionic')
           {
             echo "QEMU_IMAGE=${QEMU_IMAGE}"
             echo "ERNIC_IMAGE=${ERNIC_IMAGE}"
             echo "ROCJITSU_IMAGE=${ROCJITSU_IMAGE}"
+            echo "SDXI_IMAGE=${SDXI_IMAGE}"
             echo "QCOW2_IMAGE=${QCOW2_IMAGE}"
             echo "QCOW2_IONIC_IMAGE=${QCOW2_IONIC_IMAGE}"
           } | tee -a "$GITHUB_ENV"
@@ -219,7 +221,7 @@ jobs:
           set -uo pipefail
           missing=()
           for image in "$QEMU_IMAGE" "$ERNIC_IMAGE" "$ROCJITSU_IMAGE" \
-                       "$QCOW2_IMAGE" "$QCOW2_IONIC_IMAGE"; do
+                       "$SDXI_IMAGE" "$QCOW2_IMAGE" "$QCOW2_IONIC_IMAGE"; do
             if err=$(docker manifest inspect "$image" 2>&1 > /dev/null); then
               echo "present: $image"
             # Only "no such manifest" means not-published-yet. Anything else --
@@ -255,7 +257,7 @@ jobs:
         run: |
           set -euo pipefail
           for image in "$QEMU_IMAGE" "$ERNIC_IMAGE" "$ROCJITSU_IMAGE" \
-                       "$QCOW2_IMAGE" "$QCOW2_IONIC_IMAGE"; do
+                       "$SDXI_IMAGE" "$QCOW2_IMAGE" "$QCOW2_IONIC_IMAGE"; do
             echo "::group::$image"
             docker pull "$image"
             echo "::endgroup::"

@@ -98,6 +98,8 @@ independently.
 [![nvme](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fperf%2Fbadge-nvme.json&label=nvme)](https://sbates130272.github.io/batesste-ci-images/#nvme)
 [![hipfile](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fperf%2Fbadge-hipfile.json&label=hipfile)](https://sbates130272.github.io/batesste-ci-images/#hipfile)
 [![ernic](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fperf%2Fbadge-ernic.json&label=ernic%20s3)](https://sbates130272.github.io/batesste-ci-images/#ernic)
+[![sdxi ioctl](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fperf%2Fbadge-sdxi-ioctl.json&label=sdxi%20ioctl)](https://sbates130272.github.io/batesste-ci-images/#sdxi-ioctl)
+[![sdxi uring](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fperf%2Fbadge-sdxi-uring.json&label=sdxi%20uring)](https://sbates130272.github.io/batesste-ci-images/#sdxi-uring)
 [![boot](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fperf%2Fbadge-boot.json&label=boot)](https://sbates130272.github.io/batesste-ci-images/#boot)
 
 These read `shields.io` endpoint JSON published to `gh-pages` by the
@@ -241,13 +243,30 @@ wires the two together over the shared `vfio-sockets` volume.
 Every image above is tested on its own by
 `batesste-ci-images-dockerfile-test.yml`. Five of them are only interesting
 together, and that combination is what the
-`batesste-ci-images-integration-perf` workflow covers, in two phases back to
+`batesste-ci-images-integration-perf` workflow covers, in three phases back to
 back by `ubuntu-qemu-libvfio-user`:
 
 | phase | guest | device over vfio-user | measures |
 | --- | --- | --- | --- |
 | rocjitsu | `ubuntu-qcow2-gen@rocjitsu` | `ubuntu-rocm-rocjitsu` emulated gfx1250, plus an emulated NVMe controller | GEMM, the storage path into GPU memory, boot |
 | ernic | `ubuntu-qcow2-gen@ionic` | `ubuntu-rocm-ernic` RDMA NIC serving its own S3 store | 1 MiB object GETs over RDMA |
+| sdxi | `ubuntu-qcow2-gen@rocjitsu` | `ubuntu-rocm-sdxi` emulated SDXI data-mover | 64 KiB memcpy, through `ioctl` and through `io_uring_cmd` |
+
+The sdxi phase reuses the rocjitsu *payload* because that flavour is the one
+that builds `sdxi_char`, `sdxi_perf` and `sdxi-cli` -- at the same pin the
+server image is built from, which `images.yml` requires, since
+`sdxi_user.h` is the uapi both halves read. It still takes a boot of its own
+rather than riding alongside the GPU. The qemu service attaches every socket
+it finds under `/run/vfu`, so one guest could hold both devices and the boot
+could be saved; the trade taken here is attribution over wall clock, so that
+an SDXI regression is an SDXI phase failing rather than a line inside the GPU
+phase.
+
+It publishes two numbers rather than one because the io_uring path exists to
+beat the ioctl path, and a single figure would record the outcome while hiding
+the reason for it. Note what the comparison does *not* yet show: the driver's
+io_uring support is Phase 1 and completes synchronously under the device
+mutex, so the delta is submission cost alone.
 
 Two guests rather than one, and two phases rather than one boot. Booting a
 single guest against both sockets is what this lane used to do, and it is why
