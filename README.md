@@ -49,8 +49,8 @@ independently.
 **Pinned Commits**
 
 [![libvfio-user 05bb5e5](https://img.shields.io/badge/libvfio--user-05bb5e5-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/05bb5e5237817e0d77879b93d6145f6436b56fd0)
-[![qemu-minimal 055165b](https://img.shields.io/badge/qemu--minimal-055165b-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/055165b6d1165905df1274ecba64dbe97e00a8ef)
-[![rocm-ernic a9649ba](https://img.shields.io/badge/rocm--ernic-a9649ba-006F62)](https://github.com/ROCm/rocm-ernic/commit/a9649ba0c8bce362dead32209c1502e53654bb4f)
+[![qemu-minimal 7ef0ea7](https://img.shields.io/badge/qemu--minimal-7ef0ea7-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/7ef0ea7350dd90a6ab032a3039126f02f77fcb92)
+[![rocm-ernic 3111d40](https://img.shields.io/badge/rocm--ernic-3111d40-006F62)](https://github.com/ROCm/rocm-ernic/commit/3111d407e63e7981cb529248436b36e235668af3)
 [![rocjitsu 50be05a](https://img.shields.io/badge/rocjitsu-50be05a-006F62)](https://github.com/ROCm/rocm-systems/commit/50be05a34892867c6ef5bc125696223df889f3e4)
 [![sdxi aa3bcd8](https://img.shields.io/badge/sdxi-aa3bcd8-006F62)](https://github.com/ROCm/rocm-systems/commit/aa3bcd849f9a4d064e55ff106ef1c797e2c0d90c)
 [![spdk 18d1d8d](https://img.shields.io/badge/spdk-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
