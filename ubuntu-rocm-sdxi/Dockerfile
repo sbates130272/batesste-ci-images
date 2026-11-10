@@ -80,12 +80,6 @@ RUN git init /build/rocm-systems && \
         echo "${LIBVFIO_USER_REPO}" > /build/libvfio-user-source.txt; \
     else \
         echo sdxi-cmake > /build/libvfio-user-source.txt; \
-    fi; \
-    mkdir -p /build/vfu-shim; \
-    if [ -n "${LIBVFIO_USER_COMMIT}" ]; then \
-        ln -sfn /build/libvfio-user/include /build/vfu-shim/vfio-user; \
-    else \
-        ln -sfn /tmp/deps/libvfio-user-src/include /build/vfu-shim/vfio-user; \
     fi
 
 # FETCHCONTENT_SOURCE_DIR_LIBVFIO-USER is CMake's documented per-dependency
@@ -100,30 +94,23 @@ RUN git init /build/rocm-systems && \
 # rj_configure_target() which hardcodes it -- so this image does not need the
 # warning-demotion flags that one carries.
 #
-# -I/build/vfu-shim is the one genuinely load-bearing flag here, and it works
-# around an upstream inconsistency rather than expressing a choice.
-# src/*.c include the library as <vfio-user/libvfio-user.h> and
-# <vfio-user/pci_defs.h> -- the layout `meson install` produces, which is what
-# emulation/sdxi/README.md tells a developer to set up by hand. But
-# cmake/SdxiVfioUser.cmake does not install anything: it compiles lib/*.c
-# directly out of the FetchContent checkout and exposes that tree's include/
-# as the interface directory, where the headers sit at the top level as
-# libvfio-user.h and pci_defs.h with no vfio-user/ prefix. The two halves have
-# never agreed, so the FetchContent path cannot compile as written:
+# This used to pass -I/build/vfu-shim, a directory holding one symlink named
+# `vfio-user`, because src/*.c include the library as
+# <vfio-user/libvfio-user.h> -- the layout `meson install` produces -- while
+# cmake/SdxiVfioUser.cmake exposed the FetchContent checkout's flat include/
+# as the interface directory. The two had never agreed, so the FetchContent
+# path could not compile at all:
 #
 #   src/rocm_sdxi_server.c:28:10: fatal error:
 #   vfio-user/libvfio-user.h: No such file or directory
 #
-# The shim is a directory containing a single symlink named `vfio-user`
-# pointing at whichever include/ is in play, so <vfio-user/x.h> resolves
-# without copying headers, rewriting includes or patching upstream's cmake. It
-# is created in the fetch layer above, pointing at the override checkout when
-# there is one and at the deterministic FETCHCONTENT_BASE_DIR path when there
-# is not -- that path is fixed by the -DFETCHCONTENT_BASE_DIR below, and the
-# symlink is allowed to dangle until configure populates it.
-#
-# Fix this upstream by giving SdxiVfioUser.cmake an interface include dir the
-# sources' spelling matches, and delete the shim and this comment together.
+# Upstream took the same fix at 8b8f6e2f: SdxiVfioUser.cmake now builds the
+# shim itself, with file(CREATE_LINK ... SYMBOLIC) into its own binary dir,
+# and points the PUBLIC include directory there. It runs after
+# FetchContent_MakeAvailable, so the source dir is populated, and it reads
+# ${libvfio-user_SOURCE_DIR} rather than a fixed path, so it follows a
+# FETCHCONTENT_SOURCE_DIR override the same way ours did. Carrying both would
+# mean two include paths resolving the same headers, so ours is gone.
 RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     cmake \
     -B /build/rocm-systems/build \
@@ -131,7 +118,6 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     -S /build/rocm-systems/emulation/sdxi \
     -DCMAKE_C_COMPILER_LAUNCHER=ccache \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_FLAGS=-I/build/vfu-shim \
     -DCMAKE_INSTALL_PREFIX=/usr/local \
     -DFETCHCONTENT_BASE_DIR=/tmp/deps \
     "-DFETCHCONTENT_SOURCE_DIR_LIBVFIO-USER=${LIBVFIO_USER_COMMIT:+/build/libvfio-user}" \

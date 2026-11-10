@@ -767,33 +767,74 @@ if [ -n "${SDXI_COMMIT:-}" ]; then
     git -C /tmp/sdxi checkout FETCH_HEAD
     SDXI_SRC=/tmp/sdxi/emulation/sdxi
 
-    # sdxi_char only, deliberately -- sdxi_perf is NOT built, and this is a
-    # property of upstream rather than a preference here.  Three things stop
-    # it, any one of which fails the build:
+    # io_uring is asserted before anything is built, because its absence is
+    # silent.  sdxi_char wraps its whole .uring_cmd file operation in
+    # #ifdef CONFIG_IO_URING, so on a kernel without it the module compiles,
+    # loads and simply has no io_uring path -- nothing fails, and the symptom
+    # surfaces much later in whatever tries to submit IORING_OP_URING_CMD.
+    # Upstream ships a `check-config` make target that warns; a warning in a
+    # 3000-line build log is not a signal, so this stops instead.
     #
-    #   * drivers/sdxi_perf/sdxi_perf.c:194 declares MODULE_LICENSE("MIT").
-    #     Plain "MIT" is not on the kernel's GPL-compatible list, and every
-    #     debugfs symbol the module uses -- debugfs_create_dir,
-    #     debugfs_create_file, debugfs_remove_recursive, debugfs_lookup -- is
-    #     EXPORT_SYMBOL_GPL, so modpost refuses to resolve them.
-    #     "Dual MIT/GPL" is the one-word fix and keeps the SPDX tag as is.
-    #   * sdxi_perf.c:66 declares `u64 val` after a statement, and the kernel
-    #     builds out-of-tree modules with -Wdeclaration-after-statement under
-    #     CONFIG_WERROR, which has defaulted to y since 6.1.
-    #   * it reads BAR0 through pcim_iomap_table(), deprecated since ~6.11 and
-    #     slated for deletion; the replacement returns an ERR_PTR, so the port
-    #     is not a rename.
+    # /proc/config.gz first, the headers tree second: the booted kernel's own
+    # config is the authority, and $KDIR/.config is what upstream's target
+    # reads and is present on these guests too.
+    KCONF_OK=no
+    if [ -r /proc/config.gz ] && zgrep -q '^CONFIG_IO_URING=y' /proc/config.gz; then
+        KCONF_OK=yes
+    elif grep -q '^CONFIG_IO_URING=y' "/lib/modules/$(uname -r)/build/.config" 2>/dev/null; then
+        KCONF_OK=yes
+    fi
+    if [ "${KCONF_OK}" != yes ]; then
+        echo "Error: CONFIG_IO_URING is not set in $(uname -r). sdxi_char" \
+             "would build and load with its io_uring_cmd path compiled out," \
+             "and sdxi-cli's uring layer and bench subcommand would fail at" \
+             "runtime with nothing naming the cause." >&2
+        exit 1
+    fi
+    echo "--- CONFIG_IO_URING=y in $(uname -r); io_uring_cmd path will build"
+
+    # Both modules, as of SDXI 8b8f6e2f.  sdxi_perf used to be skipped here
+    # because it could not build out of tree at all: MODULE_LICENSE("MIT") is
+    # not on the kernel's GPL-compatible list while every debugfs symbol it
+    # uses is EXPORT_SYMBOL_GPL, and it declared a variable after a statement,
+    # which CONFIG_WERROR makes fatal.  Both are fixed upstream, so the guest
+    # carries the whole driver set again.
     #
-    # Nothing is lost that the guest needs: both modules claim the same PCI ID
-    # (1022:149f), so only one could ever bind the device anyway, and
-    # sdxi_char already exposes the same counters through SDXI_IOC_STATS.
-    # Fix the three upstream and add sdxi_perf here in one commit.
-    echo "--- building sdxi_char against $(uname -r)"
-    make -C "${SDXI_SRC}/drivers/sdxi_char" \
-        KDIR="/lib/modules/$(uname -r)/build"
-    sudo install -D -m 0644 "${SDXI_SRC}/drivers/sdxi_char/sdxi_char.ko" \
-        "/lib/modules/$(uname -r)/updates/sdxi_char.ko"
+    # One upstream wart remains and is deliberately not worked around here:
+    # sdxi_perf still reads BAR0 through pcim_iomap_table(), deprecated since
+    # ~6.11 and slated for deletion.  It builds today; when it stops, this
+    # make fails loudly with the deprecation named, which is the right place
+    # to find out.
+    for mod in sdxi_char sdxi_perf; do
+        echo "--- building ${mod} against $(uname -r)"
+        make -C "${SDXI_SRC}/drivers/${mod}" \
+            KDIR="/lib/modules/$(uname -r)/build"
+        sudo install -D -m 0644 "${SDXI_SRC}/drivers/${mod}/${mod}.ko" \
+            "/lib/modules/$(uname -r)/updates/${mod}.ko"
+    done
     sudo depmod -a "$(uname -r)"
+
+    # Both modules carry MODULE_DEVICE_TABLE for the same id, 1022:149f, and
+    # the PCI core binds exactly one driver to a device -- so with both
+    # autoloadable it is a race which one wins, and sdxi_char's exclusive
+    # pci_request_regions() makes the loser's probe fail with -EBUSY.  That is
+    # a coin toss deciding whether the guest gets /dev/sdxi<devfn> or the
+    # debugfs counters.
+    #
+    # sdxi_char wins by default because it is the one the CLI drives and the
+    # one that carries the ioctl and io_uring interfaces; sdxi_perf's counters
+    # are also reachable through SDXI_IOC_STATS.  Blacklisting only stops
+    # *automatic* loading, so `sudo modprobe sdxi_perf` after unbinding
+    # sdxi_char still works for someone who wants the debugfs view.
+    sudo tee /etc/modprobe.d/sdxi.conf > /dev/null <<'SDXIMOD'
+# Both sdxi_char and sdxi_perf match PCI 1022:149f and only one can bind.
+# sdxi_char is the default: it carries the ioctl and io_uring_cmd paths that
+# sdxi-cli drives, and exposes the same counters via SDXI_IOC_STATS.
+# To use the debugfs counters instead:
+#   sudo modprobe -r sdxi_char && sudo modprobe sdxi_perf
+blacklist sdxi_perf
+SDXIMOD
+    sudo chmod 0644 /etc/modprobe.d/sdxi.conf
 
     # No modules-load.d entry, on purpose.  sdxi_char carries
     # MODULE_DEVICE_TABLE(pci, ...), so kmod and udev autoload it the moment a
@@ -808,29 +849,25 @@ if [ -n "${SDXI_COMMIT:-}" ]; then
     # Python front end is the newer one and the only one with the info, stats
     # and stress subcommands.
     #
-    # The sed is a workaround for an upstream typo, not a preference.
-    # tools/sdxi-cli/pyproject.toml declares
-    #   build-backend = "setuptools.backends.legacy:build"
-    # and there is no setuptools.backends module -- setuptools exposes
-    # setuptools.build_meta and setuptools.build_meta:__legacy__ and nothing
-    # else -- so pip dies in the PEP 517 hook import before any of the package
-    # is read.  Verified against setuptools 80.9.0.
+    # The pyproject.toml backend is asserted, not patched.
     #
-    # Guarded by a grep so it is self-retiring: once the pin moves to a commit
-    # that spells the backend correctly, the condition is false, the file is
-    # left alone, and this block can be deleted.  Written as a test rather than
-    # an unconditional sed precisely so it cannot silently keep "fixing" a file
-    # that no longer needs it.
+    # This used to rewrite build-backend in place: upstream declared
+    # "setuptools.backends.legacy:build", which is not a real backend -- there
+    # is no setuptools.backends module at all -- so pip died in the PEP 517
+    # hook before reading any of the package.  Upstream fixed it at 8b8f6e2f
+    # and the pin is past that, so the rewrite is gone.
+    #
+    # An assert replaces it rather than nothing.  The failure mode is a
+    # subprocess error from deep inside pip that names the backend and not the
+    # cause, so if the pin is ever moved back -- or upstream reintroduces it --
+    # this says which file and which line in one sentence instead.
     PYPROJECT="${SDXI_SRC}/tools/sdxi-cli/pyproject.toml"
-    if grep -q 'setuptools\.backends\.legacy:build' "${PYPROJECT}"; then
-        echo "--- patching the bogus PEP 517 backend in pyproject.toml"
-        echo "    (upstream fix: build-backend = \"setuptools.build_meta\")"
-        sed -i 's|setuptools\.backends\.legacy:build|setuptools.build_meta|' \
-            "${PYPROJECT}"
-        SDXI_CLI_PATCHED=true
-    else
-        echo "--- pyproject.toml backend looks sane; no patch applied"
-        SDXI_CLI_PATCHED=false
+    if grep -q 'setuptools\.backends' "${PYPROJECT}"; then
+        echo "Error: ${PYPROJECT} declares a setuptools.backends build" \
+             "backend, which does not exist; pipx will fail in the PEP 517" \
+             "hook. Expected setuptools.build_meta. Fixed upstream at" \
+             "8b8f6e2f -- this pin predates it." >&2
+        exit 1
     fi
 
     # pipx, not pip: resolute is PEP 668 externally-managed, and pipx and
@@ -845,10 +882,9 @@ if [ -n "${SDXI_COMMIT:-}" ]; then
 
     SDXI_CLI_VERSION=$(sdxi-cli --help > /dev/null 2>&1 && echo ok || echo failed)
     rm -rf /tmp/sdxi
-    echo "sdxi_char installed; sdxi-cli --help: ${SDXI_CLI_VERSION}"
+    echo "sdxi_char + sdxi_perf installed; sdxi-cli --help: ${SDXI_CLI_VERSION}"
 else
     echo "note: SDXI_COMMIT unset -- no SDXI driver or CLI in this guest"
-    SDXI_CLI_PATCHED=false
     SDXI_CLI_VERSION=""
 fi
 
@@ -897,11 +933,11 @@ sudo tee /etc/rocjitsu-guest.json > /dev/null <<EOF
   "fio_hipfile_async": "$(cat /usr/local/share/fio-hipfile-async.txt 2>/dev/null || echo unknown)",
   "rdma_driver": "none -- rdma-core userspace only; ionic-ernic is a DKMS build the consumer does",
   "sdxi_commit": "${SDXI_COMMIT:-}",
-  "sdxi_modules": $([ -n "${SDXI_COMMIT:-}" ] && echo '["sdxi_char"]' || echo '[]'),
-  "sdxi_perf_module": "not built -- upstream MODULE_LICENSE(\"MIT\") against GPL-only debugfs symbols; see provision/rocjitsu.sh",
+  "sdxi_modules": $([ -n "${SDXI_COMMIT:-}" ] && echo '["sdxi_char", "sdxi_perf"]' || echo '[]'),
+  "sdxi_default_driver": "sdxi_char -- sdxi_perf matches the same PCI id and is blacklisted from autoload; see /etc/modprobe.d/sdxi.conf",
+  "sdxi_io_uring": "CONFIG_IO_URING=y asserted at provision time; sdxi_char's uring_cmd path is compiled in",
   "sdxi_char_device_node": "/dev/sdxi<devfn>, created by probe() when a device binds -- absent until one is attached",
-  "sdxi_cli": "${SDXI_CLI_VERSION}",
-  "sdxi_cli_pyproject_patched": ${SDXI_CLI_PATCHED}
+  "sdxi_cli": "${SDXI_CLI_VERSION}"
 }
 EOF
 cat /etc/rocjitsu-guest.json

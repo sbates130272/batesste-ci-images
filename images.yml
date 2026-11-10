@@ -715,7 +715,7 @@ images:
       # emulation/sdxi/drivers/sdxi_char/sdxi_user.h is the uapi both sides
       # agree on.
       sdxi_commit:
-        value: aa3bcd849f9a4d064e55ff106ef1c797e2c0d90c
+        value: c50f2b9a39c64538039712f6b52510d1a8596c72
         env: ROCM_SDXI_COMMIT
       # Empty means "whatever emulation/sdxi/cmake/SdxiVfioUser.cmake pins",
       # which is nutanix/libvfio-user at v0.8. Declared now, with no variant
@@ -1375,7 +1375,7 @@ images:
           #
           # Must equal ubuntu-rocm-sdxi's sdxi_commit; see the vars above.
           sdxi_repo: https://github.com/ROCm/rocm-systems.git
-          sdxi_commit: aa3bcd849f9a4d064e55ff106ef1c797e2c0d90c
+          sdxi_commit: c50f2b9a39c64538039712f6b52510d1a8596c72
 
       # Both devices in one guest, for hipObject's ernic-rocjitsu-gpu lane: an
       # emulated ionic RDMA NIC served by rocm-ernic *and* an emulated gfx1250
