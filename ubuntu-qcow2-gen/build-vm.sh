@@ -141,6 +141,18 @@ FINAL_ROCM_VERSION="${ROCM_VERSION:-}"
 FINAL_RDMA_CORE_VERSION="${RDMA_CORE_VERSION:-}"
 # Empty means the flavour installs no fio; see the var's note in images.yml.
 FINAL_FIO_COMMIT="${FIO_COMMIT:-}"
+# Empty means the flavour installs no SDXI driver or CLI, which is every
+# flavour but rocjitsu; see the vars' note in images.yml. Checked as a pair
+# here rather than in the provision script, so a half-set pin fails the build
+# with a name instead of silently fetching nothing.
+FINAL_SDXI_REPO="${SDXI_REPO:-}"
+FINAL_SDXI_COMMIT="${SDXI_COMMIT:-}"
+if { [ -n "${FINAL_SDXI_REPO}" ] && [ -z "${FINAL_SDXI_COMMIT}" ]; } ||
+   { [ -z "${FINAL_SDXI_REPO}" ] && [ -n "${FINAL_SDXI_COMMIT}" ]; }; then
+    echo "Error: SDXI_REPO and SDXI_COMMIT must be set together or not at all" >&2
+    echo "  SDXI_REPO='${FINAL_SDXI_REPO}' SDXI_COMMIT='${FINAL_SDXI_COMMIT}'" >&2
+    exit 1
+fi
 KERNEL_VERSION=$(uname -r)
 # The flavour's package manifest. Outside the stage phase that writes it into
 # the cloud-init config because the verify phase reads the same file back to
@@ -171,6 +183,7 @@ echo "ROCM_PATH: ${FINAL_ROCM_PATH:-none (no ROCm in the guest)}"
 echo "ROCM_VERSION: ${FINAL_ROCM_VERSION:-none}"
 echo "RDMA_CORE_VERSION: ${FINAL_RDMA_CORE_VERSION:-none}"
 echo "FIO_COMMIT: ${FINAL_FIO_COMMIT:-none (no fio in the guest)}"
+echo "SDXI_COMMIT: ${FINAL_SDXI_COMMIT:-none (no SDXI in the guest)}"
 
 command -v qemu-tool > /dev/null || {
     echo "Error: qemu-tool not installed!"
@@ -842,6 +855,8 @@ ROCM_PATH='${FINAL_ROCM_PATH}'
 ROCM_VERSION='${FINAL_ROCM_VERSION}'
 RDMA_CORE_VERSION='${FINAL_RDMA_CORE_VERSION}'
 FIO_COMMIT='${FINAL_FIO_COMMIT}'
+SDXI_REPO='${FINAL_SDXI_REPO}'
+SDXI_COMMIT='${FINAL_SDXI_COMMIT}'
 KERNEL_REF='${FINAL_KERNEL_REF}'
 APT_CACHE='${APT_CACHE}'
 GUEST_CCACHE_DIR='${GUEST_CCACHE_GUEST_PATH}'
@@ -1610,6 +1625,7 @@ cat > /output/vm-info.json <<EOF
     "assets": "${ASSETS_NAME}",
     "trim": "${TRIM_NAME}",
     "checks": "${CHECKS_NAME}",
+    "sdxi_commit": "${FINAL_SDXI_COMMIT}",
     "unattended_upgrades": "purged"
   },
   "build_info": {

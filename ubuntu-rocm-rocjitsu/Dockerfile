@@ -103,48 +103,25 @@ RUN git init /build/rocm-systems && \
 # CMAKE_CXX_FLAGS, never the C compile of lib/*.c, so it cannot collide with
 # glibc's own static_assert macro either way.
 #
-# -Wno-error=free-nonheap-object is for upstream's fuzz targets, not for ours.
+# There used to be a -Wno-error=free-nonheap-object here, for upstream's fuzz
+# targets rather than for ours. At 73c3cf3, GCC 14 raised a false positive
+# inside std::vector::push_back in execution_fuzz_core.cpp and failed the whole
+# build at [747/760]; rocjitsu's CMakeLists adds fuzz/ unconditionally and
+# rj_configure_target() hardcodes -Werror, so there was no way to opt out of
+# compiling it. ROCm/rocm-systems#14530 "[rocjitsu] Fill execution fuzz inputs
+# without vector growth" merged as 33aacbb8 and sizes the vector up front, so
+# the reallocation path GCC 14 misread is gone. 33aacbb8 is an ancestor of the
+# 50be05a this image now pins and is *not* an ancestor of 73c3cf3, which is
+# what made the flag removable here rather than merely stale.
 #
-# rocjitsu's CMakeLists adds fuzz/{decode,code_object,execution,multiplexer}
-# with bare add_subdirectory() calls -- no option gates them, and the
-# -DBUILD_TESTING=OFF above gates only tests/ -- so they are part of every
-# build whether or not anything here fuzzes. rj_configure_target() then
-# hardcodes -Wall -Wextra -Wpedantic -Werror with no toggle, and at -O3 GCC 14
-# raises a false positive inside std::vector::push_back in
-# execution_fuzz_core.cpp:
+# Putting it back is a pin question, not a compiler question: moving
+# rocjitsu_commit to anything before 33aacbb8 needs the flag again. images.yml
+# says the same thing beside the pin.
 #
-#   new_allocator.h:172:33: error: 'void operator delete(void*, std::size_t)'
-#   called on pointer '<unknown>' with nonzero offset [1, 1024]
-#   ...inlined from rocjitsu::execution_fuzz::random_input(...)
-#
-# which fails the whole build at [747/760]. Seen on 73c3cf3; the fuzzers landed
-# 2026-10-22/23 and nothing upstream has touched them since.
-#
-# -Wno-error= and not -Wno-: a plain -Wno-free-nonheap-object here would be
-# re-enabled by the -Wall that rj_configure_target appends afterwards, because
-# GCC applies warning *enablement* in order. The error/warning classification
-# is a separate per-warning table that a later blanket -Werror does not reset,
-# so demoting it to a warning survives where disabling it would not.
-#
-# Narrow on purpose: one warning, still reported, still visible in the log.
-# Upstream has taken this shape of fix twice before (0644784 for GCC 15,
-# e36e73e for a false-positive maybe-uninitialized), and is taking it again:
-# ROCm/rocm-systems#14530 "[rocjitsu] Fill execution fuzz inputs without
-# vector growth" sizes the vector up front and fills it with a cursor, so the
-# reserve/push_back reallocation path GCC 14 misreads is gone entirely. Open
-# and blocked as of 2026-10-29, not merged.
-#
-# REMOVE THIS FLAG once rocjitsu_commit is past that merge -- and promptly.
-# It reaches CMAKE_CXX_FLAGS for the whole build, so while it is here a
-# genuine free-nonheap-object anywhere in rocjitsu is demoted to a warning
-# too. That is an acceptable trade against an unbuildable image and a bad one
-# against nothing.
-#
-# Note what #14530 does *not* do: it fixes this instance, not the class. The
-# four fuzz/ subdirectories are still added unconditionally and
-# rj_configure_target still hardcodes -Werror, so the next compiler false
-# positive anywhere under fuzz/ breaks every consumer again. That half of the
-# report was not taken.
+# What #14530 did not do is fix the class. The four fuzz/ subdirectories are
+# still added unconditionally and rj_configure_target still hardcodes -Werror,
+# so the next compiler false positive anywhere under fuzz/ breaks every
+# consumer of this image again. That half of the report was not taken.
 #
 # FETCHCONTENT_SOURCE_DIR_LIBVFIO-USER is CMake's documented per-dependency
 # override: FetchContent upper-cases the declared name (`libvfio-user`) and
@@ -163,7 +140,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
-    "-DCMAKE_CXX_FLAGS=-D_Static_assert=static_assert -Wno-error=free-nonheap-object" \
+    "-DCMAKE_CXX_FLAGS=-D_Static_assert=static_assert" \
     "-DCMAKE_SHARED_LINKER_FLAGS=-static-libstdc++" \
     "-DCMAKE_EXE_LINKER_FLAGS=-static-libstdc++" \
     -DCMAKE_INSTALL_PREFIX=/usr/local \

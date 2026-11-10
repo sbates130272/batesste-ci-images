@@ -270,6 +270,47 @@ elif check_nonempty "$ROCJITSU_LATEST" "ROCJITSU HEAD" \
          "ubuntu-rocm-rocjitsu so the Dockerfile's vfio asserts run."
 fi
 
+echo "==> Fetching latest SDXI HEAD..."
+# Reported, never rewritten, for a reason the rocjitsu block above does not
+# have: this pin names a *personal* branch (users/stebates/emulation-sdxi),
+# which is rebased and force-pushed as the series is reworked. A rewrite to
+# "branch head" would therefore not be a bump, it would be a jump onto a tree
+# nobody has looked at, and the pin it replaced would often not be an ancestor
+# of it -- the same hazard that stranded the qemu fork variant.
+#
+# `|| true` for the same reason the rocjitsu fetch has it: a deleted or renamed
+# branch answers 422, curl -f makes that exit 22, and under `set -euo pipefail`
+# that would kill the scrub here and leave every pin below unscrubbed.
+SDXI_BRANCH=$(current_pin ubuntu-rocm-sdxi sdxi_branch)
+SDXI_LATEST=$(gh_curl \
+    "https://api.github.com/repos/ROCm/rocm-systems/commits/${SDXI_BRANCH}" \
+    | jq -r '.sha' || true)
+SDXI_CURRENT=$(current_pin ubuntu-rocm-sdxi sdxi_commit)
+echo "    current: $SDXI_CURRENT  latest: $SDXI_LATEST  (branch: $SDXI_BRANCH)"
+if check_nonempty "$SDXI_LATEST" "SDXI HEAD" \
+    && [[ "$SDXI_CURRENT" != "$SDXI_LATEST" ]]; then
+    echo "    note: ${SDXI_BRANCH} has moved to ${SDXI_LATEST:0:7}." \
+         "Pinned deliberately -- bump it by hand, and move the guest pin with" \
+         "it (see the warning below)."
+fi
+
+# The rocjitsu guest builds the SDXI modules and CLI, and images.yml says its
+# pin must equal the container's: sdxi_user.h carries the ioctl numbers and
+# struct layouts the emulated device and the guest driver both agree on, so two
+# different trees is a uapi mismatch that surfaces as EINVAL from sdxi-cli
+# rather than as anything naming the cause.
+#
+# Warned about rather than rewritten, exactly like the guest fio pin above: the
+# guest pin lives inside a variants: block, which replace_in_yaml skips on
+# purpose.
+GUEST_SDXI=$(current_pin ubuntu-qcow2-gen@rocjitsu sdxi_commit)
+if [[ -n "$GUEST_SDXI" && "$GUEST_SDXI" != "$SDXI_CURRENT" ]]; then
+    echo "  WARNING: ubuntu-qcow2-gen@rocjitsu pins SDXI ${GUEST_SDXI:0:7} but" \
+         "ubuntu-rocm-sdxi pins ${SDXI_CURRENT:0:7}." \
+         "images.yml asks for these to be equal; the guest pin is a variant," \
+         "so align it by hand."
+fi
+
 echo "==> Fetching latest SPDK HEAD..."
 # SPDK tracks a *fork* branch (mmgaggle/spdk@rados-nkv) because the target-side
 # KV command set exists nowhere upstream. A fork branch can be force-pushed or

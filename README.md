@@ -31,9 +31,9 @@ independently.
 
 [![ubuntu 24.04](https://img.shields.io/badge/ubuntu-24.04-E95420)](https://hub.docker.com/_/ubuntu)
 [![rocm 10.1](https://img.shields.io/badge/rocm-10.1-006F62)](https://rocm.docs.amd.com/)
-[![cuda 13.4](https://img.shields.io/badge/cuda-13.4-76B900)](https://developer.nvidia.com/cuda-toolkit)
+[![cuda 13.5](https://img.shields.io/badge/cuda-13.5-76B900)](https://developer.nvidia.com/cuda-toolkit)
 [![qemu v11.1.3](https://img.shields.io/badge/qemu-v11.1.3-FF6600)](https://gitlab.com/qemu-project/qemu/-/tags/v11.1.3)
-[![nixl v1.5.1](https://img.shields.io/badge/nixl-v1.5.1-76B900)](https://github.com/ai-dynamo/nixl/releases/tag/v1.5.1)
+[![nixl v1.5.2](https://img.shields.io/badge/nixl-v1.5.2-76B900)](https://github.com/ai-dynamo/nixl/releases/tag/v1.5.2)
 [![abseil 20250814.2](https://img.shields.io/badge/abseil-20250814.2-4285F4)](https://github.com/abseil/abseil-cpp/releases/tag/20250814.2)
 [![grpc v1.73.0](https://img.shields.io/badge/grpc-v1.73.0-244C5A)](https://github.com/grpc/grpc/releases/tag/v1.73.0)
 [![libfabric v1.21.0](https://img.shields.io/badge/libfabric-v1.21.0-0F4C81)](https://github.com/ofiwg/libfabric/releases/tag/v1.21.0)
@@ -48,13 +48,14 @@ independently.
 
 **Pinned Commits**
 
-[![libvfio-user 5b9c722](https://img.shields.io/badge/libvfio--user-5b9c722-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/5b9c7220647e45a0bbfc2a22bef05bbfd56e5742)
-[![qemu-minimal ae551b3](https://img.shields.io/badge/qemu--minimal-ae551b3-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/ae551b3be320575968f2716e40bd35b59b2e36a8)
-[![rocm-ernic 8f35f4a](https://img.shields.io/badge/rocm--ernic-8f35f4a-006F62)](https://github.com/ROCm/rocm-ernic/commit/8f35f4a8ae1c3de5330805ebb92f58596d9519a2)
-[![rocjitsu 73c3cf3](https://img.shields.io/badge/rocjitsu-73c3cf3-006F62)](https://github.com/ROCm/rocm-systems/commit/73c3cf3da4bf65a06bc41421bbd65d5e13baadaf)
+[![libvfio-user 05bb5e5](https://img.shields.io/badge/libvfio--user-05bb5e5-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/05bb5e5237817e0d77879b93d6145f6436b56fd0)
+[![qemu-minimal 7ef0ea7](https://img.shields.io/badge/qemu--minimal-7ef0ea7-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/7ef0ea7350dd90a6ab032a3039126f02f77fcb92)
+[![rocm-ernic 3111d40](https://img.shields.io/badge/rocm--ernic-3111d40-006F62)](https://github.com/ROCm/rocm-ernic/commit/3111d407e63e7981cb529248436b36e235668af3)
+[![rocjitsu 50be05a](https://img.shields.io/badge/rocjitsu-50be05a-006F62)](https://github.com/ROCm/rocm-systems/commit/50be05a34892867c6ef5bc125696223df889f3e4)
+[![sdxi aa3bcd8](https://img.shields.io/badge/sdxi-aa3bcd8-006F62)](https://github.com/ROCm/rocm-systems/commit/aa3bcd849f9a4d064e55ff106ef1c797e2c0d90c)
 [![spdk 18d1d8d](https://img.shields.io/badge/spdk-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
 [![fio d2dcd7e](https://img.shields.io/badge/fio-d2dcd7e-4B8BBE)](https://github.com/axboe/fio/commit/d2dcd7e053d1902d2420f151c83990e6acdd9f8c)
-[![ucx 5ee910c](https://img.shields.io/badge/ucx-5ee910c-4B8BBE)](https://github.com/openucx/ucx/commit/5ee910c113954a8b3805d67d4c416c04caec0ff5)
+[![ucx dd2b212](https://img.shields.io/badge/ucx-dd2b212-4B8BBE)](https://github.com/openucx/ucx/commit/dd2b21269d36c1985eabfbde4987f0554fb98e37)
 [![etcd-cpp-apiv3 7c6e714](https://img.shields.io/badge/etcd--cpp--apiv3-7c6e714-419EDA)](https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3/commit/7c6e714f188f9576e25e0350cac4181139eec23e)
 
 <!-- END PINNED BADGES -->
@@ -76,6 +77,7 @@ independently.
 | ![container](https://img.shields.io/badge/type-container-1f6feb) ubuntu-rocm-ernic-sbates-fork (job: ubuntu-rocm-ernic@sbates-fork) | rocm-ernic built against the sbates130272 libvfio-user fork, with the host MMIO doorbell fd protocol available to the vfio-user server. | &mdash; | [`batesste-ci-images-ubuntu-rocm-ernic-sbates-fork`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-rocm-ernic-sbates-fork) | [![ubuntu-rocm-ernic-sbates-fork main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-rocm-ernic-sbates-fork.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | ![container](https://img.shields.io/badge/type-container-1f6feb) ubuntu-rocm-rocjitsu | An emulated gfx1250 GPU served by rocjitsu over vfio-user, so a guest needs no physical GPU. | BAR0 `max` | [`batesste-ci-images-ubuntu-rocm-rocjitsu`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu) | [![ubuntu-rocm-rocjitsu main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-rocm-rocjitsu.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | ![container](https://img.shields.io/badge/type-container-1f6feb) ubuntu-rocm-rocjitsu-sbates-fork (job: ubuntu-rocm-rocjitsu@sbates-fork) | rocjitsu from the vfio-doorbell branch, built against the sbates130272 libvfio-user fork, calling the host MMIO doorbell and vfu_mmio_write paths rather than only linking against them. | BAR0 `max` | [`batesste-ci-images-ubuntu-rocm-rocjitsu-sbates-fork`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu-sbates-fork) | [![ubuntu-rocm-rocjitsu-sbates-fork main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-rocm-rocjitsu-sbates-fork.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| ![container](https://img.shields.io/badge/type-container-1f6feb) ubuntu-rocm-sdxi | An emulated AMD SDXI data-mover served over vfio-user, so a guest needs no SDXI silicon. | &mdash; | [`batesste-ci-images-ubuntu-rocm-sdxi`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-rocm-sdxi) | [![ubuntu-rocm-sdxi main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-rocm-sdxi.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | ![container](https://img.shields.io/badge/type-container-1f6feb) ubuntu-spdk-libvfio-user | SPDK's NVMe-oF target serving an NVMe controller with LBA and KV namespaces over vfio-user. | &mdash; | [`batesste-ci-images-ubuntu-spdk-libvfio-user`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-spdk-libvfio-user) | [![ubuntu-spdk-libvfio-user main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-spdk-libvfio-user.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | ![container](https://img.shields.io/badge/type-container-1f6feb) ubuntu-spdk-libvfio-user-sbates-fork (job: ubuntu-spdk-libvfio-user@sbates-fork) | SPDK's NVMe-oF target built against the sbates130272 libvfio-user fork, with the host MMIO doorbell fd protocol available to the target. | &mdash; | [`batesste-ci-images-ubuntu-spdk-libvfio-user-sbates-fork`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-spdk-libvfio-user-sbates-fork) | [![ubuntu-spdk-libvfio-user-sbates-fork main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-spdk-libvfio-user-sbates-fork.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | ![container](https://img.shields.io/badge/type-container-1f6feb) ubuntu-qemu-libvfio-user | QEMU built with vfio-user, the qemu-tool CLI and ansible-core, but no guest; mount one at /output. | &mdash; | [`batesste-ci-images-ubuntu-qemu-libvfio-user`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user) | [![ubuntu-qemu-libvfio-user main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-qemu-libvfio-user.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
@@ -151,6 +153,16 @@ and pushing of these images.
   nothing upstream tests the vfio-user compute path — no CI anywhere enables
   `ROCJITSU_ENABLE_VFIO` — so the build asserts the behaviours a guest needs.
   See `ubuntu-rocm-rocjitsu/` for details.
+- **ubuntu-rocm-sdxi**: a vfio-user server presenting an emulated AMD SDXI
+  data-mover — the SNIA-standardised copy engine being integrated into CPU
+  SoCs — so software targeting it can be written and measured in a VM before
+  silicon exists. Shares the `ROCm/rocm-systems` monorepo with
+  `ubuntu-rocm-rocjitsu` but not its pin: `emulation/sdxi` lives on a personal
+  branch rather than `develop`, and the two components move independently. The
+  image also stages the guest-side driver and CLI sources, which
+  `ubuntu-qcow2-gen`'s `rocjitsu` flavour builds into the guest at the same
+  pin. See `ubuntu-rocm-sdxi/` for details, including why `sdxi_perf` is not
+  among them.
 - **ubuntu-spdk-libvfio-user**: SPDK's NVMe-oF target built from source and
   served over vfio-user, so a guest gets an emulated NVMe controller carrying
   any mix of LBA namespaces (memory or file backed) and Key Value namespaces
@@ -417,6 +429,9 @@ batesste-ci-images/
 │   ├── README.md
 │   ├── rocjitsu-scratch-repro.hip
 │   └── vfio-guest-firmware.py
+├── ubuntu-rocm-sdxi/          # SDXI vfio-user emulated data-mover image
+│   ├── Dockerfile
+│   └── README.md
 ├── ubuntu-spdk-libvfio-user/  # SPDK vfio-user NVMe target (LBA + KV namespaces)
 │   ├── Dockerfile
 │   ├── entrypoint.sh
@@ -695,6 +710,7 @@ ubuntu-base ─┬─ ubuntu-cuda-rocm ─┬─ ubuntu-cuda-rocm-fio
              │                    └─ ubuntu-rocm-nixl
              ├─ ubuntu-kernel-build
              ├─ ubuntu-rocm-rocjitsu
+             ├─ ubuntu-rocm-sdxi
              ├─ ubuntu-spdk-libvfio-user
              └─ ubuntu-libvfio-user ─┬─ ubuntu-qemu-libvfio-user ── ubuntu-qcow2-gen
                                      └─ ubuntu-rocm-ernic

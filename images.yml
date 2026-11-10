@@ -79,7 +79,7 @@ defaults:
   # Shared by more than one image, so they cannot be owned by any single one.
   vars:
     libvfio_user_repo: https://gitlab.com/qemu-project/libvfio-user.git
-    libvfio_user_commit: 5b9c7220647e45a0bbfc2a22bef05bbfd56e5742
+    libvfio_user_commit: 05bb5e5237817e0d77879b93d6145f6436b56fd0
     # The Ubuntu cloud image every guest qcow2 is built from. Ubuntu 26.04 LTS
     # "resolute" ships Linux 7.0. This chooses the *userspace* only: the guest
     # kernel is whatever the release ships unless the flavour sets kernel_ref,
@@ -237,7 +237,7 @@ images:
     # No CI artifact: its only consumer wants a registry ref, so the build job
     # pushes it straight to GHCR instead of round-tripping a ~13 GB tarball.
     vars:
-      cuda_version: "13-4"
+      cuda_version: "13-5"
       # Selective on both streams, and a real pin.
       #
       # The therock apt source is versionless ("stable"), but it carries
@@ -342,7 +342,7 @@ images:
       # still records the resolved commit in nixl-commit.txt for provenance.
       # version-scrub.sh advances this to the newest stable tag and ignores
       # -rc ones.
-      nixl_tag: "v1.5.1"
+      nixl_tag: "v1.5.2"
       # UCX is built from source rather than apt: the packaged build has no
       # ROCm transport, so it cannot register HIP memory.
       #
@@ -354,7 +354,7 @@ images:
       # whichever branch ucx_branch names.
       ucx_repo: https://github.com/openucx/ucx.git
       ucx_branch: v1.23.x
-      ucx_commit: 5ee910c113954a8b3805d67d4c416c04caec0ff5
+      ucx_commit: dd2b21269d36c1985eabfbde4987f0554fb98e37
       etcd_repo: https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git
       etcd_commit: 7c6e714f188f9576e25e0350cac4181139eec23e
       # Abseil and gRPC are built from source because Ubuntu's libgrpc++-dev
@@ -405,7 +405,7 @@ images:
     base: ubuntu-libvfio-user
     artifact: true
     vars:
-      rocm_ernic_commit: 8f35f4a8ae1c3de5330805ebb92f58596d9519a2
+      rocm_ernic_commit: 3111d407e63e7981cb529248436b36e235668af3
     build_args:
       ROCM_ERNIC_COMMIT: "{rocm_ernic_commit}"
     # This image links against libvfio-user, so that pin belongs in the tag:
@@ -476,8 +476,15 @@ images:
       # the gfx1250 vfio-compute work onto develop (bdc4aea25, d5927b503) are
       # over a thousand commits ahead of it. Pinning the tag would drop the
       # capability this image exists for.
+      #
+      # Moved 2026-11-09, 73c3cf3 -> 50be05a, for one reason worth recording:
+      # ROCm/rocm-systems#14530 "[rocjitsu] Fill execution fuzz inputs without
+      # vector growth" merged as 33aacbb8, which is an ancestor of 50be05a and
+      # is not an ancestor of 73c3cf3. That is what let the Dockerfile's
+      # -Wno-error=free-nonheap-object come out; see the note there. Do not
+      # take this pin backwards without putting the flag back.
       rocjitsu_commit:
-        value: 73c3cf3da4bf65a06bc41421bbd65d5e13baadaf
+        value: 50be05a34892867c6ef5bc125696223df889f3e4
         env: ROCM_ROCJITSU_COMMIT
       # Compile-time log groups (emulation/rocjitsu/cmake/rj_log.cmake): OFF,
       # ALL, a comma-separated subset of VM, CP, DBT_HOOKS, PLUGINS, DRIVER, or
@@ -662,6 +669,83 @@ images:
         # the default on the same rocjitsu_commit.
         variant: "rocjitsu.{rocjitsu_commit|short}-vfu.{libvfio_user_override_commit|short}"
 
+  # The data-mover device server. rocm-ernic serves a NIC, rocjitsu serves a
+  # GPU, ubuntu-spdk-libvfio-user serves an NVMe controller, and this serves an
+  # SDXI copy engine -- the SNIA-standardised data-mover AMD is integrating
+  # into CPU SoCs. The point is the same as rocjitsu's: software targeting SDXI
+  # can be written and measured in a VM before silicon exists.
+  #
+  # base: ubuntu-base, not ubuntu-libvfio-user, for the same reason
+  # ubuntu-spdk-libvfio-user and ubuntu-rocm-rocjitsu are: this tree fetches
+  # its own libvfio-user through cmake/SdxiVfioUser.cmake (nutanix at v0.8),
+  # which is a different tree from the qemu-project one defaults.vars pins.
+  # Layering on ubuntu-libvfio-user would put two libvfio-users in one image
+  # and leave which one it linked to chance.
+  #
+  # Shares its upstream repository with ubuntu-rocm-rocjitsu -- both are
+  # components of the ROCm/rocm-systems monorepo -- but not its pin: rocjitsu
+  # tracks develop and this tracks a personal branch, and they move
+  # independently. Do not try to collapse them onto one var.
+  ubuntu-rocm-sdxi:
+    job: matrix
+    description: >-
+      An emulated AMD SDXI data-mover served over vfio-user, so a guest needs
+      no SDXI silicon.
+    base: ubuntu-base
+    artifact: true
+    vars:
+      sdxi_repo:
+        value: https://github.com/ROCm/rocm-systems.git
+        env: ROCM_SDXI_REPO
+      # A personal branch, not develop: emulation/sdxi does not exist on
+      # develop at all. version-scrub.sh tracks whichever branch this names.
+      sdxi_branch:
+        value: users/stebates/emulation-sdxi
+        env: ROCM_SDXI_BRANCH
+      # A deliberate pin, not the branch head, and version-scrub.sh reports
+      # rather than rewrites it -- the same treatment rocjitsu, the amdgpu
+      # trees and the therock lines get, but for a sharper reason than any of
+      # them. This is a *personal* branch that is rebased and force-pushed as
+      # the series is reworked, so "the head" is routinely not a descendant of
+      # what is pinned here. An automatic bump would not be a bump, it would be
+      # a jump sideways onto a tree nobody has looked at.
+      #
+      # ubuntu-qcow2-gen@rocjitsu must carry this same SHA; see the note on
+      # sdxi_commit there. The guest drives the device this image serves, and
+      # emulation/sdxi/drivers/sdxi_char/sdxi_user.h is the uapi both sides
+      # agree on.
+      sdxi_commit:
+        value: aa3bcd849f9a4d064e55ff106ef1c797e2c0d90c
+        env: ROCM_SDXI_COMMIT
+      # Empty means "whatever emulation/sdxi/cmake/SdxiVfioUser.cmake pins",
+      # which is nutanix/libvfio-user at v0.8. Declared now, with no variant
+      # using it, because the hook is the cheap half and discovering it is
+      # missing on the day the doorbell path matters is the expensive half --
+      # ubuntu-rocm-rocjitsu and ubuntu-spdk-libvfio-user both have the same
+      # shape. Deliberately *not* the shared libvfio_user_repo/commit: see the
+      # note in the Dockerfile.
+      libvfio_user_override_repo:
+        value: ""
+        env: ROCM_SDXI_LIBVFIO_USER_REPO
+      libvfio_user_override_commit:
+        value: ""
+        env: ROCM_SDXI_LIBVFIO_USER_COMMIT
+    build_args:
+      SDXI_REPO: "{sdxi_repo}"
+      SDXI_BRANCH: "{sdxi_branch}"
+      SDXI_COMMIT: "{sdxi_commit}"
+      LIBVFIO_USER_REPO: "{libvfio_user_override_repo}"
+      LIBVFIO_USER_COMMIT: "{libvfio_user_override_commit}"
+    # Names sdxi alone, like the default rocjitsu target: upstream's
+    # libvfio-user pin is not a var here, so there is nothing else to name. A
+    # variant that fills in the override must add it, or it collides with the
+    # default on the same sdxi_commit.
+    variant: "sdxi.{sdxi_commit|short}"
+    labels:
+      "{ns}.sdxi.repo": "{sdxi_repo}"
+      "{ns}.sdxi.branch": "{sdxi_branch}"
+      "{ns}.sdxi.commit": "{sdxi_commit}"
+
   # The storage device server, completing the set: rocm-ernic serves a NIC,
   # rocjitsu serves a GPU, this serves an NVMe controller.
   #
@@ -776,7 +860,7 @@ images:
       # ubuntu-qcow2-gen -- the ansible/ tree its guest builds are driven by, so
       # the CLI and the playbooks always come from one commit.
       qemu_minimal_repo: https://github.com/sbates130272/qemu-minimal.git
-      qemu_minimal_commit: ae551b3be320575968f2716e40bd35b59b2e36a8
+      qemu_minimal_commit: 7ef0ea7350dd90a6ab032a3039126f02f77fcb92
       # Provenance only, and empty here: the default target builds a release
       # tag, which belongs to no branch. A fork variant fills it in and the
       # label appears only there.
@@ -809,20 +893,35 @@ images:
         # A SHA, not the branch name: the branch is rebased and force-pushed as
         # the series is reworked upstream, so a branch pin silently rebuilds a
         # different QEMU and the tag it publishes never changes. This commit is
-        # the head of dev/stephen/pci-mmio-bridge-submit as of 2026-10-22,
-        # "docs/vfio-user: document vfu_mmio_write and Option A DMA_WRITE
-        # extension". It carries the pci-mmio-bridge device (a shared ring for
+        # the head of dev/stephen/pci-mmio-bridge-submit as of 2026-11-04,
+        # "nvme: read shadow doorbells via address_space_memory, not PCI DMA
+        # AS". It carries the pci-mmio-bridge device (a shared ring for
         # peer-device -> host MMIO writes, with a memfd-backed shadow_gpa and
         # E820 reservation), assigns the region fd to the RAMBlock so vfio-user
-        # P2P DMA carries it in DMA_MAP, and adds the host doorbell fd opcode.
-        # Over the previous pin it extends DMA_WRITE to dispatch MMIO GPAs --
-        # the server side of vfu_mmio_write() -- and fixes an invalid-pointer
-        # free() in doorbell teardown.
+        # P2P DMA carries it in DMA_MAP, adds the host doorbell fd opcode, and
+        # extends DMA_WRITE to dispatch MMIO GPAs -- the server side of
+        # vfu_mmio_write().
+        #
+        # Over the previous pin (f91f1206, the 2026-10-22 head) it adds four
+        # nvme commits from 2026-11-04: queues and descriptor lists may live in
+        # VRAM, shadow doorbells can be polled, vram-dev resolves lazily by id
+        # rather than through an eager link, and shadow doorbells are read via
+        # address_space_memory rather than the PCI DMA address space.
+        #
+        # That bump was not a fast-forward. The branch had been rebased, so
+        # f91f1206 was 20 commits off the current line as well as 123 behind
+        # it, and the rebase moved the series onto v11.1.3 -- the same upstream
+        # tag the default target pins above. The two are on one QEMU base again,
+        # which they were not while this sat at the older head. Expect the same
+        # shape next time and re-read the range rather than assuming ahead-only.
+        #
         # version-scrub.sh must not touch it -- it tracks QEMU releases, and
-        # this is not one.
+        # this is not one. Nothing else watches it either, because it is a
+        # variant pin and the scrub skips those wholesale, so this is checked by
+        # hand or not at all.
         vars:
           qemu_repo: https://github.com/sbates130272/qemu.git
-          qemu_commit: f91f12068854848cdb248f2a4636ddfe41f3283b
+          qemu_commit: 4cb9698b6153998183a7ee51cc7a45de4c5c34e9
           qemu_branch: dev/stephen/pci-mmio-bridge-submit
           # Restated so the tag and the labels name what the image actually
           # carries; base_variant alone only changes which base it builds FROM.
@@ -983,6 +1082,26 @@ images:
       # measuring hipFile in the guest is to compare against the container's
       # numbers, and two different fios make that comparison meaningless.
       fio_commit: ""
+      # The rocm-systems tree and commit the guest builds SDXI from, or empty
+      # for a flavour that wants none -- which is every flavour but rocjitsu.
+      # Only a provision script that builds them reads these.
+      #
+      # Two kernel modules (emulation/sdxi/drivers/sdxi_char and sdxi_perf) and
+      # one Python package (tools/sdxi-cli). The modules are plain kbuild, not
+      # DKMS, so they are built against the kernel the flavour pins and are
+      # invalidated by a kernel_ref move -- which is the main reason this is a
+      # flavour-level pin rather than a repo-wide one.
+      #
+      # Keep equal to ubuntu-rocm-sdxi's sdxi_commit. The container serves the
+      # emulated device and the guest drives it, so a guest built from a
+      # different tree than the server it talks to is a uapi mismatch:
+      # sdxi_user.h carries the ioctl numbers and the struct layouts both sides
+      # agree on, and a renumbered ioctl fails as EINVAL from sdxi-cli rather
+      # than as anything that names the cause. version-scrub.sh warns when the
+      # two diverge, the same way it does for the guest/container fio pair --
+      # it cannot fix it, because the guest pin is a variant.
+      sdxi_repo: ""
+      sdxi_commit: ""
       # The login the guest is provisioned with. "ubuntu" is also the name of
       # the default user Ubuntu's own cloud images ship, so gen-vm is creating
       # a user cloud-init already knows about rather than a fresh one -- see
@@ -1036,6 +1155,8 @@ images:
       ROCM_VERSION: "{guest_rocm_version}"
       RDMA_CORE_VERSION: "{rdma_core_version}"
       FIO_COMMIT: "{fio_commit}"
+      SDXI_REPO: "{sdxi_repo}"
+      SDXI_COMMIT: "{sdxi_commit}"
       PROBE_SSH_PORT: "{probe_ssh_port}"
     # kernel_ref is deliberately not in the tag: the flavour name already
     # distinguishes the images, and the resolved kernel goes in vm-info.json
@@ -1242,6 +1363,19 @@ images:
           # trim/kernel-only.sh.
           trim: kernel-only.sh
           fio_commit: "d2dcd7e053d1902d2420f151c83990e6acdd9f8c"
+          # SDXI rides in this flavour rather than getting a flavour of its own.
+          # The guest already carries everything the modules need -- the pinned
+          # kernel with its headers, a toolchain, pipx -- and a guest with both
+          # an emulated GPU and an emulated data-mover is the configuration a
+          # consumer actually wants to measure a copy engine against. The cost
+          # is that rocm-systems is fetched twice at two different pins in one
+          # build: rocjitsu's tree into the container, SDXI's into the guest.
+          # They are different components of one monorepo and move
+          # independently, so that is correct rather than merely tolerated.
+          #
+          # Must equal ubuntu-rocm-sdxi's sdxi_commit; see the vars above.
+          sdxi_repo: https://github.com/ROCm/rocm-systems.git
+          sdxi_commit: aa3bcd849f9a4d064e55ff106ef1c797e2c0d90c
 
       # Both devices in one guest, for hipObject's ernic-rocjitsu-gpu lane: an
       # emulated ionic RDMA NIC served by rocm-ernic *and* an emulated gfx1250
@@ -1533,6 +1667,15 @@ badges:
         - label: rocjitsu
           target: ubuntu-rocm-rocjitsu
           var: rocjitsu_commit
+          short: true
+          colour: 006F62
+          link: https://github.com/ROCm/rocm-systems/commit/{value}
+        # Same repository as rocjitsu above and a different component of it, so
+        # it shares the ROCm-family colour. The link resolves because the
+        # branch is pushed to ROCm/rocm-systems itself rather than to a fork.
+        - label: sdxi
+          target: ubuntu-rocm-sdxi
+          var: sdxi_commit
           short: true
           colour: 006F62
           link: https://github.com/ROCm/rocm-systems/commit/{value}

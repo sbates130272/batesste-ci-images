@@ -287,6 +287,48 @@ echo "${MISSING:-none}" | sed 's/^/  /'
 # Headroom for a rocm-xio build tree and a module build.
 test "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 20
 
+# SDXI, when the flavour pins it.  Read from the manifest rather than from the
+# build environment: this runs in a probe boot, which does not inherit the
+# provision script's variables, and /etc/rocjitsu-guest.json is the guest's own
+# record of what it was given.
+#
+# Nothing here loads the module or opens a node.  sdxi_char is a pci_driver
+# bound to 1022:149f, and no such function is on this bus -- probe() never
+# runs, so /dev/sdxi<devfn> does not exist and cannot be asserted.  What is
+# assertable is that the module was built for *this* kernel, that depmod can
+# resolve it, and that the CLI runs without a device.
+SDXI_PINNED=$(python3 -c \
+    'import json;print(json.load(open("/etc/rocjitsu-guest.json"))["sdxi_commit"])')
+if [ -n "${SDXI_PINNED}" ]; then
+    # modinfo rather than `test -f`: it parses the module's own metadata, so a
+    # truncated or wrong-architecture .ko fails here instead of at load time.
+    SDXI_KO="/lib/modules/$(uname -r)/updates/sdxi_char.ko"
+    test -f "${SDXI_KO}"
+    modinfo "${SDXI_KO}" > /dev/null
+    # vermagic has to match the booted kernel exactly or modprobe refuses it.
+    # This is the check that catches a module built against the cloud image's
+    # kernel rather than the pinned KERNEL_REF one -- the single most likely
+    # way this provisioning goes wrong, and otherwise invisible until a
+    # consumer attaches a device and modprobe says "invalid module format".
+    test "$(modinfo -F vermagic "${SDXI_KO}" | awk '{print $1}')" = "$(uname -r)"
+    # GPL, or it could not have linked the GPL-only symbols it uses.
+    test "$(modinfo -F license "${SDXI_KO}")" = "GPL"
+    # depmod must be able to find it by name, which is what modprobe will do.
+    modprobe --dry-run --show-depends sdxi_char > /dev/null
+    # sdxi_perf is deliberately absent; see provision/rocjitsu.sh.  Asserted so
+    # that adding it later is a conscious act that updates this line, rather
+    # than something that quietly starts shipping.
+    test ! -e "/lib/modules/$(uname -r)/updates/sdxi_perf.ko"
+    # --help only.  Every real subcommand opens /dev/sdxi0 and exits 1 when it
+    # is absent, and a bare `sdxi-cli` exits 2 because the subparser is
+    # required -- so --help is the only invocation that can pass here.
+    command -v sdxi-cli > /dev/null
+    sdxi-cli --help > /dev/null
+    echo "note: SDXI ${SDXI_PINNED} -- sdxi_char built for $(uname -r), sdxi-cli present"
+else
+    echo "note: no SDXI pinned in this flavour"
+fi
+
 # The shipped netplan has to match the NIC by name, not by the MAC cloud-init
 # happened to see at creation. Three different MACs boot this one image:
 # gen-vm's first boot derives 52:54:00:00:08:ae from --ssh-port 2222, this
