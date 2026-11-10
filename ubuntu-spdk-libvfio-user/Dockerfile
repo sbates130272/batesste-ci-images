@@ -108,6 +108,26 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # privileged container, and nothing here drives an NVMe controller from the
 # host side. --with-vfio-user is the whole point of the image.
 #
+# --max-lcores raises DPDK's compile-time RTE_MAX_LCORE from its default of
+# 128. That default is a ceiling on the lcore *id* DPDK will accept, and SPDK
+# derives lcore ids from the CPU ids in its -m cpumask, so on a machine with
+# more than 128 CPUs every core above 127 is unnameable:
+#
+#   EAL: lcore 148 >= RTE_MAX_LCORE (128), cannot use.
+#   EAL: No valid lcores in core list
+#
+# Slurm hands a job whatever cores are free, and on these 384-core nodes a
+# 32-core allocation lands entirely above 127 most of the time -- job 68347369
+# drew 148-179 and the build died in nine seconds. There is no way to work
+# around it at run time: DPDK's --lcores can map a low lcore id onto a high
+# CPU, but SPDK always emits -l from its own cpumask and DPDK rejects the two
+# together ("argument --lcores should not occur multiple times"). So the
+# ceiling has to be raised where DPDK is built.
+#
+# 512 rather than 384: it covers these nodes with headroom and is a power of
+# two, and the cost is a handful of per-lcore arrays sized by this constant,
+# not per-core memory. Nothing here runs more than one reactor.
+#
 # --target-arch: configure defaults to `native`, which puts -march=native into
 # SPDK's own CFLAGS and -Dcpu_instruction_set=native into DPDK's meson. That
 # bakes the *builder's* CPU into the binary, so the image only runs on a host
@@ -149,6 +169,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     PATH=/usr/lib/ccache:${PATH} ./configure \
         --with-vfio-user \
         --without-nvme-cuse \
+        --max-lcores=512 \
         --target-arch=corei7 && \
     PATH=/usr/lib/ccache:${PATH} make -j"$(nproc)" && \
     test -x "${SPDK_DIR}/build/bin/nvmf_tgt"
@@ -191,7 +212,7 @@ RUN ln -sf "${SPDK_DIR}/build/bin/nvmf_tgt" /usr/local/bin/nvmf_tgt && \
   "libvfio_user_source": "%s",\n\
   "local_patches": [%s],\n\
   "configure_flags": ["--with-vfio-user", "--without-nvme-cuse",\n\
-                      "--target-arch=corei7"],\n\
+                      "--max-lcores=512", "--target-arch=corei7"],\n\
   "rbd_enabled": false,\n\
   "kv_backends": ["mem"],\n\
   "kv_smoke": "kv-smoke"\n\
@@ -251,12 +272,55 @@ ENV PATH=/usr/local/bin:${PATH} \
 # check was the one step of the whole repo that could not build on a compute
 # node. The bracketed form is SPDK's core-list syntax, which avoids computing
 # a shifted hex mask in sh for a CPU id that can exceed 63 on these machines.
+#
+# It has to be a CPU DPDK can *name*, as well as one we are allowed to run on,
+# and those are two different constraints. DPDK's lcore ids are bounded by the
+# compile-time RTE_MAX_LCORE, 128 in the DPDK that SPDK vendors, so a core id
+# at or above that is rejected before affinity is ever considered:
+#
+#   EAL: lcore 148 >= RTE_MAX_LCORE (128), cannot use.
+#   EAL: No valid lcores in core list
+#   ... *ERROR*: Failed to initialize DPDK
+#
+# Taking the first entry of Cpus_allowed_list walked straight into that on a
+# 256-core Slurm node that allocated cores 148-179 (job 68347369). It is a
+# coin toss which half of such a machine a job lands on, and it cannot happen
+# on a GitHub runner at all -- few cores, all low-numbered -- so CI is
+# structurally unable to catch it and the failure only ever appears on the big
+# nodes, intermittently.
+#
+# So: walk every range in the list and take the first core *below* the limit,
+# rather than the first core. The limit is read from the DPDK that was
+# actually built, not restated here, so a rebuild with a larger RTE_MAX_LCORE
+# widens this automatically.
+#
+# An allocation entirely at or above the limit fails the build with its own
+# message. That is deliberate: the alternative is skipping the smoke check,
+# and this is the only assertion anywhere that covers the KV command set end
+# to end, so a silent skip would be strictly worse than a loud stop.
 # hadolint ignore=DL3001
 RUN set -eux; \
     rpc.py --help > /dev/null; \
-    cpu="$(awk '/Cpus_allowed_list/ {split($2, r, ","); split(r[1], c, "-"); print c[1]}' /proc/self/status)"; \
-    : "${cpu:=0}"; \
-    echo "smoke check using CPU ${cpu}"; \
+    max_lcore="$(awk '/^#define RTE_MAX_LCORE[[:space:]]/ {print $3}' \
+        /opt/spdk/dpdk/build/include/rte_build_config.h 2>/dev/null || true)"; \
+    : "${max_lcore:=128}"; \
+    allowed="$(awk '/Cpus_allowed_list/ {print $2}' /proc/self/status)"; \
+    cpu="$(awk -v max="${max_lcore}" -v list="${allowed}" 'BEGIN { \
+        n = split(list, items, ","); \
+        for (i = 1; i <= n; i++) { \
+            if (split(items[i], r, "-") == 2) { lo = r[1] + 0 } \
+            else { lo = items[i] + 0 } \
+            if (lo < max) { print lo; exit } \
+        } \
+    }')"; \
+    if [ -z "${cpu}" ]; then \
+        echo "no CPU below RTE_MAX_LCORE (${max_lcore}) in this allocation:" \
+             "Cpus_allowed_list=${allowed}. DPDK cannot name any core this" \
+             "build is allowed to run on; rerun where some core id is" \
+             "< ${max_lcore}." >&2; \
+        exit 1; \
+    fi; \
+    echo "smoke check using CPU ${cpu} (RTE_MAX_LCORE=${max_lcore}, allowed=${allowed})"; \
     NVME_NAMESPACES='lba:malloc:64M,lba:aio:/tmp/probe-ns.img,kv:mem' \
     VFIO_USER_SOCKET_DIR=/tmp/probe-sockets \
     SPDK_HUGE=off \
