@@ -300,31 +300,61 @@ test "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -ge 20
 SDXI_PINNED=$(python3 -c \
     'import json;print(json.load(open("/etc/rocjitsu-guest.json"))["sdxi_commit"])')
 if [ -n "${SDXI_PINNED}" ]; then
-    # modinfo rather than `test -f`: it parses the module's own metadata, so a
-    # truncated or wrong-architecture .ko fails here instead of at load time.
-    SDXI_KO="/lib/modules/$(uname -r)/updates/sdxi_char.ko"
-    test -f "${SDXI_KO}"
-    modinfo "${SDXI_KO}" > /dev/null
-    # vermagic has to match the booted kernel exactly or modprobe refuses it.
-    # This is the check that catches a module built against the cloud image's
-    # kernel rather than the pinned KERNEL_REF one -- the single most likely
-    # way this provisioning goes wrong, and otherwise invisible until a
-    # consumer attaches a device and modprobe says "invalid module format".
-    test "$(modinfo -F vermagic "${SDXI_KO}" | awk '{print $1}')" = "$(uname -r)"
-    # GPL, or it could not have linked the GPL-only symbols it uses.
-    test "$(modinfo -F license "${SDXI_KO}")" = "GPL"
-    # depmod must be able to find it by name, which is what modprobe will do.
-    modprobe --dry-run --show-depends sdxi_char > /dev/null
-    # sdxi_perf is deliberately absent; see provision/rocjitsu.sh.  Asserted so
-    # that adding it later is a conscious act that updates this line, rather
-    # than something that quietly starts shipping.
-    test ! -e "/lib/modules/$(uname -r)/updates/sdxi_perf.ko"
+    # Both modules now, since SDXI 8b8f6e2f fixed what stopped sdxi_perf
+    # building.  modinfo rather than `test -f`: it parses the module's own
+    # metadata, so a truncated or wrong-architecture .ko fails here instead of
+    # at load time.
+    #
+    # The vermagic comparison is the load-bearing one.  It catches a module
+    # built against the cloud image's kernel rather than the pinned KERNEL_REF
+    # one -- the single most likely way this provisioning goes wrong, and
+    # otherwise invisible until a consumer attaches a device and modprobe says
+    # "invalid module format".
+    #
+    # The licence is asserted per module and they differ on purpose: sdxi_char
+    # is GPL, sdxi_perf is "Dual MIT/GPL" -- which is what lets it resolve the
+    # EXPORT_SYMBOL_GPL debugfs symbols it uses.  A regression to plain "MIT"
+    # upstream would fail the build, not this check, but naming the expected
+    # value here is what makes that failure legible.
+    for _m in sdxi_char:GPL "sdxi_perf:Dual MIT/GPL"; do
+        _name=${_m%%:*}
+        _lic=${_m#*:}
+        _ko="/lib/modules/$(uname -r)/updates/${_name}.ko"
+        test -f "${_ko}"
+        modinfo "${_ko}" > /dev/null
+        test "$(modinfo -F vermagic "${_ko}" | awk '{print $1}')" = "$(uname -r)"
+        test "$(modinfo -F license "${_ko}")" = "${_lic}"
+        modprobe --dry-run --show-depends "${_name}" > /dev/null
+    done
+
+    # Exactly one of them may autoload: both match PCI 1022:149f and the PCI
+    # core binds one driver per device, so without this the winner is a race.
+    # See the note in provision/rocjitsu.sh.
+    grep -q '^blacklist sdxi_perf$' /etc/modprobe.d/sdxi.conf
+
+    # io_uring_cmd is compiled into sdxi_char only when CONFIG_IO_URING is set,
+    # and its absence is silent -- the module still builds and loads.  The
+    # provision script asserts this before building; re-assert it here because
+    # this runs in a boot of its own and is what a published guest is judged
+    # on.
+    if [ -r /proc/config.gz ]; then
+        zgrep -q '^CONFIG_IO_URING=y' /proc/config.gz
+    else
+        grep -q '^CONFIG_IO_URING=y' "/lib/modules/$(uname -r)/build/.config"
+    fi
     # --help only.  Every real subcommand opens /dev/sdxi0 and exits 1 when it
     # is absent, and a bare `sdxi-cli` exits 2 because the subparser is
     # required -- so --help is the only invocation that can pass here.
     command -v sdxi-cli > /dev/null
     sdxi-cli --help > /dev/null
-    echo "note: SDXI ${SDXI_PINNED} -- sdxi_char built for $(uname -r), sdxi-cli present"
+    # The Python CLI is installed rather than the C one beside it precisely
+    # because it carries the newer surface: `bench` and the io_uring layer in
+    # sdxi_cli/uring.py exist nowhere in sdxi-cli.c.  Asserting a subcommand
+    # by name is how a silent fallback to the C binary would be caught --
+    # both install as /usr/local/bin/sdxi-cli and both answer --help.
+    sdxi-cli --help 2>&1 | grep -q bench
+    echo "note: SDXI ${SDXI_PINNED} -- sdxi_char + sdxi_perf built for" \
+         "$(uname -r), sdxi-cli present with the bench subcommand"
 else
     echo "note: no SDXI pinned in this flavour"
 fi

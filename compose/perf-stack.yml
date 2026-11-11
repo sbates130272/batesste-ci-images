@@ -112,6 +112,27 @@ services:
       retries: 30
       start_period: 5s
 
+  sdxi:
+    <<: *vfu-server
+    image: "${SDXI_IMAGE:?SDXI_IMAGE must be set to a pinned tag}"
+    # -v is not optional. rocm-sdxi logs at WARN and its readiness line
+    # ("listening on socket; waiting for QEMU to connect") is INFO, on stderr,
+    # so without it a healthy server is completely silent and a failed one is
+    # indistinguishable from a slow one in `compose logs`. The image's own CMD
+    # passes -v for the same reason; this restates it because naming the
+    # socket means replacing the command wholesale.
+    command:
+      - rocm-sdxi
+      - --socket
+      - /run/vfu/sdxi-1.sock
+      - -v
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test -S /run/vfu/sdxi-1.sock"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
   qemu:
     image: "${QEMU_IMAGE:?QEMU_IMAGE must be set to a pinned tag}"
     # No depends_on: which server this guest is booted against is a phase

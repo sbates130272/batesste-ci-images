@@ -88,6 +88,15 @@ S3_GUEST_ADDR="${S3_GUEST_ADDR:-192.168.200.10}"
 S3_GUEST_PREFIX="${S3_GUEST_PREFIX:-24}"
 S3_BUFFER="${S3_BUFFER:-8388608}"
 S3_ITERS="${S3_ITERS:-10}"
+
+# The SDXI memcpy bench's geometry. These are sdxi-cli's own defaults, named
+# here so the shield's note can state them and so a run can be widened without
+# editing the harness. The batch is what the io_uring row is batched at and is
+# the reason the two rows differ at all -- a batch of 1 would measure the same
+# per-operation cost through a second interface.
+SDXI_BENCH_ITERS="${SDXI_BENCH_ITERS:-1000}"
+SDXI_BENCH_SIZE="${SDXI_BENCH_SIZE:-65536}"
+SDXI_BENCH_BATCH="${SDXI_BENCH_BATCH:-8}"
 # The tracked object size, and the one the shield speaks for. 1 MiB is also
 # the block size gemm-hipfile-bench.hip reads in, so the two storage numbers
 # on the trend page are at the same granularity.
@@ -133,7 +142,7 @@ done
 log()  { printf '=== %s\n' "$*"; }
 fail() { echo "perf-harness.sh: $*" >&2; exit 1; }
 
-for var in QEMU_IMAGE ERNIC_IMAGE ROCJITSU_IMAGE QCOW2_IMAGE QCOW2_IONIC_IMAGE; do
+for var in QEMU_IMAGE ERNIC_IMAGE ROCJITSU_IMAGE SDXI_IMAGE QCOW2_IMAGE QCOW2_IONIC_IMAGE; do
     [ -n "${!var:-}" ] || fail "${var} must be set to a pinned image tag"
 done
 
@@ -184,7 +193,7 @@ summary = {
         "images": {
             k.lower(): os.environ.get(k, "")
             for k in ("QEMU_IMAGE", "ERNIC_IMAGE", "ROCJITSU_IMAGE",
-                      "QCOW2_IMAGE", "QCOW2_IONIC_IMAGE")
+                      "SDXI_IMAGE", "QCOW2_IMAGE", "QCOW2_IONIC_IMAGE")
         },
     },
     "metrics": {m.pop("key"): m for m in metrics},
@@ -338,6 +347,7 @@ QEMU_IMAGE=${QEMU_IMAGE}
 ERNIC_IMAGE=${ERNIC_IMAGE}
 ROCJITSU_IMAGE=${ROCJITSU_IMAGE}
 ROCJITSU_CONFIG=${ROCJITSU_CONFIG}
+SDXI_IMAGE=${SDXI_IMAGE}
 ERNIC_BACKEND=${ERNIC_BACKEND:-loopback}
 VM_IMAGES_DIR=${VM_IMAGES_DIR}
 VM_NAME=${VM_NAME}
@@ -878,9 +888,10 @@ GUEST
     log "rdma device ${rdma_dev}"
 
     measure_s3 "${rdma_dev}"
-    # The last phase is the one --keep-up is for; the first is torn down
-    # regardless, because the second needs the runner back.
-    [ "${KEEP_UP}" -eq 1 ] || phase_down
+    # Unconditional, now that sdxi follows: --keep-up leaves the *last* phase
+    # standing, and two phases' stacks cannot be up at once -- they share a
+    # compose project and both bring up the same `qemu` service.
+    phase_down
 }
 
 measure_s3() {
@@ -983,9 +994,149 @@ GUEST
     fi
 }
 
+# ══ phase 3: sdxi ══════════════════════════════════════
+#
+# memcpy through the emulated SDXI data-mover, twice: once per-operation
+# through ioctl, once batched through io_uring_cmd. Two numbers rather than
+# one because the io_uring path exists precisely to beat the ioctl path, and
+# a single figure would record the result while hiding the reason for it.
+#
+# This gets its own guest boot rather than riding in phase_rocjitsu, even
+# though the qemu entrypoint would happily attach both sockets to one guest
+# and ubuntu-qcow2-gen@rocjitsu is the only flavour carrying sdxi-cli. The
+# trade is a boot against attribution: a failure here is an SDXI failure,
+# not a line buried in the GPU phase, and the two devices cannot interfere.
+#
+# The guest is the rocjitsu payload all the same -- it is where sdxi_char,
+# sdxi_perf and the Python sdxi-cli are built, at the same pin the server is
+# built from. images.yml requires those two pins to be equal, because
+# sdxi_user.h is the uapi both halves read.
+
+phase_sdxi() {
+    PHASE=sdxi
+    log "PHASE sdxi"
+    # Phase two's guest is down; reclaim before extracting a third payload,
+    # for the same reason phase_ernic does it.
+    [ "${KEEP_UP}" -eq 1 ] || sudo -n rm -rf "${VM_IMAGES_ROOT}/ionic"
+    extract_payload "${QCOW2_IMAGE}" "${VM_IMAGES_ROOT}/sdxi"
+    write_env
+    start_server sdxi
+    start_guest
+
+    log "checking the emulated SDXI device enumerated"
+    guest_sh > "${OUT}/lspci-sdxi.txt" <<'GUEST'
+set -euo pipefail
+lspci -nn
+GUEST
+    cat "${OUT}/lspci-sdxi.txt"
+    # 1022:149f is the id both sdxi_char and sdxi_perf match. If it is absent
+    # the server never attached and every number below would be a lie, so
+    # stop rather than record a skip.
+    guest 'lspci -d 1022:149f | grep -q .' \
+        || fail "no SDXI vfio-user device in the guest"
+
+    # sdxi_char binds by PCI id, so udev autoloads it once the device is on
+    # the bus -- but only if the modules-load path has run by now. Load it
+    # explicitly and let a second load be a no-op rather than racing udev.
+    # sdxi_perf is blacklisted in the guest on purpose: it matches the same
+    # id, and whichever driver registers first wins the bind.
+    log "loading sdxi_char"
+    guest_sh > "${OUT}/sdxi-load.txt" 2>&1 <<'GUEST' || { cat "${OUT}/sdxi-load.txt"; exit 1; }
+set -euo pipefail
+sudo -n modprobe sdxi_char
+lsmod | grep -E '^sdxi_char' || true
+ls -l /dev/sdxi* 2>/dev/null || true
+dmesg | tail -20
+GUEST
+    cat "${OUT}/sdxi-load.txt"
+
+    # The node is /dev/sdxi<devfn>, not /dev/sdxi -- probe() builds the name
+    # from pdev->devfn -- so discover it rather than assuming sdxi0, which is
+    # only right when the function lands at devfn 0.
+    local node
+    node=$(guest 'ls /dev/sdxi* 2>/dev/null | head -1' | tr -d '\r') || node=""
+    if [ -z "${node}" ]; then
+        compose logs --no-color sdxi | tail -40 || true
+        record_metric sdxi_memcpy_ioctl_GBs skip GB/s "" \
+            "sdxi_char bound no device node"
+        record_metric sdxi_memcpy_uring_GBs skip GB/s "" \
+            "sdxi_char bound no device node"
+        return 0
+    fi
+    log "SDXI device node: ${node}"
+
+    run_sdxi_bench "${node}"
+    # The last phase, so this is the one --keep-up leaves standing.
+    [ "${KEEP_UP}" -eq 1 ] || phase_down
+}
+
+# `sdxi-cli bench uring` prints a fixed two-row table:
+#
+#   SDXI memcpy bench  size=65536  iters=1000  batch=8
+#
+#   ioctl            1.234s    1234.0 us/op     50.7 MB/s
+#   uring x8         0.567s     567.0 us/op    110.3 MB/s
+#
+# The MB/s column is MiB/s -- the tool divides by 1024*1024 -- so it is
+# converted here rather than published under the wrong unit. Every other
+# bandwidth metric in this harness is GB/s, and a shield that silently mixed
+# the two would be worse than no shield.
+run_sdxi_bench() {
+    local node=$1 rc=0
+    log "running the SDXI memcpy bench"
+    guest_sh > "${OUT}/sdxi-bench.txt" 2>&1 <<GUEST || rc=$?
+set -euo pipefail
+sdxi-cli --device ${node} bench uring --iters ${SDXI_BENCH_ITERS} --size ${SDXI_BENCH_SIZE} --batch ${SDXI_BENCH_BATCH}
+GUEST
+    cat "${OUT}/sdxi-bench.txt"
+
+    if [ "${rc}" -ne 0 ]; then
+        compose logs --no-color sdxi | tail -40 || true
+        record_metric sdxi_memcpy_ioctl_GBs skip GB/s "" \
+            "sdxi-cli bench did not run (exit ${rc})"
+        record_metric sdxi_memcpy_uring_GBs skip GB/s "" \
+            "sdxi-cli bench did not run (exit ${rc})"
+        return 0
+    fi
+
+    # Parsed in python rather than awk so a changed column order or a missing
+    # row is a named failure instead of an empty string reaching record_metric
+    # and dying inside float().
+    local parsed
+    parsed=$(python3 - "${OUT}/sdxi-bench.txt" <<'PY'
+import re, sys
+text = open(sys.argv[1]).read()
+out = {}
+for line in text.splitlines():
+    m = re.match(r'^\s*(ioctl|uring)\S*\s+\S+s\s+\S+\s+us/op\s+([0-9.]+)\s+MB/s', line)
+    if m:
+        out[m.group(1)] = float(m.group(2)) * 1024 * 1024 / 1e9
+print(f"{out.get('ioctl', '')}|{out.get('uring', '')}")
+PY
+) || parsed="|"
+    local ioctl_gbs="${parsed%%|*}" uring_gbs="${parsed##*|}"
+
+    local note="${SDXI_BENCH_SIZE}B memcpy x${SDXI_BENCH_ITERS}, batch ${SDXI_BENCH_BATCH}"
+    if [ -n "${ioctl_gbs}" ]; then
+        record_metric sdxi_memcpy_ioctl_GBs ok GB/s "${ioctl_gbs}" \
+            "${note}, one ioctl per operation"
+    else
+        record_metric sdxi_memcpy_ioctl_GBs skip GB/s "" \
+            "no ioctl row in the bench output"
+    fi
+    if [ -n "${uring_gbs}" ]; then
+        record_metric sdxi_memcpy_uring_GBs ok GB/s "${uring_gbs}" \
+            "${note}, io_uring_cmd batched submission"
+    else
+        record_metric sdxi_memcpy_uring_GBs skip GB/s "" \
+            "no uring row in the bench output"
+    fi
+}
+
 # ══ run ════════════════════════════════════════════════
 
 phase_rocjitsu
 phase_ernic
+phase_sdxi
 
 log "done"

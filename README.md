@@ -49,10 +49,10 @@ independently.
 **Pinned Commits**
 
 [![libvfio-user 05bb5e5](https://img.shields.io/badge/libvfio--user-05bb5e5-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/05bb5e5237817e0d77879b93d6145f6436b56fd0)
-[![qemu-minimal 7ef0ea7](https://img.shields.io/badge/qemu--minimal-7ef0ea7-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/7ef0ea7350dd90a6ab032a3039126f02f77fcb92)
-[![rocm-ernic 3111d40](https://img.shields.io/badge/rocm--ernic-3111d40-006F62)](https://github.com/ROCm/rocm-ernic/commit/3111d407e63e7981cb529248436b36e235668af3)
+[![qemu-minimal 096ddfe](https://img.shields.io/badge/qemu--minimal-096ddfe-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/096ddfed218f76a672c964b51ead4894e2da4f60)
+[![rocm-ernic 90434a2](https://img.shields.io/badge/rocm--ernic-90434a2-006F62)](https://github.com/ROCm/rocm-ernic/commit/90434a237232275fc8002cb3a6b5121ba836c594)
 [![rocjitsu 50be05a](https://img.shields.io/badge/rocjitsu-50be05a-006F62)](https://github.com/ROCm/rocm-systems/commit/50be05a34892867c6ef5bc125696223df889f3e4)
-[![sdxi aa3bcd8](https://img.shields.io/badge/sdxi-aa3bcd8-006F62)](https://github.com/ROCm/rocm-systems/commit/aa3bcd849f9a4d064e55ff106ef1c797e2c0d90c)
+[![sdxi c50f2b9](https://img.shields.io/badge/sdxi-c50f2b9-006F62)](https://github.com/ROCm/rocm-systems/commit/c50f2b9a39c64538039712f6b52510d1a8596c72)
 [![spdk 18d1d8d](https://img.shields.io/badge/spdk-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
 [![fio d2dcd7e](https://img.shields.io/badge/fio-d2dcd7e-4B8BBE)](https://github.com/axboe/fio/commit/d2dcd7e053d1902d2420f151c83990e6acdd9f8c)
 [![ucx dd2b212](https://img.shields.io/badge/ucx-dd2b212-4B8BBE)](https://github.com/openucx/ucx/commit/dd2b21269d36c1985eabfbde4987f0554fb98e37)
@@ -98,6 +98,8 @@ independently.
 [![nvme](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fperf%2Fbadge-nvme.json&label=nvme)](https://sbates130272.github.io/batesste-ci-images/#nvme)
 [![hipfile](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fperf%2Fbadge-hipfile.json&label=hipfile)](https://sbates130272.github.io/batesste-ci-images/#hipfile)
 [![ernic](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fperf%2Fbadge-ernic.json&label=ernic%20s3)](https://sbates130272.github.io/batesste-ci-images/#ernic)
+[![sdxi ioctl](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fperf%2Fbadge-sdxi-ioctl.json&label=sdxi%20ioctl)](https://sbates130272.github.io/batesste-ci-images/#sdxi-ioctl)
+[![sdxi uring](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fperf%2Fbadge-sdxi-uring.json&label=sdxi%20uring)](https://sbates130272.github.io/batesste-ci-images/#sdxi-uring)
 [![boot](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fperf%2Fbadge-boot.json&label=boot)](https://sbates130272.github.io/batesste-ci-images/#boot)
 
 These read `shields.io` endpoint JSON published to `gh-pages` by the
@@ -241,13 +243,30 @@ wires the two together over the shared `vfio-sockets` volume.
 Every image above is tested on its own by
 `batesste-ci-images-dockerfile-test.yml`. Five of them are only interesting
 together, and that combination is what the
-`batesste-ci-images-integration-perf` workflow covers, in two phases back to
+`batesste-ci-images-integration-perf` workflow covers, in three phases back to
 back by `ubuntu-qemu-libvfio-user`:
 
 | phase | guest | device over vfio-user | measures |
 | --- | --- | --- | --- |
 | rocjitsu | `ubuntu-qcow2-gen@rocjitsu` | `ubuntu-rocm-rocjitsu` emulated gfx1250, plus an emulated NVMe controller | GEMM, the storage path into GPU memory, boot |
 | ernic | `ubuntu-qcow2-gen@ionic` | `ubuntu-rocm-ernic` RDMA NIC serving its own S3 store | 1 MiB object GETs over RDMA |
+| sdxi | `ubuntu-qcow2-gen@rocjitsu` | `ubuntu-rocm-sdxi` emulated SDXI data-mover | 64 KiB memcpy, through `ioctl` and through `io_uring_cmd` |
+
+The sdxi phase reuses the rocjitsu *payload* because that flavour is the one
+that builds `sdxi_char`, `sdxi_perf` and `sdxi-cli` -- at the same pin the
+server image is built from, which `images.yml` requires, since
+`sdxi_user.h` is the uapi both halves read. It still takes a boot of its own
+rather than riding alongside the GPU. The qemu service attaches every socket
+it finds under `/run/vfu`, so one guest could hold both devices and the boot
+could be saved; the trade taken here is attribution over wall clock, so that
+an SDXI regression is an SDXI phase failing rather than a line inside the GPU
+phase.
+
+It publishes two numbers rather than one because the io_uring path exists to
+beat the ioctl path, and a single figure would record the outcome while hiding
+the reason for it. Note what the comparison does *not* yet show: the driver's
+io_uring support is Phase 1 and completes synchronously under the device
+mutex, so the delta is submission cost alone.
 
 Two guests rather than one, and two phases rather than one boot. Booting a
 single guest against both sockets is what this lane used to do, and it is why
