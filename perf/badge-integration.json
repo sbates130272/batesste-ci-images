@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
   "label": "integration",
-  "message": "5/5 metrics",
-  "color": "brightgreen"
+  "message": "5/7 metrics",
+  "color": "yellow"
 }
