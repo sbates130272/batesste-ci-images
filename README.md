@@ -52,7 +52,7 @@ independently.
 [![qemu-minimal 096ddfe](https://img.shields.io/badge/qemu--minimal-096ddfe-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/096ddfed218f76a672c964b51ead4894e2da4f60)
 [![rocm-ernic 90434a2](https://img.shields.io/badge/rocm--ernic-90434a2-006F62)](https://github.com/ROCm/rocm-ernic/commit/90434a237232275fc8002cb3a6b5121ba836c594)
 [![rocjitsu 50be05a](https://img.shields.io/badge/rocjitsu-50be05a-006F62)](https://github.com/ROCm/rocm-systems/commit/50be05a34892867c6ef5bc125696223df889f3e4)
-[![sdxi c50f2b9](https://img.shields.io/badge/sdxi-c50f2b9-006F62)](https://github.com/ROCm/rocm-systems/commit/c50f2b9a39c64538039712f6b52510d1a8596c72)
+[![sdxi dfd76f2](https://img.shields.io/badge/sdxi-dfd76f2-006F62)](https://github.com/ROCm/rocm-systems/commit/dfd76f23f6f10561333fc0a9a9f23e9f3b255c04)
 [![spdk 18d1d8d](https://img.shields.io/badge/spdk-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
 [![fio d2dcd7e](https://img.shields.io/badge/fio-d2dcd7e-4B8BBE)](https://github.com/axboe/fio/commit/d2dcd7e053d1902d2420f151c83990e6acdd9f8c)
 [![ucx dd2b212](https://img.shields.io/badge/ucx-dd2b212-4B8BBE)](https://github.com/openucx/ucx/commit/dd2b21269d36c1985eabfbde4987f0554fb98e37)
