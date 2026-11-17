@@ -90,7 +90,7 @@ def job_badges(jobs: list[dict]) -> dict[str, dict]:
             message, colour = CONCLUSIONS.get(
                 str(job.get("conclusion")), ("unknown", "lightgrey")
             )
-        label = "build" if name == BASES_JOB else name[len(JOB_PREFIX) :]
+        label = "Build" if name == BASES_JOB else name[len(JOB_PREFIX) :]
         out[slug(name)] = badge(label, message, colour)
     return out
 

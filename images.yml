@@ -949,68 +949,68 @@ badges:
         # colour. Green is likewise avoided for anything that is not NVIDIA's
         # own 76B900, for the same reason in reverse: a green pin badge reads
         # as "this passed" when it only means "this is the version".
-        - label: ubuntu
+        - label: Ubuntu
           target: ubuntu-base
           var: ubuntu_version
           colour: E95420
           link: https://hub.docker.com/_/ubuntu
-        - label: rocm
+        - label: ROCm
           target: ubuntu-cuda-rocm
           var: rocm_version
           colour: 006F62
           link: https://rocm.docs.amd.com/
-        - label: cuda
+        - label: CUDA
           target: ubuntu-cuda-rocm
           var: cuda_version
           dots: true
           colour: 76B900
           link: https://developer.nvidia.com/cuda-toolkit
-        - label: qemu
+        - label: QEMU
           target: ubuntu-qemu-libvfio-user
           var: qemu_commit
           colour: FF6600
           link: https://gitlab.com/qemu-project/qemu/-/tags/{value}
-        - label: nixl
+        - label: NIXL
           target: ubuntu-rocm-nixl
           var: nixl_tag
           colour: 76B900
           link: https://github.com/ai-dynamo/nixl/releases/tag/{value}
-        - label: abseil
+        - label: Abseil
           target: ubuntu-rocm-nixl
           var: absl_tag
           colour: 4285F4
           link: https://github.com/abseil/abseil-cpp/releases/tag/{value}
-        - label: grpc
+        - label: gRPC
           target: ubuntu-rocm-nixl
           var: grpc_tag
           colour: 244C5A
           link: https://github.com/grpc/grpc/releases/tag/{value}
-        - label: libfabric
+        - label: Libfabric
           target: ubuntu-rocm-nixl
           var: libfabric_tag
           colour: 0F4C81
           link: https://github.com/ofiwg/libfabric/releases/tag/{value}
     - title: Pinned Commits
       entries:
-        - label: libvfio-user
+        - label: Libvfio-User
           target: ubuntu-libvfio-user
           var: libvfio_user_commit
           short: true
           colour: FF6600
           link: https://gitlab.com/qemu-project/libvfio-user/-/commit/{value}
-        - label: qemu-minimal
+        - label: QEMU-Minimal
           target: ubuntu-qemu-libvfio-user
           var: qemu_minimal_commit
           short: true
           colour: FF6600
           link: https://github.com/sbates130272/qemu-minimal/commit/{value}
-        - label: rocm-ernic
+        - label: ROCm-ERNIC
           target: ubuntu-rocm-ernic
           var: rocm_ernic_commit
           short: true
           colour: 006F62
           link: https://github.com/ROCm/rocm-ernic/commit/{value}
-        - label: rocjitsu
+        - label: Rocjitsu
           target: ubuntu-rocm-rocjitsu
           var: rocjitsu_commit
           short: true
@@ -1019,32 +1019,32 @@ badges:
         # Same repository as rocjitsu above and a different component of it, so
         # it shares the ROCm-family colour. The link resolves because the
         # branch is pushed to ROCm/rocm-systems itself rather than to a fork.
-        - label: sdxi
+        - label: SDXI
           target: ubuntu-rocm-sdxi
           var: sdxi_commit
           short: true
           colour: 006F62
           link: https://github.com/ROCm/rocm-systems/commit/{value}
         # Links into the fork, not spdk/spdk: the commit only exists there.
-        - label: spdk
+        - label: SPDK
           target: ubuntu-spdk-libvfio-user
           var: spdk_commit
           short: true
           colour: 00A3E0
           link: https://github.com/mmgaggle/spdk/commit/{value}
-        - label: fio
+        - label: Fio
           target: ubuntu-cuda-rocm-fio
           var: fio_commit
           short: true
           colour: 4B8BBE
           link: https://github.com/axboe/fio/commit/{value}
-        - label: ucx
+        - label: UCX
           target: ubuntu-rocm-nixl
           var: ucx_commit
           short: true
           colour: 4B8BBE
           link: https://github.com/openucx/ucx/commit/{value}
-        - label: etcd-cpp-apiv3
+        - label: Etcd-Cpp-Apiv3
           target: ubuntu-rocm-nixl
           var: etcd_commit
           short: true

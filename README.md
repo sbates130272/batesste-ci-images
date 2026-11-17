@@ -1,10 +1,10 @@
 # batesste-ci-images
 
-[![batesste-ci-images-lint](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-lint.yml/badge.svg)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-lint.yml)
-[![batesste-ci-images-dockerfile-test](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml/badge.svg)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml)
-[![batesste-ci-images-release](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-release.yml/badge.svg)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-release.yml)
-[![Latest Release](https://img.shields.io/github/v/release/sbates130272/batesste-ci-images)](https://github.com/sbates130272/batesste-ci-images/releases)
-[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![Lint](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-lint.yml?branch=main&label=Lint)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-lint.yml)
+[![Dockerfile Test](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&label=Dockerfile%20Test)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml)
+[![Release](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-release.yml?branch=main&label=Release)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-release.yml)
+[![Latest Release](https://img.shields.io/github/v/release/sbates130272/batesste-ci-images?label=Latest%20Release)](https://github.com/sbates130272/batesste-ci-images/releases)
+[![Python 3.12](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/downloads/)
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-sbates130272-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/u/sbates130272)
 
 Both shield blocks below are generated from `images.yml` by
@@ -26,26 +26,26 @@ carries is pinned in qemu-minimal, which builds it; see
 
 **Pinned Versions**
 
-[![ubuntu 24.04](https://img.shields.io/badge/ubuntu-24.04-E95420)](https://hub.docker.com/_/ubuntu)
-[![rocm 10.1](https://img.shields.io/badge/rocm-10.1-006F62)](https://rocm.docs.amd.com/)
-[![cuda 13.5](https://img.shields.io/badge/cuda-13.5-76B900)](https://developer.nvidia.com/cuda-toolkit)
-[![qemu v11.1.3](https://img.shields.io/badge/qemu-v11.1.3-FF6600)](https://gitlab.com/qemu-project/qemu/-/tags/v11.1.3)
-[![nixl v1.5.2](https://img.shields.io/badge/nixl-v1.5.2-76B900)](https://github.com/ai-dynamo/nixl/releases/tag/v1.5.2)
-[![abseil 20250814.2](https://img.shields.io/badge/abseil-20250814.2-4285F4)](https://github.com/abseil/abseil-cpp/releases/tag/20250814.2)
-[![grpc v1.73.0](https://img.shields.io/badge/grpc-v1.73.0-244C5A)](https://github.com/grpc/grpc/releases/tag/v1.73.0)
-[![libfabric v1.21.0](https://img.shields.io/badge/libfabric-v1.21.0-0F4C81)](https://github.com/ofiwg/libfabric/releases/tag/v1.21.0)
+[![Ubuntu 24.04](https://img.shields.io/badge/Ubuntu-24.04-E95420)](https://hub.docker.com/_/ubuntu)
+[![ROCm 10.1](https://img.shields.io/badge/ROCm-10.1-006F62)](https://rocm.docs.amd.com/)
+[![CUDA 13.5](https://img.shields.io/badge/CUDA-13.5-76B900)](https://developer.nvidia.com/cuda-toolkit)
+[![QEMU v11.1.3](https://img.shields.io/badge/QEMU-v11.1.3-FF6600)](https://gitlab.com/qemu-project/qemu/-/tags/v11.1.3)
+[![NIXL v1.5.2](https://img.shields.io/badge/NIXL-v1.5.2-76B900)](https://github.com/ai-dynamo/nixl/releases/tag/v1.5.2)
+[![Abseil 20250814.2](https://img.shields.io/badge/Abseil-20250814.2-4285F4)](https://github.com/abseil/abseil-cpp/releases/tag/20250814.2)
+[![gRPC v1.73.0](https://img.shields.io/badge/gRPC-v1.73.0-244C5A)](https://github.com/grpc/grpc/releases/tag/v1.73.0)
+[![Libfabric v1.21.0](https://img.shields.io/badge/Libfabric-v1.21.0-0F4C81)](https://github.com/ofiwg/libfabric/releases/tag/v1.21.0)
 
 **Pinned Commits**
 
-[![libvfio-user 05bb5e5](https://img.shields.io/badge/libvfio--user-05bb5e5-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/05bb5e5237817e0d77879b93d6145f6436b56fd0)
-[![qemu-minimal 80c17f8](https://img.shields.io/badge/qemu--minimal-80c17f8-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/80c17f805eeb50999ba01446b5dfa783f22c2173)
-[![rocm-ernic 90434a2](https://img.shields.io/badge/rocm--ernic-90434a2-006F62)](https://github.com/ROCm/rocm-ernic/commit/90434a237232275fc8002cb3a6b5121ba836c594)
-[![rocjitsu 50be05a](https://img.shields.io/badge/rocjitsu-50be05a-006F62)](https://github.com/ROCm/rocm-systems/commit/50be05a34892867c6ef5bc125696223df889f3e4)
-[![sdxi dfd76f2](https://img.shields.io/badge/sdxi-dfd76f2-006F62)](https://github.com/ROCm/rocm-systems/commit/dfd76f23f6f10561333fc0a9a9f23e9f3b255c04)
-[![spdk 18d1d8d](https://img.shields.io/badge/spdk-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
-[![fio d2dcd7e](https://img.shields.io/badge/fio-d2dcd7e-4B8BBE)](https://github.com/axboe/fio/commit/d2dcd7e053d1902d2420f151c83990e6acdd9f8c)
-[![ucx dd2b212](https://img.shields.io/badge/ucx-dd2b212-4B8BBE)](https://github.com/openucx/ucx/commit/dd2b21269d36c1985eabfbde4987f0554fb98e37)
-[![etcd-cpp-apiv3 7c6e714](https://img.shields.io/badge/etcd--cpp--apiv3-7c6e714-419EDA)](https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3/commit/7c6e714f188f9576e25e0350cac4181139eec23e)
+[![Libvfio-User 05bb5e5](https://img.shields.io/badge/Libvfio--User-05bb5e5-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/05bb5e5237817e0d77879b93d6145f6436b56fd0)
+[![QEMU-Minimal 80c17f8](https://img.shields.io/badge/QEMU--Minimal-80c17f8-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/80c17f805eeb50999ba01446b5dfa783f22c2173)
+[![ROCm-ERNIC 90434a2](https://img.shields.io/badge/ROCm--ERNIC-90434a2-006F62)](https://github.com/ROCm/rocm-ernic/commit/90434a237232275fc8002cb3a6b5121ba836c594)
+[![Rocjitsu 50be05a](https://img.shields.io/badge/Rocjitsu-50be05a-006F62)](https://github.com/ROCm/rocm-systems/commit/50be05a34892867c6ef5bc125696223df889f3e4)
+[![SDXI dfd76f2](https://img.shields.io/badge/SDXI-dfd76f2-006F62)](https://github.com/ROCm/rocm-systems/commit/dfd76f23f6f10561333fc0a9a9f23e9f3b255c04)
+[![SPDK 18d1d8d](https://img.shields.io/badge/SPDK-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
+[![Fio d2dcd7e](https://img.shields.io/badge/Fio-d2dcd7e-4B8BBE)](https://github.com/axboe/fio/commit/d2dcd7e053d1902d2420f151c83990e6acdd9f8c)
+[![UCX dd2b212](https://img.shields.io/badge/UCX-dd2b212-4B8BBE)](https://github.com/openucx/ucx/commit/dd2b21269d36c1985eabfbde4987f0554fb98e37)
+[![Etcd-Cpp-Apiv3 7c6e714](https://img.shields.io/badge/Etcd--Cpp--Apiv3-7c6e714-419EDA)](https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3/commit/7c6e714f188f9576e25e0350cac4181139eec23e)
 
 <!-- END PINNED BADGES -->
 
