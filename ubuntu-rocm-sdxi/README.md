@@ -53,11 +53,11 @@ server was built from:
 | `tools/sdxi-cli/` | The CLI, both a C program and a Python package. |
 
 These are staged, not built: a kernel module has to be compiled against the
-kernel the guest boots, which is not this container's. `ubuntu-qcow2-gen`'s
-`rocjitsu` flavour fetches its own copy at the same pin and builds it there.
-`images.yml` requires the two pins to be equal, and `version-scrub.sh` warns
-when they diverge — `sdxi_user.h` carries the ioctl numbers and struct layouts
-both sides depend on, so a mismatch surfaces as a bare `EINVAL` from `sdxi-cli`
+kernel the guest boots, which is not this container's. qemu-minimal's
+`vm-rocm-golden.yml` fetches its own copy at the same pin and builds it into
+the guest. Its `tests/test_playbook_pins.py` requires the two pins to be
+equal — `sdxi_user.h` carries the ioctl numbers and struct layouts both sides
+depend on, so a mismatch surfaces as a bare `EINVAL` from `sdxi-cli`
 rather than as anything naming the cause.
 
 ### sdxi_perf does not build

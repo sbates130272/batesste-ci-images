@@ -90,7 +90,6 @@ RUN rocm-ernic --help 2>&1 | grep -q -- '--p4-program'
 # rocm-ernic-commit.txt names the commit they came from. A client fetched
 # separately can disagree with the server about the x-amz-rdma-token layout,
 # and the failure that produces is a transfer that goes nowhere.
-# scripts/perf-harness.sh builds it in the guest to measure S3 over RDMA.
 #
 # src/parse_int.h goes with it. That "built there alone" invocation stopped
 # working the moment the client grew `#include "parse_int.h"`: the header is

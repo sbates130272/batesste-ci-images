@@ -144,8 +144,8 @@ RUN set -eu; \
 
 # The guest-side payload, staged rather than built: these are kernel modules
 # and a Python package, and there is no guest kernel here to build the first
-# against. ubuntu-qcow2-gen's rocjitsu flavour fetches its own copy at the same
-# pin -- images.yml requires the two to be equal -- so this copy is for an
+# against. qemu-minimal's guest bake fetches its own copy at the same pin --
+# its pin test holds the two equal -- so this copy is for an
 # operator working against a running stack, and for reading what the pin
 # actually contains without a checkout.
 RUN set -eux; \

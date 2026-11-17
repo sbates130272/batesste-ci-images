@@ -312,22 +312,23 @@ to 30s for the socket, so the two containers can start in either order.
 `--target-list=x86_64-softmmu`, and the entrypoint rejects any other arch
 rather than starting a guest with no device.
 
-The QEMU image carries no guest of its own. Extract one from a published
-`ubuntu-qcow2-gen` payload first, where `VM_NAME` matches the payload's
-`vm-info.json`, since the entrypoint looks for `/output/${VM_NAME}.qcow2`:
+The QEMU image carries no guest of its own. Pull the published `rocm-golden`
+guest first, where `VM_NAME` matches its `vm-info.json` (`rocm-golden`), since
+the entrypoint looks for `/output/${VM_NAME}.qcow2`:
 
 ```bash
+REPO=docker.io/sbates130272/qemu-tool-rocm-golden
 mkdir -p vm
-cid=$(docker create \
-  docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen:latest)
-docker cp "$cid:/output/." vm && docker rm "$cid"
+oras pull "$REPO:latest" -o vm && zstd -d --long=27 --rm vm/*.qcow2.zst
+oras pull "$REPO@$(oras discover --format json "$REPO:latest" \
+  | jq -r '.referrers[0].digest')" -o vm && chmod 600 vm/id_rsa
 ```
 
 ```bash
 docker run --rm \
   -v /tmp/vfio-sockets:/tmp/vfio-sockets \
   -v "$PWD/vm:/output" \
-  -e VM_NAME=batesste-ci-vm \
+  -e VM_NAME=rocm-golden -e USERNAME=ubuntu \
   -e VFIO_USER_SOCKET=/tmp/vfio-sockets/nvme/cntrl \
   -p 2222:2222 \
   docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest

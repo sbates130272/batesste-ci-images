@@ -333,8 +333,9 @@ Since qemu-minimal `ae551b3`, `run-vm` takes both:
 --cpu-phys-bits 41 --pci-hole64-size 512G
 ```
 
-[`compose/perf-stack.yml`](../compose/perf-stack.yml) passes that pair, so the
-normal path needs nothing from the caller. Their arrival is what made `max`
+A qemu-minimal fleet file sets them with `<vm-cpu-phys-bits>` and
+`<vm-pci-hole64-size>`, and its `mi355x-server` stack passes that pair. Their
+arrival is what made `max`
 safe to default to; until then it was `keep`.
 
 **Attaching this image without setting both is worse than a small BAR** -- not
@@ -363,8 +364,8 @@ does not fail the build. It still refuses `max` on a profile that states no
 `local_mem_size` -- `gfx1251_synthetic.json` and the three `guest_*` configs
 -- since there is nothing to size against; use `keep` for those.
 
-Guests are unaffected either way. The `ubuntu-qcow2-gen` rocjitsu flavours
-carry no copy of this: the BAR comes from whichever server they are booted
+Guests are unaffected either way. The published `rocm-golden` guest carries
+no copy of this: the BAR comes from whichever server they are booted
 against.
 
 This is unrelated to the amdgpu `vramlimit` parameter, which several documents

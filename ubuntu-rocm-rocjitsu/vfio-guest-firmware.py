@@ -311,8 +311,8 @@ def generation_of(version: int) -> str:
 def version_of(generation: str) -> int:
     """The inverse of generation_of, for a caller that has only a name.
 
-    --generation exists for a caller with no config to read -- the qcow2-gen
-    guest build runs this script inside the guest, where the rocjitsu config
+    --generation exists for a caller with no config to read -- a guest
+    bake runs this script inside the guest, where the rocjitsu config
     directory does not exist -- and the manifest still has to carry a
     gfx_target_version.
     """

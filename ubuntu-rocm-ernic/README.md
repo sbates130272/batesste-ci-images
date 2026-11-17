@@ -35,7 +35,6 @@ built there on its own (`cc -O2 -Wall -Wextra -o s3_rdma_client
 s3_rdma_client.c -libverbs`), and taking it out of this image is what keeps
 client and server on one commit — they disagree about the `x-amz-rdma-token`
 layout otherwise, and that failure is a transfer that goes nowhere.
-`scripts/perf-harness.sh` copies it out of here to measure S3 over RDMA.
 
 ## Usage
 

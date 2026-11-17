@@ -201,84 +201,8 @@ jobs:
             /usr/share/swift
           df -h /
 
-      # x86 GitHub-hosted runners do expose /dev/kvm, but as root:kvm 0660,
-      # and BuildKit's RUN step is not in the kvm group, so widen it. There is
-      # no TCG fallback: a runner without /dev/kvm (ARM Linux, macOS, Windows,
-      # ubuntu-slim) cannot build guest images and fails here rather than
-      # spending an hour emulating one.
-
-      # The mainline kernel .debs, cached by the pin that selects them.
-      #
-      # kernel.ubuntu.com 503s in bursts and the build cannot proceed without
-      # these, so a cache is worth more than a retry budget: one run had all
-      # three kernel-pinned flavours meet the same burst within 17 seconds and
-      # one of them lose the build to it. kernel_ref moves rarely, so after a
-      # warm-up these lanes stop touching that host.
-      #
-      # Fetched here rather than inside the build so actions/cache can persist
-      # it -- common/ is a read-only bind mount from the container's side.
-      # Skipped for a flavour that pins no kernel, which leaves an empty
-      # directory and a MISS the build handles.
-      - name: Resolve guest kernel pin
-        id: kpin
-        if: matrix.target.entitlement != ''
-        run: |
-          ARGS=$(./ci-images-tool.py build-args "${{ matrix.target.key }}")
-          echo "ref=$(echo "$ARGS" | sed -n 's/^KERNEL_REF=//p')" >> "$GITHUB_OUTPUT"
-          echo "arch=$(echo "$ARGS" | sed -n 's/^ARCH=//p')" >> "$GITHUB_OUTPUT"
-
-      - name: Cache mainline kernel debs
-        if: matrix.target.entitlement != '' && steps.kpin.outputs.ref != ''
-        uses: actions/cache@v6
-        with:
-          path: common/kernel-cache
-          key: kernel-debs-${{ steps.kpin.outputs.ref }}-${{ steps.kpin.outputs.arch }}
-
-      - name: Pre-download mainline kernel
-        if: matrix.target.entitlement != '' && steps.kpin.outputs.ref != ''
-        run: |
-          REF="${{ steps.kpin.outputs.ref }}"
-          ARCH="${{ steps.kpin.outputs.arch }}"
-          DIR="common/kernel-cache/${REF}/${ARCH}"
-          if [ -n "$(ls -A "$DIR" 2>/dev/null)" ]; then
-            echo "cache hit for ${REF}/${ARCH}:"; ls -la "$DIR"; exit 0
-          fi
-          mkdir -p "$DIR"
-          URL="https://kernel.ubuntu.com/mainline/${REF}/${ARCH}"
-          # Same retry budget and the same -64k exclusion as build-vm.sh; a
-          # partial set here would be a confusing failure inside the guest.
-          RETRY="--http1.1 --retry 8 --retry-delay 10 --retry-all-errors"
-          NAMES=$(curl -fsSL $RETRY --max-time 120 "${URL}/" \
-            | grep -oE 'linux-[a-z-]+-[0-9][^"]*\.deb' | grep -v -- '-64k' | sort -u)
-          [ -n "$NAMES" ] || { echo "::error::no kernel .debs at ${URL}/"; exit 1; }
-          for n in $NAMES; do
-            echo "  $n"
-            curl -fsSL $RETRY -o "${DIR}/${n}" "${URL}/${n}"
-          done
-
-      - name: Enable KVM for guest image builds
-        if: matrix.target.entitlement != ''
-        run: |
-          if [ ! -e /dev/kvm ]; then
-            echo "::error::no /dev/kvm on this runner; guest images need KVM"
-            exit 1
-          fi
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
-        with:
-          # Guest builds reach /dev/kvm only from a RUN --security=insecure
-          # step. No matrix-tier target needs this today -- the guests are all
-          # `job: derived` -- but the gating below is on the entitlement, not on
-          # an image name, so a matrix guest would work without a workflow edit.
-          buildkitd-flags: >-
-            --allow-insecure-entitlement security.insecure
-            --allow-insecure-entitlement network.host
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
@@ -331,67 +255,11 @@ jobs:
             echo ARGS_EOF
           } >> "$GITHUB_OUTPUT"
 
-      - name: Ensure cloud image cache dir exists
-        run: mkdir -p common/cloud-image-cache common/kernel-cache
-
-      # The guest release is pinned in images.yml, not here, so bumping it
-      # there moves the cache key and the download URL with it.
-      - name: Resolve guest Ubuntu release
-        id: guest
-        if: matrix.target.entitlement != ''
-        run: |
-          RELEASE=$(./ci-images-tool.py build-args "${{ matrix.target.key }}" \
-            | sed -n 's/^RELEASE=//p')
-          [ -n "$RELEASE" ] || { echo "::error::no RELEASE build arg"; exit 1; }
-          echo "release=${RELEASE}" >> "$GITHUB_OUTPUT"
-
-      - name: Cache Ubuntu cloud image
-        if: matrix.target.entitlement != ''
-        uses: actions/cache@v6
-        with:
-          path: common/cloud-image-cache
-          key: cloud-image-${{ steps.guest.outputs.release }}-amd64
-          restore-keys: cloud-image-${{ steps.guest.outputs.release }}-
-
-      - name: Pre-download cloud image
-        if: matrix.target.entitlement != ''
-        run: |
-          DIR="common/cloud-image-cache"
-          REL="${{ steps.guest.outputs.release }}"
-          IMG="${DIR}/${REL}-server-cloudimg-amd64.img"
-          if [ ! -f "$IMG" ]; then
-            wget --progress=dot:giga --timeout=30 --tries=5 \
-              --retry-connrefused -O "$IMG" \
-              "https://cloud-images.ubuntu.com/${REL}/current/${REL}-server-cloudimg-amd64.img"
-          fi
-
-
-      # The guest Dockerfile mounts a `parentguest` build context, which bake
-      # defines for it. This job builds one target at a time rather than with
-      # bake, so the context has to be named here or the mount has nothing to
-      # resolve. Empty for every image that declares no parent_context.
-      #
-      # A derived flavour resolves to its parent's published rolling tag. In a
-      # release that is the right answer by construction: the matrix is ordered
-      # so the parent is pushed before the derived flavour is built, so the tag
-      # this resolves to is the one this same release just published.
-      - name: Compute build contexts
-        id: buildcontexts
-        run: |
-          {
-            echo 'contexts<<CTX_EOF'
-            ./ci-images-tool.py build-contexts "${{ matrix.target.key }}" \
-              --tag "${{ steps.version.outputs.version }}"
-            echo CTX_EOF
-          } >> "$GITHUB_OUTPUT"
-
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.target.image }}/Dockerfile
-          build-contexts: ${{ steps.buildcontexts.outputs.contexts }}
-          allow: security.insecure
           push: true
           tags: ${{ steps.tags.outputs.refs }}
           cache-from: >-
@@ -412,9 +280,9 @@ jobs:
     runs-on: ubuntu-24.04
     # Deliberately *not* `needs: build-and-push`. A derived target consumes
     # exactly one base, named in its own matrix.target.base_scope, and a
-    # job-level `needs` cannot say "only that leg" -- so every guest used to
-    # wait on ubuntu-cuda-rocm, which no qcow2 flavour touches. The "Wait for
-    # base image" step below gates each leg on its own base instead. Mirrors
+    # job-level `needs` cannot say "only that leg" -- so every derived leg used
+    # to wait on every matrix leg, including ones it never layers on. The
+    # "Wait for base image" step below gates each leg on its own base instead. Mirrors
     # build-derived in dockerfile-test.yml.
     needs: [discover-images, build-bases]
     permissions:
@@ -459,16 +327,8 @@ jobs:
             /usr/share/swift
           df -h /
 
-      # Same flags as the matrix job: a derived target that builds a guest
-      # qcow2 needs security.insecure to reach /dev/kvm. Granting the
-      # entitlement to the builder is not the same as using it -- the build
-      # step still has to ask for it via `allow:`.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
-        with:
-          buildkitd-flags: >-
-            --allow-insecure-entitlement security.insecure
-            --allow-insecure-entitlement network.host
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
@@ -498,105 +358,6 @@ jobs:
 
       - name: Install tool dependencies
         run: pip install -r requirements.txt
-
-      # ── guest-image support, gated on the entitlement rather than on an
-      # image name, so a new `job: derived` guest flavour picks all of this up
-      # from its images.yml entry alone. Mirrors the matrix job's steps.
-
-      - name: Ensure cloud image cache dir exists
-        run: mkdir -p common/cloud-image-cache common/kernel-cache
-
-      - name: Resolve guest Ubuntu release
-        id: guest
-        if: matrix.target.entitlement != ''
-        run: |
-          RELEASE=$(./ci-images-tool.py build-args "${{ matrix.target.key }}" \
-            | sed -n 's/^RELEASE=//p')
-          [ -n "$RELEASE" ] || { echo "::error::no RELEASE build arg"; exit 1; }
-          echo "release=${RELEASE}" >> "$GITHUB_OUTPUT"
-
-      - name: Cache Ubuntu cloud image
-        if: matrix.target.entitlement != ''
-        uses: actions/cache@v6
-        with:
-          path: common/cloud-image-cache
-          key: cloud-image-${{ steps.guest.outputs.release }}-amd64
-          restore-keys: cloud-image-${{ steps.guest.outputs.release }}-
-
-      - name: Pre-download cloud image
-        if: matrix.target.entitlement != ''
-        run: |
-          DIR="common/cloud-image-cache"
-          REL="${{ steps.guest.outputs.release }}"
-          IMG="${DIR}/${REL}-server-cloudimg-amd64.img"
-          if [ ! -f "$IMG" ]; then
-            wget --progress=dot:giga --timeout=30 --tries=5 \
-              --retry-connrefused -O "$IMG" \
-              "https://cloud-images.ubuntu.com/${REL}/current/${REL}-server-cloudimg-amd64.img"
-          fi
-
-
-      # The mainline kernel .debs, cached by the pin that selects them.
-      #
-      # kernel.ubuntu.com 503s in bursts and the build cannot proceed without
-      # these, so a cache is worth more than a retry budget: one run had all
-      # three kernel-pinned flavours meet the same burst within 17 seconds and
-      # one of them lose the build to it. kernel_ref moves rarely, so after a
-      # warm-up these lanes stop touching that host.
-      #
-      # Fetched here rather than inside the build so actions/cache can persist
-      # it -- common/ is a read-only bind mount from the container's side.
-      # Skipped for a flavour that pins no kernel, which leaves an empty
-      # directory and a MISS the build handles.
-      - name: Resolve guest kernel pin
-        id: kpin
-        if: matrix.target.entitlement != ''
-        run: |
-          ARGS=$(./ci-images-tool.py build-args "${{ matrix.target.key }}")
-          echo "ref=$(echo "$ARGS" | sed -n 's/^KERNEL_REF=//p')" >> "$GITHUB_OUTPUT"
-          echo "arch=$(echo "$ARGS" | sed -n 's/^ARCH=//p')" >> "$GITHUB_OUTPUT"
-
-      - name: Cache mainline kernel debs
-        if: matrix.target.entitlement != '' && steps.kpin.outputs.ref != ''
-        uses: actions/cache@v6
-        with:
-          path: common/kernel-cache
-          key: kernel-debs-${{ steps.kpin.outputs.ref }}-${{ steps.kpin.outputs.arch }}
-
-      - name: Pre-download mainline kernel
-        if: matrix.target.entitlement != '' && steps.kpin.outputs.ref != ''
-        run: |
-          REF="${{ steps.kpin.outputs.ref }}"
-          ARCH="${{ steps.kpin.outputs.arch }}"
-          DIR="common/kernel-cache/${REF}/${ARCH}"
-          if [ -n "$(ls -A "$DIR" 2>/dev/null)" ]; then
-            echo "cache hit for ${REF}/${ARCH}:"; ls -la "$DIR"; exit 0
-          fi
-          mkdir -p "$DIR"
-          URL="https://kernel.ubuntu.com/mainline/${REF}/${ARCH}"
-          # Same retry budget and the same -64k exclusion as build-vm.sh; a
-          # partial set here would be a confusing failure inside the guest.
-          RETRY="--http1.1 --retry 8 --retry-delay 10 --retry-all-errors"
-          NAMES=$(curl -fsSL $RETRY --max-time 120 "${URL}/" \
-            | grep -oE 'linux-[a-z-]+-[0-9][^"]*\.deb' | grep -v -- '-64k' | sort -u)
-          [ -n "$NAMES" ] || { echo "::error::no kernel .debs at ${URL}/"; exit 1; }
-          for n in $NAMES; do
-            echo "  $n"
-            curl -fsSL $RETRY -o "${DIR}/${n}" "${URL}/${n}"
-          done
-
-      - name: Enable KVM for guest image builds
-        if: matrix.target.entitlement != ''
-        run: |
-          if [ ! -e /dev/kvm ]; then
-            echo "::error::no /dev/kvm on this runner; guest images need KVM"
-            exit 1
-          fi
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm
 
       # Everything above is this leg's own setup and runs while the base is
       # still building; only the build itself needs the base, so the wait goes
@@ -643,55 +404,6 @@ jobs:
           echo "::error::timed out waiting for ${REF}"
           exit 1
 
-      # Same gate, for a derived *guest*: one that starts from another
-      # flavour's finished qcow2 consumes its parent's published rolling tag,
-      # and every target in this job builds in parallel -- so without this the
-      # slim flavour races the fat one and picks up the *previous* release's
-      # image, silently. A job-level `needs` cannot express "only that leg",
-      # which is the same reason the base wait above exists.
-      #
-      # Skipped for every target with no guest parent, which is all of them
-      # but the derived guest flavours.
-      - name: Wait for parent guest
-        if: matrix.target.guest_parent != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PARENT: ${{ matrix.target.guest_parent }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -uo pipefail
-          # Asked of *this* target rather than reconstructed from the parent's
-          # key: build-contexts emits the exact ref the build step below will
-          # resolve `parentguest` to, so the thing gated on and the thing
-          # consumed cannot disagree. It is the rolling variant tag, not the
-          # immutable one the base wait uses.
-          REF=$(./ci-images-tool.py build-contexts \
-            "${{ matrix.target.key }}" --tag "${VERSION}" \
-            | sed -n 's|^parentguest=docker-image://||p')
-          [ -n "$REF" ] || {
-            echo "::error::no parentguest ref for ${PARENT}"; exit 1; }
-          JOB="Build and Push ${PARENT}"
-          for _ in $(seq 1 180); do
-            if docker buildx imagetools inspect "$REF" > /dev/null 2>&1; then
-              echo "parent guest ready: ${REF}"
-              exit 0
-            fi
-            concl=$(gh api \
-              "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" \
-              --paginate \
-              -q ".jobs[] | select(.name == \"${JOB}\") | .conclusion" \
-              2>/dev/null || true)
-            case "$concl" in
-              failure|cancelled|timed_out)
-                echo "::error::parent job '${JOB}' ended: ${concl}"
-                exit 1
-                ;;
-            esac
-            sleep 30
-          done
-          echo "::error::timed out waiting for ${REF}"
-          exit 1
-
       # BASE_IMAGE resolves to the first line of the base's tag set: the
       # immutable, fully specified tag build-and-push just published.
       - name: Compute image tags, labels and build args
@@ -714,41 +426,12 @@ jobs:
             echo ARGS_EOF
           } >> "$GITHUB_OUTPUT"
 
-
-      # The guest Dockerfile mounts a `parentguest` build context, which bake
-      # defines for it. This job builds one target at a time rather than with
-      # bake, so the context has to be named here or the mount has nothing to
-      # resolve. Empty for every image that declares no parent_context.
-      #
-      # A derived flavour resolves to its parent's published rolling tag. In a
-      # release that is the right answer by construction: the matrix is ordered
-      # so the parent is pushed before the derived flavour is built, so the tag
-      # this resolves to is the one this same release just published.
-      - name: Compute build contexts
-        id: buildcontexts
-        run: |
-          {
-            echo 'contexts<<CTX_EOF'
-            ./ci-images-tool.py build-contexts "${{ matrix.target.key }}" \
-              --tag "${{ steps.version.outputs.version }}"
-            echo CTX_EOF
-          } >> "$GITHUB_OUTPUT"
-
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.target.image }}/Dockerfile
-          build-contexts: ${{ steps.buildcontexts.outputs.contexts }}
-          allow: security.insecure
           push: true
-          # Guest targets also export /output to the host, so the artifact push
-          # below reads files instead of pulling back the multi-GB image this
-          # step has just pushed.
-          outputs: >-
-            ${{ matrix.target.publish == 'artifact'
-              && format('type=local,dest=output/{0}.export', matrix.target.scope)
-              || '' }}
           tags: ${{ steps.tags.outputs.refs }}
           cache-from: >-
             type=registry,ref=${{ env.CACHE_REGISTRY }}:${{
@@ -762,38 +445,6 @@ jobs:
             }}
           build-args: ${{ steps.tags.outputs.args }}
           labels: ${{ steps.tags.outputs.labels }}
-
-      # The scratch image is the low-friction path; this is what makes "qcow2
-      # as an artifact" true rather than a container-shaped approximation --
-      # a libvirt or bare-metal consumer can oras pull a disk with no
-      # container runtime, addressed by its own digest.
-      # The payload stage copies to /output/, which the local exporter
-      # faithfully reproduces; renaming the inner directory into place strips a
-      # level nobody wants. Same move ci-images-tool.py makes for local builds,
-      # and free -- both paths are on one filesystem.
-      - name: Unnest guest image payload
-        if: matrix.target.publish == 'artifact'
-        run: |
-          SCOPE="${{ matrix.target.scope }}"
-          mv "output/${SCOPE}.export/output" "output/${SCOPE}"
-          rmdir "output/${SCOPE}.export"
-
-      - name: Set up ORAS
-        if: matrix.target.publish == 'artifact'
-        uses: oras-project/setup-oras@v2
-
-      # --from-dir is the export the build step above wrote, so the release
-      # never pulls back the multi-GB image it has just pushed.
-      - name: Push guest qcow2 as an ORAS artifact
-        if: matrix.target.publish == 'artifact'
-        env:
-          REGISTRY_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: |
-          ./ci-images-tool.py push-artifact "${{ matrix.target.key }}" \
-            --from-dir "output/${{ matrix.target.scope }}" \
-            --tag "${{ steps.version.outputs.version }}" \
-            --extra-tag "sha-${GITHUB_SHA:0:7}" \
-            --extra-tag "${{ steps.version.outputs.tag }}"
 
   # The Docker Hub page is the one place the images describe themselves that no
   # build step can reach: descriptions live on the repository, not in a

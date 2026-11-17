@@ -55,7 +55,7 @@ NOT_BUILT = ("no run", "lightgrey")
 def slug(job: str) -> str:
     """The badge filename for *job*, matching status_badge_slug() in the tool.
 
-    Job names carry `@` and `.` (``Build ubuntu-qcow2-gen@ernic-rocjitsu``),
+    Job names carry `@` and `.` (``Build ubuntu-rocm-ernic@sbates-fork``),
     neither of which belongs in a URL path served off gh-pages, so everything
     outside [a-z0-9] collapses to a single dash.
     """

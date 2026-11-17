@@ -7,12 +7,12 @@ The QEMU builder/runner toolchain: QEMU built with vfio-user and slirp, the
 
 This is the image CI jobs run *in* when they need to boot a VM. It carries
 everything required to build, provision and run a guest, but no guest of its
-own -- `/output` ships empty. Guest disks are built by
-[`ubuntu-qcow2-gen`](../ubuntu-qcow2-gen/), one repository per flavour, and
-supplied at run time.
+own -- `/output` ships empty. The one guest, `rocm-golden`, is baked and
+published by [qemu-minimal](https://github.com/sbates130272/qemu-minimal),
+whose lanes run in this image, and is supplied at run time.
 
-Keeping the toolchain and the guests apart means a new guest flavour does not
-rebuild the multi-GB QEMU layer, and a QEMU bump does not invalidate every
+Keeping the toolchain and the guest apart means a guest change does not
+rebuild the multi-GB QEMU layer, and a QEMU bump does not invalidate the
 guest.
 
 ## Base image
@@ -53,8 +53,8 @@ guest.
 - `cloud-image-utils`, `qemu-utils`, `openssh-client`, `jq`
 
 The `qemu-minimal` checkout `qemu-tool` was installed from is deleted after
-install. `ubuntu-qcow2-gen` re-clones it, `git clone` refuses a non-empty
-target, and `entrypoint.sh` accepts a guest mounted at
+install. A consumer that wants its `ansible/` tree clones its own, `git clone`
+refuses a non-empty target, and `entrypoint.sh` accepts a guest mounted at
 `/build/qemu-minimal/images`.
 
 ## Usage
@@ -63,11 +63,11 @@ Fetch a guest and boot it. The disk is a bare OCI artifact, so no container
 runtime is needed to pull one:
 
 ```bash
-REPO=sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic
+REPO=docker.io/sbates130272/qemu-tool-rocm-golden
 mkdir vm && cd vm
-oras pull "$REPO:latest-qcow2" && zstd -d --long=27 --rm ./*.qcow2.zst
+oras pull "$REPO:latest" && zstd -d --long=27 --rm ./*.qcow2.zst
 # vm-info.json and the SSH keypair ride in a referrer, not in the artifact:
-oras pull "$REPO@$(oras discover --format json "$REPO:latest-qcow2" \
+oras pull "$REPO@$(oras discover --format json "$REPO:latest" \
     | jq -r '.referrers[0].digest')" && chmod 600 id_rsa
 docker run -v "$PWD:/output" ...   # rw: QEMU opens the disk rw
 ```
