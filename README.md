@@ -38,7 +38,7 @@ carries is pinned in qemu-minimal, which builds it; see
 **Pinned Commits**
 
 [![Libvfio-User 05bb5e5](https://img.shields.io/badge/Libvfio--User-05bb5e5-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/05bb5e5237817e0d77879b93d6145f6436b56fd0)
-[![QEMU-Minimal 80c17f8](https://img.shields.io/badge/QEMU--Minimal-80c17f8-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/80c17f805eeb50999ba01446b5dfa783f22c2173)
+[![QEMU-Minimal 25bb72b](https://img.shields.io/badge/QEMU--Minimal-25bb72b-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/25bb72bef505d648edda9018e82b7dc51ae28af4)
 [![ROCm-ERNIC 90434a2](https://img.shields.io/badge/ROCm--ERNIC-90434a2-006F62)](https://github.com/ROCm/rocm-ernic/commit/90434a237232275fc8002cb3a6b5121ba836c594)
 [![Rocjitsu 50be05a](https://img.shields.io/badge/Rocjitsu-50be05a-006F62)](https://github.com/ROCm/rocm-systems/commit/50be05a34892867c6ef5bc125696223df889f3e4)
 [![SDXI dfd76f2](https://img.shields.io/badge/SDXI-dfd76f2-006F62)](https://github.com/ROCm/rocm-systems/commit/dfd76f23f6f10561333fc0a9a9f23e9f3b255c04)
