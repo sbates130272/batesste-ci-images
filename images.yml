@@ -88,7 +88,7 @@ defaults:
     # from pinned commits, and a guest ahead of the servers here fails in ways
     # that name nothing. Move it after a release of these images, once
     # qemu-minimal has repinned to them and published.
-    guest_qcow2: docker.io/sbates130272/qemu-tool-rocm-golden:20261117.g25bb72b
+    guest_qcow2: docker.io/sbates130272/qemu-tool-rocm-golden:20261119.gac6c325
 
 # Retention for `ci-images-tool.py prune`. Only the immutable, fingerprinted
 # date tags are ever candidates: every rolling alias (latest, the bare variant,
@@ -855,7 +855,7 @@ images:
       qemu_commit: v11.1.3
       # Where the qemu-tool CLI is installed from.
       qemu_minimal_repo: https://github.com/sbates130272/qemu-minimal.git
-      qemu_minimal_commit: 25bb72bef505d648edda9018e82b7dc51ae28af4
+      qemu_minimal_commit: ac6c325300139af25353b9966340780447d643d4
       # Provenance only, and empty here: the default target builds a release
       # tag, which belongs to no branch. A fork variant fills it in and the
       # label appears only there.
