@@ -37,10 +37,17 @@ it lands -- `git apply --3way` will fail loudly on the next pin bump if the
 context moves, which is the signal to come back here, and carrying any patch at
 all freezes rocjitsu_commit in scripts/version-scrub.sh.
 
-The index lines below are real blob hashes at 986a5c8, so --3way can do an
-actual three-way merge rather than falling back to a straight apply. The
-previous series in this directory lacked them and the Dockerfile's comment said
-so; worth not repeating.
+The index lines below are real blob hashes at 986a5c8. They are there for
+anyone applying this to a full checkout by hand, where --3way can use them.
+They do nothing in the image build: that clone is `fetch --depth 1`, so the
+object store holds no preimage blob and git says so ("repository lacks the
+necessary blob to perform 3-way merge") before falling back to a direct apply.
+The Dockerfile therefore does not pass --3way at all.
+
+Note this patch is skipped, not applied, on a ROCJITSU_COMMIT that already
+carries the fix -- the -sbates-fork variant pins the branch it was written on.
+The Dockerfile reverse-checks for that case and the build asserts the compiled
+source, not the patch count.
 
 diff --git a/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vmm/vfu/vfio_target_grants.cpp b/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vmm/vfu/vfio_target_grants.cpp
 index 5c5f94691a1ecbabd6df7b3242afd8beac61a5da..71d7170297b6c79595d8f8d9779534580e52ff88 100644
