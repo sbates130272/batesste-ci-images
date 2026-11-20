@@ -30,6 +30,29 @@ WORKDIR /build
 
 # Installed under /usr/local so both downstream images (qemu and rocm-ernic)
 # see the same prefix they used to build for themselves.
+#
+# --buildtype=release, which this did not pass before. libvfio-user's own
+# meson.build sets `default_options: ['buildtype=debug', ...]`, so an
+# unqualified `meson setup` produced an -O0 build -- and that is the
+# libvfio-user.so every consumer of this image links, QEMU and rocm-ernic
+# included, which is to say the vfio-user data path of every stack this
+# repository publishes. Shipping the unoptimised build of a transport library
+# was not a decision anyone took; it was the upstream default going unnoticed.
+#
+# It also removes the -Werror that broke this image on 26.04. meson.build:55
+# adds -Werror only `if opt_debug`, so release drops it at the source rather
+# than by suppressing a warning: Ubuntu 26.04 ships cmocka 2.0.2 where 24.04
+# had 1.1.7, and 2.0 deprecated expect_check, which test/unit-tests.c still
+# uses. Those four deprecations are now warnings and the tests still build. If
+# a future pin needs -Werror back for the library proper, that is a separate
+# flag, not a return to buildtype=debug.
+#
+# What this does NOT do is compile out assertions. meson's b_ndebug defaults to
+# false, so release here means -O3 with asserts still live -- worth knowing,
+# because "release" usually implies otherwise and a consumer debugging a vfu_*
+# abort should not be told the checks are gone. -gdwarf-4 also survives, since
+# it comes from default_options c_args and nothing here overrides c_args; that
+# flag is upstream's workaround for clang with dwarf-5 breaking valgrind.
 RUN git clone --filter=blob:none \
     "${LIBVFIO_USER_REPO}" \
     /build/libvfio-user && \
@@ -37,7 +60,7 @@ RUN git clone --filter=blob:none \
     git checkout "${LIBVFIO_USER_COMMIT}" && \
     git rev-parse HEAD \
         > /usr/local/share/libvfio-user-commit.txt && \
-    meson setup build --prefix=/usr/local && \
+    meson setup build --prefix=/usr/local --buildtype=release && \
     ninja -C build && \
     ninja -C build install && \
     ldconfig && \

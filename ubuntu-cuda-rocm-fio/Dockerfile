@@ -69,6 +69,34 @@ RUN git init /build/fio && \
 # lands on, so a binary built for the compiling machine's ISA SIGILLs on a
 # narrower one -- and the in-image checks below are cached alongside it, so
 # they cannot catch it. A published image has to run on any x86-64 host.
+# The cuda13 probe is the one feature test here with no --enable-* to make it
+# hard-fail, and on gcc 14+ it silently gives the wrong answer. fio's configure
+# probes for CUDA 13 by compiling
+#
+#   cuCtxCreate(NULL, NULL, 0, NULL);
+#
+# which passes NULL for the fourth parameter, a CUdevice -- an int. That is
+# upstream's bug and it is harmless on gcc 13, where int-conversion is a
+# warning. gcc 14 promoted -Wint-conversion to an error, so on Ubuntu 26.04 the
+# probe no longer compiles, configure reports "cuda>=13  no", and CONFIG_CUDA13
+# is quietly left undefined.
+#
+# Nothing fails at that point. memory.c then takes its pre-CUDA-13 branch and
+# calls the three-argument cuCtxCreate, which CUDA 13.5's cuda.h does not have
+# -- it #defines cuCtxCreate to cuCtxCreate_v4, which takes four -- so the
+# build dies hundreds of lines later in a way that reads like a CUDA
+# incompatibility rather than a failed feature test.
+#
+# So: correct the probe rather than suppress the diagnostic. 0 is a valid
+# CUdevice, and -Wint-conversion stays live for fio's own code, which is the
+# half worth keeping. Conditional, so upstream fixing its own probe makes this
+# a no-op instead of a build break.
+#
+# The grep on config-host.h after configure is the real guarantee and the
+# reason this is not just a sed. A feature probe that fails is not an error,
+# it is a flag, and this image's whole point is the engines those flags
+# select. Asserted only where CUDA is new enough to expect it, so pinning
+# cuda_version back to a 12.x line does not fail the build spuriously.
 # hadolint ignore=DL3003
 RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     set -eux; \
@@ -76,6 +104,10 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     CUDA_PATH="$(cat /etc/cuda-path)"; \
     PATH="/usr/lib/ccache:${PATH}"; export PATH; \
     cd /build/fio; \
+    if grep -q 'cuCtxCreate(NULL, NULL, 0, NULL);' configure; then \
+        sed -i 's/cuCtxCreate(NULL, NULL, 0, NULL);/cuCtxCreate(NULL, NULL, 0, 0);/' \
+            configure; \
+    fi; \
     ./configure \
         --extra-cflags="-I${CUDA_PATH}/include" \
         --extra-ldflags="-L${CUDA_PATH}/lib64 -L${CUDA_PATH}/lib64/stubs -Wl,-rpath,${CUDA_PATH}/lib64" \
@@ -83,6 +115,14 @@ RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
         --enable-cuda \
         --enable-libcufile \
         --enable-libhipfile; \
+    cuda_major="$(cut -d- -f1 /etc/cuda-version)"; \
+    if [ "${cuda_major}" -ge 13 ]; then \
+        grep -q '^#define CONFIG_CUDA13$' config-host.h || { \
+            echo "ERROR: CUDA ${cuda_major} is installed but fio's cuda13" \
+                 "probe did not fire, so memory.c would build its" \
+                 "pre-CUDA-13 cuCtxCreate call. See the note above." >&2; \
+            exit 1; }; \
+    fi; \
     make -j"$(nproc)"; \
     make install prefix=/usr/local
 
