@@ -20,7 +20,7 @@ on:
 jobs:
   spell-check:
     name: Spell Check
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Check out code
         uses: actions/checkout@v7

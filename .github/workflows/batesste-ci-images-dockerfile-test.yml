@@ -76,7 +76,7 @@ env:
 jobs:
   discover-images:
     name: Discover Images
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       targets: ${{ steps.find-images.outputs.targets }}
       keys: ${{ steps.find-images.outputs.keys }}
@@ -175,7 +175,7 @@ jobs:
   # with the runner, so the jobs below rebuild them rather than consume these.
   build-bases:
     name: Build Base Images
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write
@@ -294,7 +294,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.target.key }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: [discover-images, build-bases]
     # An empty matrix is a hard error ("Matrix vector 'target' does not
     # contain any values"), not an empty job, so a branch that touches only
@@ -683,7 +683,7 @@ jobs:
 
   build-derived:
     name: Build ${{ matrix.target.key }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Deliberately *not* `needs: build`. A derived target consumes exactly one
     # base, named in its own matrix.target.base_scope, but a job-level `needs`
     # cannot say "only that leg" -- so waiting on the whole matrix meant every
@@ -1051,7 +1051,7 @@ jobs:
 
   test-compose:
     name: Test Docker Compose Stack
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: [discover-images, build-bases, build, build-derived]
     # The three containers come from the matrix tier; the guest is pulled, not
     # built -- qemu-minimal publishes it and images.yml pins it as guest_qcow2.
@@ -1296,7 +1296,7 @@ jobs:
 
   publish-build-status:
     name: Publish Build Status
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: [discover-images, build-bases, build, build-derived]
     permissions:
       contents: write
