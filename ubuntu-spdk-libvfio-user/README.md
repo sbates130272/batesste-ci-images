@@ -1,15 +1,37 @@
 # ubuntu-spdk-libvfio-user
 
-[SPDK](https://spdk.io)'s NVMe-oF target built from source and configured to
-serve an NVMe controller over vfio-user, with both LBA and Key Value
-namespaces.
+[SPDK](https://spdk.io) built from source and configured to serve a **PCIe
+NVMe controller** over vfio-user, with both LBA and Key Value namespaces.
 
 ## Overview
 
 SPDK emulates an NVMe controller in a process outside the VMM and offers it to
-a guest over a vfio-user socket, using its existing NVMe-oF target with
-vfio-user as a shared-memory transport. It is the device *provider*;
+a guest over a vfio-user socket. It is the device *provider*;
 [`ubuntu-qemu-libvfio-user`](../ubuntu-qemu-libvfio-user/) is the consumer.
+
+### It is PCIe NVMe, not NVMe-oF
+
+Worth stating plainly, because the machinery says otherwise. The binary is
+`nvmf_tgt`, the RPCs are `nvmf_create_subsystem` and `nvmf_subsystem_add_ns`,
+and everything is addressed by NQN -- all of which belong to SPDK's NVMe-oF
+*target framework*. SPDK implemented vfio-user as one more transport under
+that framework so it could reuse subsystems, namespaces and controllers.
+
+None of it reaches the guest. `lib/nvmf/vfio_user.c` calls
+`vfu_pci_init(..., VFU_PCI_TYPE_EXPRESS, ...)`, sets class `01:08:02` (mass
+storage / NVM / NVMe programming interface) and maps the NVMe doorbells into
+BAR0 at offset `0x1000`. The guest enumerates an ordinary PCIe endpoint and
+binds its ordinary `nvme` PCI driver. There is no discovery controller, no
+transport address, and nothing to `nvme connect` to.
+
+Those are the same three lines [`pci-vendor-amd.patch`](pci-vendor-amd.patch)
+edits, which is the clearest proof of what this is: a vendor ID, a device ID
+and a PCI class code are properties of a PCI function, not of a fabric.
+
+The distinction matters in a mixed stack. qemu-minimal's `xio` flavour runs
+[`ubuntu-rocm-ernic`](../ubuntu-rocm-ernic/) serving **real NVMe-oF** over its
+RDMA NIC *and* this image serving a **PCIe NVMe** function, behind one guest.
+Calling both "NVMe-oF" makes that stack impossible to reason about.
 
 It completes the set of device servers in this repo:
 [`ubuntu-rocm-ernic`](../ubuntu-rocm-ernic/) serves an RDMA NIC,
@@ -430,7 +452,7 @@ own without taking the default with it.
 Being a forward move was not sufficient on its own. Three public functions
 changed signature over those 35 commits, and SPDK calls one of them:
 `vfu_setup_device_dma()` gained a `max_regions` parameter, which broke both its
-call sites — `lib/nvmf/vfio_user.c` (the NVMe-oF target this image exists for)
+call sites — `lib/nvmf/vfio_user.c` (the vfio-user NVMe target this image exists for)
 and `lib/vfu_tgt/tgt_endpoint.c` (the virtio target). `vfu-max-dma-regions.patch`
 passes `LIBVFIO_USER_MAX_DMA_REGIONS`, the default the header documents for
 exactly this, and is applied *only* when the override is active. The other two,

@@ -182,7 +182,21 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # builds, git checkouts, systemd units).  qemu-tool's --ansible-playbook needs
 # both ansible-playbook and ansible-galaxy on PATH; PIPX_BIN_DIR above puts
 # them there.  qemu-minimal's lanes run their guest bakes in this image.
-ARG ANSIBLE_CORE_VERSION=2.21.4
+#
+# Nothing in *this* repository runs ansible. It is here for consumers, the
+# same way the Docker CLI below is, so the version that matters is the one
+# qemu-minimal's playbooks want rather than whatever is newest. qemu-minimal
+# pins no version; the only version-sensitive note in its
+# ansible/requirements.yml is that a deprecated top-level-fact fallback "stops
+# working at ansible-core 2.24", and it already moved off that in
+# ansible-dotfiles 3.3.1. So 2.22 is clear, and 2.24 is the next thing to
+# check rather than a number to chase.
+#
+# 2.22.0 requires a Python 3.13+ control node, so this bump is only possible
+# on 26.04 -- it could not have been installed on noble's 3.12. That is the
+# dependency between this and the base move, and it is the whole reason the
+# two land together.
+ARG ANSIBLE_CORE_VERSION=2.22.0
 RUN pipx install "ansible-core==${ANSIBLE_CORE_VERSION}" && \
     ansible-playbook --version && \
     ansible-galaxy --version

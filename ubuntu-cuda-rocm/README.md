@@ -1,6 +1,6 @@
 # ubuntu-cuda-rocm
 
-Toolkit-only dual-stack image for CUDA and ROCm on Ubuntu 24.04.
+Toolkit-only dual-stack image for CUDA and ROCm on Ubuntu 26.04.
 
 ## Overview
 
@@ -26,7 +26,7 @@ in `/etc/profile.d/`.
 
 ## Base image
 
-- `ubuntu:24.04`
+- `ubuntu:26.04`
 
 ## Installed toolchain components
 
@@ -198,12 +198,12 @@ docker run --rm -it \
 ## References
 
 <!-- References -->
-[nvidia-ubuntu2404-packages]:
+[nvidia-ubuntu2604-packages]:
   https://developer.download.nvidia.com/compute/cuda/repos/
-  ubuntu2404/x86_64/Packages
+  ubuntu2604/x86_64/Packages
 [nvidia-cuda-keyring]:
   https://developer.download.nvidia.com/compute/cuda/repos/
-  ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+  ubuntu2604/x86_64/cuda-keyring_1.1-1_all.deb
 [amdgpu-rocm-apt]:
   https://repo.radeon.com/rocm/apt/latest/
 [amdgpu-apt-base]:

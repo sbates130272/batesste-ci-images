@@ -3,7 +3,6 @@ ARG BASE_IMAGE=docker.io/sbates130272/batesste-ci-images-ubuntu-base:latest
 FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV UBUNTU_CODENAME=noble
 
 ARG CUDA_VERSION
 ARG ROCM_VERSION
@@ -44,26 +43,59 @@ RUN set -eux; \
     echo "${ROCM_VERSION}" > /etc/rocm-version; \
     echo "${ROCM_STREAM}" > /etc/rocm-stream
 
-# NVIDIA CUDA repository (ubuntu2404 / noble)
+# NVIDIA CUDA repository.
+#
+# The ubuntuXXYY path segment is derived from the running image's own
+# VERSION_ID rather than written out, here and in the therock block below.
+# Both vendors spell it the same way -- 24.04 -> ubuntu2404, 26.04 ->
+# ubuntu2604 -- so one `tr -d .` covers both, and moving the base image's FROM
+# line is then the whole of a release move rather than the first of five edits.
+# It was the hardcoded form that let this sit at noble while the base moved.
+#
+# Each is checked rather than trusted, because a release the vendor has not
+# published for yet fails in a different place for each of them. wget exits
+# non-zero on NVIDIA's 404, so that one is self-asserting. apt is laxer about
+# a missing deb822 source, so the therock path is probed explicitly below --
+# otherwise the first sign of a wrong distro segment is an install step that
+# cannot find amdrocm<ver>, which reads like a bad rocm_version rather than a
+# bad release.
+#
 # The apt retry settings above do not cover wget, and its defaults are a 900s
 # read timeout over 20 tries: a stalled Akamai edge hangs the build for hours
 # instead of failing. Bound it and let it pick a different edge on retry.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    . /etc/os-release && \
+    CUDA_DISTRO="ubuntu$(echo "${VERSION_ID}" | tr -d .)" && \
+    echo "${CUDA_DISTRO}" > /etc/nvidia-cuda-distro && \
     wget --progress=dot:giga --timeout=30 --tries=5 --retry-connrefused \
         -O /tmp/cuda-keyring.deb \
-        https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb \
+        "https://developer.download.nvidia.com/compute/cuda/repos/${CUDA_DISTRO}/x86_64/cuda-keyring_1.1-1_all.deb" \
     && dpkg -i /tmp/cuda-keyring.deb \
     && rm -f /tmp/cuda-keyring.deb \
     && apt-get update
 
 # AMD ROCm repository — therock stream (repo.amd.com) or legacy (repo.radeon.com)
+#
+# UBUNTU_CODENAME, used by the legacy branch, comes from the sourced
+# /etc/os-release rather than from an ENV above. It used to be `ENV
+# UBUNTU_CODENAME=noble`, which shadowed the real value os-release already
+# defines -- so a legacy build on any other release silently wrote a sources
+# line for the wrong suite. One literal fewer, and it cannot disagree with the
+# image it is running in.
 RUN mkdir -p /etc/apt/keyrings && \
+    . /etc/os-release && \
+    ROCM_DISTRO="ubuntu$(echo "${VERSION_ID}" | tr -d .)" && \
     if [ "${ROCM_STREAM}" = "therock" ]; then \
         curl -fsSL --retry 5 --retry-connrefused --max-time 120 \
             https://stable.repo.amd.com/rocm/gpg/packages.gpg \
             | gpg --dearmor -o /etc/apt/keyrings/amdrocm.gpg && \
-        printf 'Types: deb\nURIs: https://stable.repo.amd.com/rocm/core/packages/ubuntu2404\nSuites: stable\nComponents: main\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/amdrocm.gpg\n' \
+        curl -fsS --retry 5 --retry-connrefused --max-time 120 -o /dev/null \
+            "https://stable.repo.amd.com/rocm/core/packages/${ROCM_DISTRO}/dists/stable/main/binary-amd64/Packages" \
+            || { echo "ERROR: therock publishes no index for ${ROCM_DISTRO};" \
+                      "this Ubuntu release is not served yet." >&2; exit 1; }; \
+        printf 'Types: deb\nURIs: https://stable.repo.amd.com/rocm/core/packages/%s\nSuites: stable\nComponents: main\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/amdrocm.gpg\n' \
+            "${ROCM_DISTRO}" \
             > /etc/apt/sources.list.d/rocm.sources; \
     else \
         curl -fsSL --retry 5 --retry-connrefused --max-time 120 \

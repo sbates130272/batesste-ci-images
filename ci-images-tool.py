@@ -66,7 +66,7 @@ STATUS_EVENT = "push"
 # targets share one status and cannot be reported per target.
 STATUS_BASES_JOB = "Build Base Images"
 
-DEFAULT_UBUNTU_VERSION = "24.04"
+DEFAULT_UBUNTU_VERSION = "26.04"
 DEFAULT_REGISTRY = "docker.io"
 DEFAULT_REGISTRY_IMAGE = "batesste-ci-images"
 DEFAULT_IMAGE_TAG = "latest"

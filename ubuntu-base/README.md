@@ -21,7 +21,7 @@ already installed.
 
 ## Base image
 
-- `ubuntu:24.04`
+- `ubuntu:26.04`
 
 The `FROM` line is a literal rather than an `ARG`. `ci-images-tool.py` parses
 it to derive the Ubuntu version in the tag, and turning it into a build arg
@@ -66,5 +66,5 @@ declares `base: ubuntu-base` in [`images.yml`](../images.yml).
 ## Tags
 
 The tag variant for this image is the Ubuntu release it was built from, for
-example `ubuntu24.04`. See the repository
+example `ubuntu26.04`. See the repository
 [README](../README.md) for the full tag scheme.

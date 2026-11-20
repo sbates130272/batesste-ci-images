@@ -149,7 +149,7 @@ images:
   ubuntu-base:
     job: bases
     description: >-
-      Ubuntu 24.04 base layer every other image here inherits, with
+      Ubuntu 26.04 base layer every other image here inherits, with
       build-essential, cmake and ccache.
     variant: "ubuntu{ubuntu_version|ver}"
     # common/ holds the root CA this image bakes in, so a change there is a
@@ -226,7 +226,7 @@ images:
   ubuntu-kernel-build:
     job: matrix
     description: >-
-      Ubuntu 24.04 carrying bison, flex, libelf and linux-headers-generic for
+      Ubuntu 26.04 carrying bison, flex, libelf and linux-headers-generic for
       kernel and module builds.
     base: ubuntu-base
     # Adds no pinned payload of its own, so the Ubuntu release is the only
@@ -236,7 +236,7 @@ images:
   ubuntu-cuda-rocm:
     job: matrix
     description: >-
-      Ubuntu 24.04 carrying nvcc and hipcc, the CUDA and ROCm/HIP toolkits,
+      Ubuntu 26.04 carrying nvcc and hipcc, the CUDA and ROCm/HIP toolkits,
       with no GPU kernel drivers.
     base: ubuntu-base
     # No CI artifact: its only consumer wants a registry ref, so the build job
@@ -836,9 +836,23 @@ images:
   # the tag is spdk.<sha> alone rather than the two-pin form ernic uses.
   ubuntu-spdk-libvfio-user:
     job: matrix
+    # "PCIe NVMe controller", not "NVMe-oF". The binary is nvmf_tgt and the
+    # RPCs talk about subsystems and NQNs, which is why this used to read
+    # "SPDK's NVMe-oF target serving an NVMe controller" -- but that is SPDK's
+    # internal framework, not what the guest gets. lib/nvmf/vfio_user.c calls
+    # vfu_pci_init(VFU_PCI_TYPE_EXPRESS), vfu_pci_set_class(0x01, 0x08, 0x02)
+    # and maps the NVMe doorbells into BAR0, so the guest binds its ordinary
+    # nvme PCI driver to a PCIe endpoint. There is no fabric: no discovery
+    # controller, no transport address, no `nvme connect`.
+    #
+    # The distinction is load-bearing rather than pedantic, because this repo
+    # serves both kinds and qemu-minimal's xio stack runs them side by side:
+    # there, rocm-ernic serves real NVMe-oF over its RDMA NIC while this image
+    # serves a PCIe NVMe function. Describing both as NVMe-oF makes that stack
+    # unreadable.
     description: >-
-      SPDK's NVMe-oF target serving an NVMe controller with LBA and KV
-      namespaces over vfio-user.
+      SPDK serving a PCIe NVMe controller with LBA and KV namespaces to a
+      guest over vfio-user.
     base: ubuntu-base
     artifact: true
     vars:
@@ -888,8 +902,8 @@ images:
       "{ns}.spdk.branch": "{spdk_branch}"
       "{ns}.spdk.commit": "{spdk_commit}"
     variants:
-      # SPDK's NVMe-oF target built against the host-doorbell-fd fork instead of
-      # the submodule, so its vfio-user server can call
+      # SPDK's vfio-user target built against the host-doorbell-fd fork instead
+      # of the submodule, so its vfio-user server can call
       # vfu_setup_host_doorbell_cb() and ring a host MMIO doorbell with one
       # eventfd_write() rather than a REGION_WRITE per doorbell. As with the
       # ernic variant, this only makes the API reachable; calling it is a change
@@ -905,8 +919,9 @@ images:
       sbates-fork:
         suffix: "-sbates-fork"
         description: >-
-          SPDK's NVMe-oF target built against the sbates130272 libvfio-user
-          fork, with the host MMIO doorbell fd protocol available to the target.
+          SPDK's PCIe NVMe controller built against the sbates130272
+          libvfio-user fork, with the host MMIO doorbell fd protocol available
+          to the target.
         # Must equal ubuntu-libvfio-user@sbates-fork; see the note there.
         vars:
           libvfio_user_override_repo: https://github.com/sbates130272/libvfio-user.git
