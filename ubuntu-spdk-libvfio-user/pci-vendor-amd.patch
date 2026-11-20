@@ -1,0 +1,70 @@
+Present the emulated NVMe controller as an AMD device rather than a Nutanix one.
+
+SPDK hardcodes Nutanix's PCI vendor ID in its vfio-user target, in three
+places in lib/nvmf/vfio_user.c: the PCI config header (vendor and subsystem
+vendor), and the Identify Controller VID/SSVID. SPDK_PCI_VID_NUTANIX is 0x4e58
+-- ASCII "NX" -- and it is there for a historical reason rather than a
+technical one: libvfio-user is a Nutanix project, and when SPDK's vfio-user
+transport was written they used their own vendor ID rather than squat on a real
+NVMe vendor's. There is no RPC or configuration knob for it; nvmf_create_transport
+exposes nothing, so the only way to change it is here.
+
+Every other device this repository serves over vfio-user models an AMD part --
+rocjitsu a GPU, rocm-ernic a NIC, the SDXI image a data mover -- and this one
+is the odd one out. A guest in one of the mixed stacks (qemu-minimal's xio
+flavour runs rocjitsu, ernic and this image behind the same guest) sees
+4e58:0001 in lspci among AMD devices, and "Nutanix" in `nvme id-ctrl`, with
+nothing anywhere to explain it.
+
+Safe to change:
+
+  - The guest's nvme driver binds on PCI class code (01:08:02, set two lines
+    below the first hunk and untouched here), not on vendor ID.
+  - drivers/nvme/host/pci.c has no quirk entry for 0x1022, so nothing in the
+    guest changes behaviour on the new ID. The Nutanix ID has no quirk entry
+    either, so this neither gains nor loses one.
+  - 1022:0001 is unassigned: AMD's device-ID space in the pci.ids database
+    starts at 0x1100, so this collides with no real AMD part. It renders as
+    "Advanced Micro Devices, Inc. [AMD] Device 0001".
+
+The IEEE OUI moves with the vendor ID, or the identify data would contradict
+itself. 0x8d/0x6b/0x50 is Nutanix's OUI 50:6B:8D in the little-endian byte
+order NVMe stores the company ID in; 0x2c/0x27/0x74 is AMD's MA-L assignment
+74:27:2C (Advanced Micro Devices, Inc., Austin TX) in the same order.
+
+The device ID stays 0x0001, which is SPDK's own value and carries no meaning.
+Changing it as well would invent an AMD part number that does not exist.
+
+Retire this patch if SPDK ever grows a configurable vendor ID -- at which point
+this becomes an entrypoint.sh RPC argument rather than a source edit. As with
+the other two patches this image carries, `git apply` fails loudly when a
+future spdk_commit moves these lines, which is the signal to come back here
+rather than to silently build something that no longer matches.
+
+--- a/lib/nvmf/vfio_user.c
++++ b/lib/nvmf/vfio_user.c
+@@ -3331,7 +3331,7 @@
+ 		SPDK_ERRLOG("vfu_ctx %p failed to initialize PCI\n", vfu_ctx);
+ 		return ret;
+ 	}
+-	vfu_pci_set_id(vfu_ctx, SPDK_PCI_VID_NUTANIX, 0x0001, SPDK_PCI_VID_NUTANIX, 0);
++	vfu_pci_set_id(vfu_ctx, SPDK_PCI_VID_AMD, 0x0001, SPDK_PCI_VID_AMD, 0);
+ 	/*
+ 	 * 0x02, controller uses the NVM Express programming interface
+ 	 * 0x08, non-volatile memory controller
+@@ -3802,10 +3802,10 @@
+ 	vu_transport = SPDK_CONTAINEROF(transport, struct nvmf_vfio_user_transport, transport);
+ 
+-	cdata->vid = SPDK_PCI_VID_NUTANIX;
+-	cdata->ssvid = SPDK_PCI_VID_NUTANIX;
+-	cdata->ieee[0] = 0x8d;
+-	cdata->ieee[1] = 0x6b;
+-	cdata->ieee[2] = 0x50;
++	cdata->vid = SPDK_PCI_VID_AMD;
++	cdata->ssvid = SPDK_PCI_VID_AMD;
++	cdata->ieee[0] = 0x2c;
++	cdata->ieee[1] = 0x27;
++	cdata->ieee[2] = 0x74;
+ 	memset(&cdata->sgls, 0, sizeof(struct spdk_nvme_cdata_sgls));
+ 	cdata->sgls.supported = SPDK_NVME_SGLS_SUPPORTED_DWORD_ALIGNED;
+ 	cdata->oncs.nvmcmps = vu_transport->transport.opts.oncs.nvmcmps;

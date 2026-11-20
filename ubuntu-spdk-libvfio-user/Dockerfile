@@ -157,14 +157,38 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # than silently build something that no longer matches.
 COPY ubuntu-spdk-libvfio-user/vfu-max-dma-regions.patch \
      /build/vfu-max-dma-regions.patch
+
+# Present the served controller as an AMD device rather than a Nutanix one.
+# Unconditional, unlike the patch above: it is a property of the image, not of
+# a variant.
+#
+# SPDK hardcodes SPDK_PCI_VID_NUTANIX (0x4e58, ASCII "NX") in three places in
+# lib/nvmf/vfio_user.c -- the PCI config header and the Identify Controller
+# VID/SSVID -- with no RPC or configure knob to move it, so a source patch is
+# the only lever. The reason it is Nutanix at all is that libvfio-user is a
+# Nutanix project, not anything about NVMe. Every other device this repository
+# serves over vfio-user models an AMD part, and in a mixed stack this one was
+# the only guest-visible device claiming a different vendor. See the patch
+# header for why it is safe (class-code binding, no kernel quirk on 0x1022,
+# 1022:0001 unassigned) and for the IEEE OUI that has to move with it.
+#
+# The two greps after the apply are not redundant with it. `git apply` proves
+# the three known sites moved; it says nothing about a *fourth* one a future
+# spdk_commit might add, which would leave a controller advertising AMD in its
+# PCI header and Nutanix somewhere else. Asserting the whole file is clean is
+# the only form of this check that keeps working as the fork moves.
+COPY ubuntu-spdk-libvfio-user/pci-vendor-amd.patch /build/pci-vendor-amd.patch
+
 # hadolint ignore=DL3003
 RUN --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     cd "${SPDK_DIR}" && \
+    git apply /build/pci-vendor-amd.patch && \
+    ! grep -q SPDK_PCI_VID_NUTANIX lib/nvmf/vfio_user.c && \
+    test "$(grep -c SPDK_PCI_VID_AMD lib/nvmf/vfio_user.c)" = 3 && \
+    printf '"pci-vendor-amd.patch"' > /build/local-patches.txt && \
     if [ -n "${LIBVFIO_USER_COMMIT}" ]; then \
         git apply /build/vfu-max-dma-regions.patch && \
-        printf '"vfu-max-dma-regions.patch"' > /build/local-patches.txt; \
-    else \
-        : > /build/local-patches.txt; \
+        printf ', "vfu-max-dma-regions.patch"' >> /build/local-patches.txt; \
     fi && \
     PATH=/usr/lib/ccache:${PATH} ./configure \
         --with-vfio-user \
@@ -213,6 +237,9 @@ RUN ln -sf "${SPDK_DIR}/build/bin/nvmf_tgt" /usr/local/bin/nvmf_tgt && \
   "local_patches": [%s],\n\
   "configure_flags": ["--with-vfio-user", "--without-nvme-cuse",\n\
                       "--max-lcores=512", "--target-arch=corei7"],\n\
+  "pci_vendor_id": "0x1022",\n\
+  "pci_device_id": "0x0001",\n\
+  "pci_vendor": "amd",\n\
   "rbd_enabled": false,\n\
   "kv_backends": ["mem"],\n\
   "kv_smoke": "kv-smoke"\n\
