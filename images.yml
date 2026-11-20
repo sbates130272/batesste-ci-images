@@ -79,7 +79,7 @@ defaults:
   # Shared by more than one image, so they cannot be owned by any single one.
   vars:
     libvfio_user_repo: https://gitlab.com/qemu-project/libvfio-user.git
-    libvfio_user_commit: 05bb5e5237817e0d77879b93d6145f6436b56fd0
+    libvfio_user_commit: 827699874352e8e31d33e45c5877016f7619e87d
     # The guest the compose smoke test boots behind these containers. This repo
     # builds no guest: qemu-minimal bakes and publishes the one rocm-golden
     # qcow2 as an ORAS artifact, and this names a build of it.
@@ -88,6 +88,12 @@ defaults:
     # from pinned commits, and a guest ahead of the servers here fails in ways
     # that name nothing. Move it after a release of these images, once
     # qemu-minimal has repinned to them and published.
+    #
+    # So this tag is *expected* to lag qemu_minimal_commit, and does today:
+    # gac6c325 is the qemu-minimal the guest was baked from, and the pin below
+    # has since moved to fddac6f. That is the documented ordering -- server
+    # pins first, then qemu-minimal republishes a guest against them, then this
+    # takes it -- not drift. Do not "fix" it by matching the two by hand.
     guest_qcow2: docker.io/sbates130272/qemu-tool-rocm-golden:20261119.gac6c325
 
 # Retention for `ci-images-tool.py prune`. Only the immutable, fingerprinted
@@ -365,7 +371,7 @@ images:
       # whichever branch ucx_branch names.
       ucx_repo: https://github.com/openucx/ucx.git
       ucx_branch: v1.23.x
-      ucx_commit: dd2b21269d36c1985eabfbde4987f0554fb98e37
+      ucx_commit: 79ecdbdec77290d5d4c3ec95a27e7e2289e5c811
       etcd_repo: https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git
       etcd_commit: 7c6e714f188f9576e25e0350cac4181139eec23e
       # Abseil and gRPC are built from source because Ubuntu's libgrpc++-dev
@@ -416,7 +422,7 @@ images:
     base: ubuntu-libvfio-user
     artifact: true
     vars:
-      rocm_ernic_commit: 90434a237232275fc8002cb3a6b5121ba836c594
+      rocm_ernic_commit: bd902345b0f8f3863f535a0a09da9f21ce744737
     build_args:
       ROCM_ERNIC_COMMIT: "{rocm_ernic_commit}"
     # This image links against libvfio-user, so that pin belongs in the tag:
@@ -867,7 +873,7 @@ images:
       qemu_commit: v11.1.3
       # Where the qemu-tool CLI is installed from.
       qemu_minimal_repo: https://github.com/sbates130272/qemu-minimal.git
-      qemu_minimal_commit: ac6c325300139af25353b9966340780447d643d4
+      qemu_minimal_commit: fddac6f2c69e0782228ead604f03d244ec065443
       # Provenance only, and empty here: the default target builds a release
       # tag, which belongs to no branch. A fork variant fills it in and the
       # label appears only there.
