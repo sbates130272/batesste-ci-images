@@ -1,0 +1,70 @@
+Make the quiesce eventfd read/write survive -Werror=unused-result under GCC.
+
+rocjitsu's own CMakeLists sets -Wall -Wextra -Wpedantic -Werror, and this image
+builds with gcc-14. Two call sites in the peer-fabric transport discard the
+result of ::read and ::write by casting to void:
+
+  vfio_target_grants.cpp:52   (void)::write(fd_, &one, sizeof(one));
+  vfio_device_host.cpp:955    (void)::read(quiesce_wake_->fd(), ...);
+
+glibc declares both with __attribute__((warn_unused_result)). Clang accepts a
+cast to void as acknowledgement of that attribute; GCC deliberately does not --
+it is a documented difference, and the GCC position is that the cast is exactly
+the idiom the attribute exists to defeat. So the build fails at [973/1136] with
+
+  error: ignoring return value of 'ssize_t write(int, const void*, size_t)'
+  declared with attribute 'warn_unused_result' [-Werror=unused-result]
+
+on a tree whose every upstream check is green, because no CI anywhere enables
+ROCJITSU_ENABLE_VFIO -- these two files are not compiled by anything upstream.
+
+Both sites are genuinely allowed to ignore the result. The fd is an eventfd
+used purely as a wakeup: a short write cannot happen (eventfd writes are all or
+nothing at 8 bytes), and a failed read just means the poll loop spins once more
+and re-polls. There is no error handling to add, so the fix is to say "ignored
+on purpose" in a form GCC accepts rather than to invent recovery.
+
+[[maybe_unused]] rather than a cast or a (void)!: it is the standard C++17
+spelling, it is what the doorbell branch
+(users/stebates/rocjitsu-vfio-doorbell) already uses for these exact two lines,
+and taking the same form here means the two trees do not conflict when that
+branch is rebased onto develop.
+
+Upstream history: these lines arrived with ROCm/rocm-systems#13852 "model
+stock-driver peer fabric traffic", merged 2026-11-12 as 1fb2065f3. The fix was
+reported upstream before that merge and was not taken. Retire this patch when
+it lands -- `git apply --3way` will fail loudly on the next pin bump if the
+context moves, which is the signal to come back here, and carrying any patch at
+all freezes rocjitsu_commit in scripts/version-scrub.sh.
+
+The index lines below are real blob hashes at 986a5c8, so --3way can do an
+actual three-way merge rather than falling back to a straight apply. The
+previous series in this directory lacked them and the Dockerfile's comment said
+so; worth not repeating.
+
+diff --git a/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vmm/vfu/vfio_target_grants.cpp b/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vmm/vfu/vfio_target_grants.cpp
+index 5c5f94691a1ecbabd6df7b3242afd8beac61a5da..71d7170297b6c79595d8f8d9779534580e52ff88 100644
+--- a/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vmm/vfu/vfio_target_grants.cpp
++++ b/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vmm/vfu/vfio_target_grants.cpp
+@@ -49,7 +49,7 @@
+   if (fd_ < 0)
+     return;
+   const uint64_t one = 1;
+-  (void)::write(fd_, &one, sizeof(one));
++  [[maybe_unused]] ssize_t n = ::write(fd_, &one, sizeof(one));
+ }
+
+ VfioTargetGrants::VfioTargetGrants(std::size_t host_count)
+diff --git a/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vmm/vfu/vfio_device_host.cpp b/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vmm/vfu/vfio_device_host.cpp
+index 8e20f9a26981d67cedac6c11cd67cda011d7a51c..c04fc0afab6b44e52c8c37c442781ef9a010994d 100644
+--- a/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vmm/vfu/vfio_device_host.cpp
++++ b/emulation/rocjitsu/lib/rocjitsu/src/rocjitsu/vmm/vfu/vfio_device_host.cpp
+@@ -952,7 +952,7 @@
+     }
+     if ((waits[1].revents & POLLIN) != 0) {
+       uint64_t completed = 0;
+-      (void)::read(quiesce_wake_->fd(), &completed, sizeof(completed));
++      [[maybe_unused]] ssize_t n = ::read(quiesce_wake_->fd(), &completed, sizeof(completed));
+     }
+     if (ready <= 0 && !quiesce_pending_) {
+       continue;

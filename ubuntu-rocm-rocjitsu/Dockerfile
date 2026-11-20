@@ -60,6 +60,17 @@ ARG ROCJITSU_VRAM_APERTURE_BYTES=keep
 # The upstream tree is still built unmodified -- this goes in through
 # FETCHCONTENT_SOURCE_DIR_LIBVFIO-USER below, CMake's own escape hatch, rather
 # than by patching the cmake that declares the pin.
+#
+# Note that since upstream 1fb2065f3, rj_libvfio_user.cmake `git apply`s a
+# one-hunk fix of its own into whatever tree FetchContent hands it
+# (patches/libvfio-user/0001-preserve-small-64-bit-bar-upper-address.patch,
+# which stops a sub-4GiB 64-bit BAR having its upper address masked to zero).
+# It FATAL_ERRORs if the patch neither applies nor reverse-applies, so the tree
+# named here has to be close enough to v0.8 for it to land. The fork at
+# 3719c3a is: get_bar_eff_size() there is byte-identical to v0.8, so the patch
+# applies cleanly. That also means /build/libvfio-user must be a real git
+# repository, which is why it is `git init`ed below rather than fetched as a
+# tarball -- `git apply` has nowhere to run otherwise.
 ARG LIBVFIO_USER_REPO=
 ARG LIBVFIO_USER_COMMIT=
 
@@ -86,11 +97,41 @@ RUN git init /build/rocm-systems && \
         echo rocjitsu-cmake > /build/libvfio-user-source.txt; \
     fi
 
-# This tree is built unmodified. It used to carry a five-patch series against
-# ROCJITSU_COMMIT without which the served device could not boot a guest, let
-# alone run a kernel needing private memory; all five are in develop now. If a
-# future head regresses, re-add the series and a pin freeze together -- git log
-# for the patches/ directory.
+# Local patches against ROCJITSU_COMMIT, applied in filename order. Each patch
+# states its own case in its header; today there is one, and it is what lets
+# develop compile at all here: ROCm/rocm-systems#13852 brought two call sites
+# that discard ::read/::write results with a cast to void, which GCC rejects
+# under the -Werror rocjitsu's own CMakeLists sets. See the patch.
+#
+# This directory was empty between 8245ae9 and now. The note that stood here
+# said "if a future head regresses, re-add the series and a pin freeze
+# together" -- this is that. Carrying any patch re-freezes rocjitsu_commit in
+# scripts/version-scrub.sh, which stops tracking the branch head and reports
+# the patch count instead; that is the designed behaviour, not a side effect.
+#
+# --3way so a pin bump fails loudly rather than silently not applying, and
+# `test -s` so a series that has become a no-op -- every hunk already upstream
+# -- fails the build here rather than shipping an image that claims patches it
+# does not carry. Unlike the old series, this patch carries real `index` blob
+# lines, so --3way can do a true three-way merge instead of falling back to a
+# straight apply.
+#
+# Keep the series short. A patch that survives more than a couple of pin bumps
+# belongs upstream, not here.
+COPY ubuntu-rocm-rocjitsu/patches/ /build/patches/
+RUN set -eu; \
+    git -C /build/rocm-systems config user.email ci-images@invalid; \
+    git -C /build/rocm-systems config user.name "ci-images build"; \
+    : > /build/rocjitsu-patch-list.txt; \
+    for patch in /build/patches/*.patch; do \
+        echo "applying $(basename "${patch}")"; \
+        git -C /build/rocm-systems apply --3way --verbose "${patch}"; \
+        basename "${patch}" >> /build/rocjitsu-patch-list.txt; \
+    done; \
+    git -C /build/rocm-systems diff --stat HEAD \
+        > /build/rocjitsu-local-patches.txt; \
+    test -s /build/rocjitsu-local-patches.txt; \
+    cat /build/rocjitsu-local-patches.txt
 
 # _Static_assert is a C11 keyword with no C++ spelling, and libvfio-user v0.8's
 # pci_caps/{common,msix}.h use it; rocjitsu includes those from C++ in
@@ -297,12 +338,17 @@ RUN set -eu; \
 # is what the tree declares, libvfio_user_tag is what was really built, and
 # libvfio_user_source says which of the two supplied it.
 #
-# local_patches stays in the schema and stays empty. Consumers grew a habit of
-# reading it to tell a patched build from an unpatched one, and an absent key
-# reads the same as an unpatched image to a careless `.get()`; an explicit []
-# says the tree was built unmodified -- which stays true under the override,
-# because FETCHCONTENT_SOURCE_DIR redirects the fetch without touching the
-# rocm-systems checkout.
+# local_patches is non-empty again, and patches.diffstat beside it is generated
+# from what git actually applied. Consumers read these to tell a patched build
+# from an unpatched one at runtime -- which is exactly the confusion that once
+# made a consumer pin a hand-built image -- so adding a patch must need no edit
+# in the places that report them.
+#
+# Read local_patches as "*this repo's* patches". It is not a claim about every
+# byte compiled here: since 1fb2065f3, rocjitsu's own cmake patches
+# libvfio-user during configure (see the note above). That patch is upstream's,
+# applied by upstream's build, and so is no more a local patch than the GIT_TAG
+# beside it.
 RUN set -eu; \
     cmake_pins=/build/rocm-systems/emulation/rocjitsu/cmake/rj_libvfio_user.cmake; \
     read_pin() { awk -v url="$1" '/FetchContent_Declare\(/{inblk=1;tag="";hit=0;next} inblk{ if(index($0,url)) hit=1; if($1=="GIT_TAG") tag=$2; if($0 ~ /^[[:space:]]*\)/){ if(hit && tag!=""){print tag; exit} inblk=0 } }' "$2"; }; \
@@ -315,11 +361,17 @@ RUN set -eu; \
         libvfio_user_tag="$(cat /build/libvfio-user-commit.txt)"; \
     fi; \
     cp /build/rocjitsu-commit.txt /usr/local/share/rocjitsu-commit.txt; \
+    mkdir -p /usr/local/share/rocjitsu; \
+    cp /build/rocjitsu-local-patches.txt \
+        /usr/local/share/rocjitsu/patches.diffstat; \
+    patches_json="$(awk '{printf "%s\"%s\"", (NR>1 ? ", " : ""), $0}' \
+        /build/rocjitsu-patch-list.txt)"; \
     printf '{\n\
   "rocjitsu_repo": "%s",\n\
   "rocjitsu_branch": "%s",\n\
   "rocjitsu_commit": "%s",\n\
-  "local_patches": [],\n\
+  "local_patches": [%s],\n\
+  "patches_diffstat": "/usr/local/share/rocjitsu/patches.diffstat",\n\
   "libvfio_user_source": "%s",\n\
   "libvfio_user_upstream_tag": "%s",\n\
   "libvfio_user_tag": "%s",\n\
@@ -335,6 +387,7 @@ RUN set -eu; \
         "${ROCJITSU_REPO}" \
         "${ROCJITSU_BRANCH}" \
         "$(cat /build/rocjitsu-commit.txt)" \
+        "${patches_json}" \
         "$(cat /build/libvfio-user-source.txt)" \
         "${libvfio_user_upstream_tag}" \
         "${libvfio_user_tag}" \
@@ -467,18 +520,31 @@ RUN set -eux; \
 # Grepping source is crude, but these are behaviours with no runtime probe
 # short of booting a guest, and each marker is the identifier the behaviour is
 # implemented under rather than incidental text.
+#
+# The patch count is asserted here too, and the sense of it has flipped. It
+# used to read `test "${unpatched}" -eq 0`, dating from when the series had
+# been retired and the thing worth catching was a patch creeping back in
+# unnoticed. patches/ carries one again, so what is worth catching now is the
+# opposite: a build that reports no patches is a build where the apply step
+# silently did nothing, which ships an image whose provenance lies about what
+# was compiled. Counted from the metadata rather than from the directory, so it
+# fails if the two ever disagree.
 RUN set -eux; \
     src=/build/rocm-systems/emulation/rocjitsu; \
     vm=${src}/lib/rocjitsu/src/rocjitsu/vm/amdgpu; \
-    unpatched=$(python3 -c \
+    applied=$(python3 -c \
         'import json;print(len(json.load(open("/usr/local/share/rocjitsu-build.json"))["local_patches"]))'); \
-    test "${unpatched}" -eq 0; \
+    set -- /build/patches/*.patch; \
+    test "${applied}" -eq "$#"; \
+    test "${applied}" -gt 0; \
+    test -s /usr/local/share/rocjitsu/patches.diffstat; \
+    cat /usr/local/share/rocjitsu/patches.diffstat; \
     grep -q 'kPageTableRootFlags' "${vm}/gpu_vm.cpp"; \
     grep -q 'RoutesAddressesOutsideTheGartApertureToVram' \
         "${src}/tests/pci/gpu_pci_device_test.cpp"; \
     grep -q 'request_dynamic_scratch' "${vm}/command_processor.cpp"
 
-RUN rm -rf /build/rocm-systems /build/libvfio-user /tmp/deps
+RUN rm -rf /build/rocm-systems /build/libvfio-user /build/patches /tmp/deps
 
 ENV PATH=/usr/local/bin:${PATH}
 
