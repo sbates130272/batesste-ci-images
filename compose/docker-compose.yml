@@ -1,19 +1,18 @@
 # Capabilities are dropped here but the uid is not pinned, which is the one
-# place this file deliberately diverges from compose/perf-stack.yml and from
-# qemu-minimal's own stacks. Those carry `user: ${CONTAINER_USER:?...}`, and
-# the `:?` is what makes an unset variable an error instead of uid 0. This file
-# is the hand-run smoke test documented below -- `docker compose up` with no
-# preparation beyond extracting a guest -- so requiring two environment
-# variables to start it would cost more than it buys for a stack that opens
-# three sockets. perf-harness.sh resolves them because it is a script and can.
+# place this file deliberately diverges from qemu-minimal's stacks. Those carry
+# `user: ${CONTAINER_USER:?...}`, and the `:?` is what makes an unset variable
+# an error instead of uid 0. This file is the hand-run smoke test documented
+# below -- `docker compose up` with no preparation beyond pulling a guest -- so
+# requiring two environment variables to start it would cost more than it buys
+# for a stack that opens three sockets.
 #
 # Nothing here needs NET_ADMIN: both device servers open a unix socket on a
 # shared volume, and QEMU's networking is SLIRP, which is userspace. It was on
 # all three services and was never used by any of them.
 #
 # The qemu service does need one capability back, and the original version of
-# this comment claimed otherwise. ./vm is extracted by whoever ran the docker
-# cp above -- uid 1001 on a GitHub runner, your own uid by hand -- while this
+# this comment claimed otherwise. ./vm is written by whoever ran the pull
+# below -- uid 1001 on a GitHub runner, your own uid by hand -- while this
 # file deliberately leaves the container as uid 0. Containerised root reads and
 # writes files it does not own only through CAP_DAC_OVERRIDE, so dropping ALL
 # left QEMU unable to open the guest at all. qemu-tool checks for this up front
@@ -36,21 +35,25 @@ x-hardening: &hardening
     - "no-new-privileges:true"
 
 services:
-  # The qemu image is the toolchain only; it carries no guest. Extract one from
-  # a published ubuntu-qcow2-gen payload into compose/vm/ before "up":
+  # The qemu image is the toolchain only; it carries no guest. Pull the
+  # rocm-golden guest qemu-minimal publishes into compose/vm/ before "up". It
+  # is an ORAS artifact, not an image, so this needs oras and zstd:
   #
-  #   cid=$(docker create \
-  #     sbates130272/batesste-ci-images-ubuntu-qcow2-gen:latest)
-  #   docker cp "$cid:/output/." compose/vm && docker rm "$cid"
+  #   ref=$(./ci-images-tool.py config ubuntu-qemu-libvfio-user --get guest_qcow2)
+  #   oras pull "$ref" -o compose/vm && zstd -d --rm compose/vm/*.qcow2.zst
+  #   oras pull "$(oras discover "$ref" --format json \
+  #     | jq -r '.referrers[0].reference')" -o compose/vm
+  #   chmod 600 compose/vm/id_rsa
   #
-  # VM_NAME below must match the payload's vm-info.json: the disk is named
-  # after it, and entrypoint.sh looks for /output/${VM_NAME}.qcow2.
+  # The second pull is the referrer carrying vm-info.json and the SSH keypair.
+  # VM_NAME below must match vm-info.json's vm_name: the disk is named after
+  # it, and entrypoint.sh looks for /output/${VM_NAME}.qcow2.
   #
   # Mounted read-write, not :ro -- QEMU opens the qcow2 read-write, so the
-  # stack writes back into compose/vm/. Re-extract for a pristine guest.
+  # stack writes back into compose/vm/. Pull again for a pristine guest.
   qemu:
     <<: *hardening
-    # See the header: uid 0 cannot open a ./vm extracted by anyone else
+    # See the header: uid 0 cannot open a ./vm pulled by anyone else
     # without this, and this file does not pin the uid on purpose.
     cap_add:
       - DAC_OVERRIDE
@@ -60,7 +63,7 @@ services:
       - ./vm:/output
     environment:
       USERNAME: ubuntu
-      VM_NAME: ubuntu-ci-vm
+      VM_NAME: ${VM_NAME:-rocm-golden}
       SSH_PORT: "2222"
       VCPUS: "2"
       VMEM: "4096"

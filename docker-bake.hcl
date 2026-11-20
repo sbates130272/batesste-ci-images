@@ -27,8 +27,7 @@
 # plan rather than an error, so it is worth being explicit about.
 #
 #   TARGETS   one entry per target: bake_name, dockerfile, tags, args, labels,
-#             entitlements, outputs, contexts. See bake_target() in
-#             ci-images-tool.py for the shape.
+#             contexts. See bake_target() in ci-images-tool.py for the shape.
 #   SELECTED  the bake_names this run asked for. The generated spec always
 #             describes every target, so that --print shows the whole repo
 #             whatever is being built; this is how a subset build names its
@@ -74,7 +73,7 @@ variable "CACHE_LOCAL" {
 
 # Load the built image into the local daemon. On by default because that is
 # what the local build path has always done, and because the per-image checks
-# and the artifact push both expect to find the image there. A builder that is
+# and `docker push` both expect to find the image there. A builder that is
 # only producing a registry push can turn it off and save the transfer.
 variable "LOAD" {
   default = true
@@ -89,7 +88,7 @@ target "_common" {
 }
 
 # One bake target per entry in TARGETS. `name` is what the generated
-# bake_name -- the flat scope string, e.g. ubuntu-qcow2-gen-ernic-rocjitsu --
+# bake_name -- the flat scope string, e.g. ubuntu-rocm-ernic-sbates-fork --
 # is for: bake target names may not contain the '@' that every variant key has,
 # and bake requires them to be unique across the whole file.
 target "image" {
@@ -111,19 +110,7 @@ target "image" {
   # Empty when the base is not part of this run.
   contexts = t.contexts
 
-  # security.insecure, for the guest builds that boot QEMU against /dev/kvm.
-  # Requesting it here is not the same as being granted it: the invocation
-  # still has to pass --allow security.insecure, and the builder still has to
-  # have been created with --allow-insecure-entitlement.
-  entitlements = t.entitlements
-
-  # type=docker loads the image; t.outputs adds the type=local export that the
-  # guest targets use to drop a qcow2 on the host. Both at once is deliberate
-  # and is what the old --load plus --output invocation did.
-  output = concat(
-    LOAD ? ["type=docker"] : [],
-    t.outputs,
-  )
+  output = LOAD ? ["type=docker"] : []
 
   cache-from = concat(
     CACHE_REGISTRY == "" ? [] : ["type=registry,ref=${CACHE_REGISTRY}:${t.scope}"],

@@ -1,17 +1,17 @@
 # syntax=docker/dockerfile:1-labs
 #
 # The QEMU builder/runner toolchain: QEMU with libvfio-user and slirp, the
-# qemu-tool CLI, ansible-core, the Docker CLI and oras.  It builds no guest
-# image of its own -- that is ubuntu-qcow2-gen's job, one repository per flavour
-# -- so /output ships empty and a guest is supplied at run time.  Guests are
-# published as bare OCI artifacts, so no container runtime is needed to fetch
-# one:
+# qemu-tool CLI, ansible-core, the Docker CLI and oras.  It carries no guest
+# image -- qemu-minimal bakes and publishes the rocm-golden guest, in this
+# image -- so /output ships empty and a guest is supplied at run time.  The
+# guest is published as a bare OCI artifact, so no container runtime is needed
+# to fetch it:
 #
-#   REPO=sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic
+#   REPO=docker.io/sbates130272/qemu-tool-rocm-golden
 #   mkdir vm && cd vm
-#   oras pull "$REPO:latest-qcow2" && zstd -d --long=27 --rm ./*.qcow2.zst
+#   oras pull "$REPO:latest" && zstd -d --long=27 --rm ./*.qcow2.zst
 #   # vm-info.json and the SSH keypair ride in a referrer, not in the artifact:
-#   oras pull "$REPO@$(oras discover --format json "$REPO:latest-qcow2" \
+#   oras pull "$REPO@$(oras discover --format json "$REPO:latest" \
 #       | jq -r '.referrers[0].digest')" && chmod 600 id_rsa
 #   docker run -v "$PWD:/output" ...   # rw: QEMU opens the disk rw
 #
@@ -46,9 +46,7 @@ ARG QEMU_COMMIT
 # README. An undefaulted ARG is empty rather than an error, so this asserts.
 RUN : "${QEMU_COMMIT:?set from images.yml by ci-images-tool.py; pass --build-arg QEMU_COMMIT=... for a bare docker build}"
 
-# The qemu-minimal checkout the qemu-tool CLI is installed from.  Guest
-# provisioning parameters (release, size, packages, playbook, kernel) are not
-# here: they belong to ubuntu-qcow2-gen, which builds the guests.
+# The qemu-minimal checkout the qemu-tool CLI is installed from.
 ARG QEMU_MINIMAL_REPO=
 ARG QEMU_MINIMAL_COMMIT=
 ARG CACHE_BUST=
@@ -183,8 +181,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # Ansible provisions guest images beyond what cloud-init can express (source
 # builds, git checkouts, systemd units).  qemu-tool's --ansible-playbook needs
 # both ansible-playbook and ansible-galaxy on PATH; PIPX_BIN_DIR above puts
-# them there.  Installed here rather than in ubuntu-qcow2-gen so every guest
-# flavour shares one layer.
+# them there.  qemu-minimal's lanes run their guest bakes in this image.
 ARG ANSIBLE_CORE_VERSION=2.21.4
 RUN pipx install "ansible-core==${ANSIBLE_CORE_VERSION}" && \
     ansible-playbook --version && \
@@ -218,10 +215,10 @@ RUN set -eux; \
 # bash scripts of those names are obsolete and are
 # being removed upstream, so nothing may call them.
 #
-# The checkout is deleted afterwards.  ubuntu-qcow2-gen re-clones it (it needs
-# the ansible/ tree, which the wheel does not carry) and `git clone` refuses a
-# non-empty target, so leaving it here breaks every guest build.  It also frees
-# /build/qemu-minimal/images for the runtime guest mount entrypoint.sh accepts.
+# The checkout is deleted afterwards.  A consumer that wants the ansible/
+# tree, which the wheel does not carry, clones its own, and `git clone` refuses
+# a non-empty target.  It also frees /build/qemu-minimal/images for the runtime
+# guest mount entrypoint.sh accepts.
 RUN set -eux; \
     if [ -d /build/qemu-minimal/qemu ]; then \
         python3 -m venv /opt/qemu-tool; \

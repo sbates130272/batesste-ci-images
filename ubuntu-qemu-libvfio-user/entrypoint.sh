@@ -94,8 +94,8 @@ echo "Connect with: ssh -p ${SSH_PORT} ${USERNAME}@localhost"
 # QEMU in this image accepts, so every guest booted this way died instantly on
 # "Property 'vfio-user-pci.socket.type' not found". socket is a compound
 # property and only the JSON -device form can set it, which is what qemu-tool
-# emits. compose/perf-stack.yml had already stopped using this path for its
-# own reasons, which is why the breakage went unnoticed.
+# emits. The one stack that exercised the device had already stopped using
+# this path for its own reasons, which is why the breakage went unnoticed.
 #
 # There is one spelling of a QEMU command line in this stack now, and it comes
 # from the qemu-minimal SHA the image is pinned to -- the same one the guests

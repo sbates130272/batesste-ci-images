@@ -24,7 +24,7 @@
 #
 #   A `variant:` names the upstream pins and is not asked to identify a build
 #   on its own: the fully specified tag prefixes the release and a fingerprint
-#   of this repo's commit, so a changed Dockerfile or provision script cannot
+#   of this repo's commit, so a changed Dockerfile, entrypoint or patch cannot
 #   land on a tag that is already taken. Nothing to declare here -- see
 #   source_fingerprint() -- but it is why a variant need not chase every pin.
 #
@@ -80,14 +80,15 @@ defaults:
   vars:
     libvfio_user_repo: https://gitlab.com/qemu-project/libvfio-user.git
     libvfio_user_commit: 05bb5e5237817e0d77879b93d6145f6436b56fd0
-    # The Ubuntu cloud image every guest qcow2 is built from. Ubuntu 26.04 LTS
-    # "resolute" ships Linux 7.0. This chooses the *userspace* only: the guest
-    # kernel is whatever the release ships unless the flavour sets kernel_ref,
-    # and the Ubuntu mainline builds are one set of .debs for all releases, so
-    # a newer kernel is not a reason to move off a release. A flavour that
-    # needs different userspace pins its own release var.
-    release: resolute
-    arch: amd64
+    # The guest the compose smoke test boots behind these containers. This repo
+    # builds no guest: qemu-minimal bakes and publishes the one rocm-golden
+    # qcow2 as an ORAS artifact, and this names a build of it.
+    #
+    # A dated tag, never `latest`: the guest's ernic and SDXI drivers are built
+    # from pinned commits, and a guest ahead of the servers here fails in ways
+    # that name nothing. Move it after a release of these images, once
+    # qemu-minimal has repinned to them and published.
+    guest_qcow2: docker.io/sbates130272/qemu-tool-rocm-golden:20261119.gac6c325
 
 # Retention for `ci-images-tool.py prune`. Only the immutable, fingerprinted
 # date tags are ever candidates: every rolling alias (latest, the bare variant,
@@ -108,11 +109,10 @@ prune:
 
 # Which changed files rebuild which image, for `targets --changed-from`.
 # The dockerfile-test workflow hands it the branch's changed paths and builds
-# only the targets that come back, instead of rebuilding all thirteen because
+# only the targets that come back, instead of rebuilding every image because
 # one Dockerfile moved.
 #
-# An image needs nothing here: the default is its own directory (plus any
-# context_dirs), which is the honest answer for all of them. Declare `paths:`
+# An image needs nothing here: the default is its own directory, which is the honest answer for all of them. Declare `paths:`
 # on an image or a variant only to *replace* that default -- it is not merged,
 # because a list that is merged is a list nobody can narrow.
 #
@@ -132,7 +132,7 @@ path_filter:
     - requirements.txt
     - .github/workflows/batesste-ci-images-dockerfile-test.yml
     # compose/ belongs here rather than on an image, because the only job that
-    # exercises the stack -- test-compose -- requires four targets to have been
+    # exercises the stack -- test-compose -- requires three targets to have been
     # selected, and a compose-only diff selects none of them. Leave it out and a
     # PR that edits the stack starts the workflow, skips every job and reports
     # green having validated nothing.
@@ -173,10 +173,9 @@ images:
       "{ns}.libvfio-user.commit": "{libvfio_user_commit}"
     variants:
       # The fork every host-doorbell consumer layers on. It exists as a variant
-      # of this image rather than as a bumped default so the qcow2 guests --
-      # which reach this image only through ubuntu-qemu-libvfio-user's default
-      # target -- keep building against upstream, and so version-scrub.sh can go
-      # on tracking qemu-project master in the default.
+      # of this image rather than as a bumped default so the default
+      # ubuntu-qemu-libvfio-user keeps building against upstream, and so
+      # version-scrub.sh can go on tracking qemu-project master in the default.
       #
       # Downstream images pick it up with `base_variant: sbates-fork`; see
       # ubuntu-qemu-libvfio-user and ubuntu-rocm-ernic below.
@@ -188,7 +187,7 @@ images:
       # from the image, so there is no var indirection to share. All five
       # must agree: they exist to be built against the same libvfio-user
       # as the QEMU that talks to them. version-scrub.sh warns when they
-      # diverge, the way it already does for the guest fio pin.
+      # diverge.
       sbates-fork:
         suffix: "-sbates-fork"
         description: >-
@@ -457,7 +456,7 @@ images:
         env: ROCM_ROCJITSU_BRANCH
       # A deliberate pin, not the branch head. version-scrub.sh reports when
       # develop has moved and does not rewrite this -- the same treatment the
-      # amdgpu tree and the therock lines get, and for the same reason.
+      # therock lines get, and for the same reason.
       #
       # A bump is not free: the Dockerfile asserts the three upstream
       # behaviours that replaced the local patch series this image used to
@@ -543,14 +542,13 @@ images:
       # BAR2 and came up with no VRAM window at all, where the implied 256 MiB
       # assigns cleanly. That reasoning held against qemu-tool emitting plain
       # `-cpu EPYC` (40 phys-bits) and q35's default 32 GiB 64-bit hole, and it
-      # stops holding now that both can be raised. compose/perf-stack.yml
-      # passes 41 and 512G, the smallest measured-good pair.
+      # stops holding now that both can be raised. 41 and 512G is the smallest
+      # measured-good pair, and what qemu-minimal's mi355x-server stack passes.
       #
       # The dependency runs the other way from most of this file: a consumer
       # that attaches these images with neither option set gets the broken
       # assignment rather than a smaller window, so this default assumes a
-      # caller like perf-stack.yml. The image README carries the measured
-      # table.
+      # caller that sets both. The image README carries the measured table.
       #
       # Large BAR is a P2P DMA concern rather than a prerequisite: gfx1250
       # agents enumerate and run on the 256 MiB aperture either way.
@@ -703,19 +701,19 @@ images:
         value: users/stebates/emulation-sdxi
         env: ROCM_SDXI_BRANCH
       # A deliberate pin, not the branch head, and version-scrub.sh reports
-      # rather than rewrites it -- the same treatment rocjitsu, the amdgpu
-      # trees and the therock lines get, but for a sharper reason than any of
-      # them. This is a *personal* branch that is rebased and force-pushed as
+      # rather than rewrites it -- the same treatment rocjitsu and the therock
+      # lines get, but for a sharper reason than either. This is a *personal* branch that is rebased and force-pushed as
       # the series is reworked, so "the head" is routinely not a descendant of
       # what is pinned here. An automatic bump would not be a bump, it would be
       # a jump sideways onto a tree nobody has looked at.
       #
-      # ubuntu-qcow2-gen@rocjitsu must carry this same SHA; see the note on
-      # sdxi_commit there. The guest drives the device this image serves, and
-      # emulation/sdxi/drivers/sdxi_char/sdxi_user.h is the uapi both sides
-      # agree on.
+      # The guest's driver must be built from this same SHA. That pin is
+      # sdxi_source_pin in qemu-minimal's vm-rocm-golden.yml, and its
+      # tests/test_playbook_pins.py compares it with this image's tag. The
+      # guest drives the device this image serves: sdxi_user.h is the uapi both
+      # sides agree on, and the completion interrupt is a contract beside it.
       sdxi_commit:
-        value: c50f2b9a39c64538039712f6b52510d1a8596c72
+        value: dfd76f23f6f10561333fc0a9a9f23e9f3b255c04
         env: ROCM_SDXI_COMMIT
       # Empty means "whatever emulation/sdxi/cmake/SdxiVfioUser.cmake pins",
       # which is nutanix/libvfio-user at v0.8. Declared now, with no variant
@@ -840,10 +838,9 @@ images:
         variant: "spdk.{spdk_commit|short}-vfu.{libvfio_user_override_commit|short}"
 
   # The builder/runner toolchain, and only that: QEMU, the qemu-tool CLI,
-  # ansible-core, libvfio-user. It builds no guest of its own -- ubuntu-qcow2-gen
-  # below does that -- so it needs neither KVM, nor the insecure entitlement,
-  # nor the cloud-image cache, and /output ships empty for a guest payload to be
-  # mounted over.
+  # ansible-core, libvfio-user. It carries no guest: /output ships empty for one
+  # to be mounted over. qemu-minimal's lanes run in this image to bake and
+  # publish the rocm-golden guest.
   ubuntu-qemu-libvfio-user:
     job: matrix
     description: >-
@@ -856,11 +853,9 @@ images:
       # A release tag (e.g. v11.1.3) or a commit hash; tags are typically
       # stable but not as strictly immutable as a full SHA.
       qemu_commit: v11.1.3
-      # Where the qemu-tool CLI is installed from, and -- inherited by
-      # ubuntu-qcow2-gen -- the ansible/ tree its guest builds are driven by, so
-      # the CLI and the playbooks always come from one commit.
+      # Where the qemu-tool CLI is installed from.
       qemu_minimal_repo: https://github.com/sbates130272/qemu-minimal.git
-      qemu_minimal_commit: 096ddfed218f76a672c964b51ead4894e2da4f60
+      qemu_minimal_commit: ac6c325300139af25353b9966340780447d643d4
       # Provenance only, and empty here: the default target builds a release
       # tag, which belongs to no branch. A fork variant fills it in and the
       # label appears only there.
@@ -928,615 +923,6 @@ images:
           libvfio_user_repo: https://github.com/sbates130272/libvfio-user.git
           libvfio_user_commit: 3719c3a852820502a7adc9c0c363fd64d48addf0
 
-  # Guest qcow2 images. One parameterised Dockerfile, one repository per
-  # flavour: adding a guest is packages/<name>.txt, checks/<name>.sh, an
-  # upstream Ansible playbook name and a variants: entry below.
-  #
-  # publish: artifact makes the disk itself the published thing -- an ORAS
-  # artifact a libvirt or bare-metal consumer can pull with no container
-  # runtime -- and exports /output to the gitignored output/<scope>/ on every
-  # build. A FROM scratch payload image carrying /output is still published
-  # alongside it until the ORAS path has proven itself on a real release.
-  #
-  # The guest kernel is deliberately absent from the tag: it is not knowable
-  # until the guest is built. It is recorded in vm-info.json instead.
-  ubuntu-qcow2-gen:
-    job: derived
-    description: >-
-      Ready-to-boot Ubuntu guest disk, cloud-init provisioned and published as
-      a qcow2 ORAS artifact.
-    base: ubuntu-qemu-libvfio-user
-    publish: artifact
-    entitlement: security.insecure
-    # The Dockerfile bind-mounts this; it holds the gitignored cloud-image
-    # downloads and, on the AMD network, amd-root-ca.crt.
-    context_dirs:
-      - common/cloud-image-cache
-      # The mainline kernel .debs, keyed by kernel_ref/arch. Same shape as the
-      # cloud image above and for a sharper reason: kernel.ubuntu.com is the
-      # one upstream a pinned-kernel flavour cannot build without, and it 503s
-      # in bursts -- one CI run had all three kernel-pinned flavours meet the
-      # same burst and one of them lose the build to it. Read-only here;
-      # populated by actions/cache in CI, or by hand locally. On the cluster
-      # common/ is shared home, so this cache survives changing node, which no
-      # --mount=type=cache in this repo does.
-      - common/kernel-cache
-    # The stand-in for the `parentguest` build context, which the Dockerfile's
-    # stage phase bind-mounts at /parent. A flavour that names a
-    # guest_parent_variant gets that flavour's payload there instead; one that
-    # does not gets this empty directory, because a --mount=from= naming a
-    # context that does not exist fails the build. See noparent/README.md.
-    parent_context: ubuntu-qcow2-gen/noparent
-    # A variant may set `guest_parent_variant:` beside its `suffix:` to start
-    # from another variant's finished qcow2 instead of building one. It is a
-    # structural field rather than a var, for the same reason `base_variant`
-    # is: it changes which targets this one depends on, and nothing renders it
-    # into a template. See the ernic-rocjitsu-slim variant.
-    vars:
-      flavour: basic
-      # Guest disk size in GB. The qcow2 is sparse, so this is a ceiling the
-      # guest filesystem can grow into rather than an allocation: the published
-      # payload is the size of what is actually written, not this number.
-      vm_size: 512
-      # Resources for the build-time boots only -- gen-vm's provisioning boot
-      # and probe-guest's verification boot. Not a property of the artifact:
-      # a consumer running the finished qcow2 picks its own. gen-vm defaults to
-      # 2/4096; 4 is the vCPU count a standard GitHub-hosted runner has, and
-      # going past it on CI only adds scheduling overhead.
-      #
-      # Override per-host with VM_VCPUS / VM_VMEM in the environment or .env --
-      # a local box with more cores than a runner is the case that wants it.
-      vm_vcpus: 4
-      vm_vmem: 4096
-      # ubuntu-qcow2-gen/packages/<file> and ubuntu-qcow2-gen/checks/<flavour>.sh
-      vm_packages: base.txt
-      # Whose ubuntu-qcow2-gen/provision/<name>.sh and assets/<name>/ this
-      # flavour uses. Empty means its own, which is every flavour but a slim
-      # one: those are another flavour's guest with things removed, and a
-      # second copy of a 600-line provision script carrying unreviewed kernel
-      # patches is precisely what should not exist twice.
-      provision_flavour: ""
-      # ubuntu-qcow2-gen/trim/<file>, run in a boot of its own after
-      # provisioning and before the verification boot. Empty means the flavour
-      # ships what it provisioned. A flavour that sets this also gets the
-      # package-presence assertion skipped -- it installs a manifest in order
-      # to build with it and then purges most of it -- so its checks file is
-      # what asserts the guest's contents, negatives included.
-      trim: ""
-      # qemu-minimal ansible/playbooks/<file>; empty means cloud-init only.
-      vm_playbook: ""
-      # A second qemu-minimal ansible/playbooks/<file>, run against the guest
-      # *after* the kernel layer and provision/<flavour>.sh, in a boot of its
-      # own. Empty for a flavour that needs none.
-      #
-      # Separate from vm_playbook because of when each one runs, not because
-      # of what it contains: gen-vm runs vm_playbook while it is creating the
-      # VM, which is before a pinned kernel is installed, so a playbook that
-      # compiles anything against the guest's kernel builds it against the
-      # release's instead and installs it for a kernel the guest never boots.
-      #
-      # It is also how a flavour reaches a pin this repo deliberately does not
-      # hold: the qemu-minimal checkout's requirements.yml pins rocm-ernic's
-      # ansible collection to a SHA, and the ionic SRQ series is reached
-      # through that collection rather than copied here. One nine-patch kernel
-      # series, in one repository.
-      post_playbook: ""
-      # An Ubuntu mainline build tag (kernel.ubuntu.com/mainline/<ref>/), or
-      # empty to keep the kernel the release ships. Set it when a flavour needs
-      # a kernel no Ubuntu archive has: the mainline .debs depend only on a
-      # handful of base packages and are built once per version rather than
-      # per release, so this is orthogonal to the release var above.
-      #
-      # The mainline .debs are not configured like Ubuntu's release kernels,
-      # and the difference is not a version gap: CONFIG_DMABUF_MOVE_NOTIFY is
-      # =y on both 6.8 and the release 7.0, and absent entirely -- not "is not
-      # set" -- from the mainline build (seen on 7.2.4, 2026-10-23). A consumer
-      # that probes kernel config rather than capability can therefore conclude
-      # a feature is missing when it works: rdma-perftest gates its ROCm
-      # dma-buf path on that symbol and refuses to start, while the same
-      # transfer runs fine under PERFTEST_ASSUME_DMABUF=1, because move_notify
-      # is only needed for movable exporters and the path used is pinned.
-      # Prefer fixing the probe; flipping the symbol means giving up the
-      # prebuilt .debs and building the kernel here.
-      kernel_ref: ""
-      # Only read by a flavour whose provision script installs the AMD kernel
-      # driver, and inert for every other one. A directory under
-      # repo.radeon.com/amdgpu/ -- an explicit version, or "latest" for the
-      # rolling symlink. The amdgpu-dkms package version that actually landed
-      # is read back out of the guest into /etc/rocjitsu-guest.json, because
-      # this names a repository and not a driver build.
-      #
-      # "latest" is the rolling symlink the rocm_setup role defaults to, and it
-      # publishes jammy and noble only. A flavour on a release that tree has no
-      # suite for must name a version directory that does -- see the rocjitsu
-      # variant, which pins 31.60 for resolute. A directory can stop serving
-      # without notice and come back days later (31.60 did, 2026-10-02 to
-      # -10-05), so scripts/version-scrub.sh checks the pinned one still serves
-      # the release and warns rather than bumping it.
-      amdgpu_driver_version: "latest"
-      # The TheRock ROCm component version the guest's userspace installs under
-      # -- the packages land in /opt/rocm/core-<version>/, not /opt/rocm/, so
-      # the path has to be named rather than assumed. Empty by default and only
-      # read by a flavour that installs ROCm; those pin it, and provisioning
-      # asserts the directory exists so a stale pin fails the build rather than
-      # baking a dead PATH entry into the guest.
-      #
-      # Named guest_rocm_version rather than rocm_version because
-      # ubuntu-cuda-rocm already declares the latter, and version-scrub.sh's
-      # replace_yaml_var rewrites only the first match outside a variants:
-      # block -- two keys of one name would have it silently rewrite the wrong
-      # image's pin.
-      guest_rocm_version: ""
-      # Empty by default: only a flavour whose provision script cares which
-      # rdma-core the release packages reads it, and the pin belongs with the
-      # flavour that needs it.
-      rdma_core_version: ""
-      # An axboe/fio commit to build in the guest, or empty to install no fio
-      # at all. Only a flavour whose provision script builds it reads this.
-      #
-      # It has to be a source build rather than the distro package, and it has
-      # to be a pin rather than a branch, for the same reason
-      # ubuntu-cuda-rocm-fio carries one: the libhipfile ioengine landed on fio
-      # master (67256d4e) and is in no release tag, so Ubuntu's fio has no such
-      # engine. Keep this equal to that image's FIO_COMMIT -- the point of
-      # measuring hipFile in the guest is to compare against the container's
-      # numbers, and two different fios make that comparison meaningless.
-      fio_commit: ""
-      # The rocm-systems tree and commit the guest builds SDXI from, or empty
-      # for a flavour that wants none -- which is every flavour but rocjitsu.
-      # Only a provision script that builds them reads these.
-      #
-      # Two kernel modules (emulation/sdxi/drivers/sdxi_char and sdxi_perf) and
-      # one Python package (tools/sdxi-cli). The modules are plain kbuild, not
-      # DKMS, so they are built against the kernel the flavour pins and are
-      # invalidated by a kernel_ref move -- which is the main reason this is a
-      # flavour-level pin rather than a repo-wide one.
-      #
-      # Keep equal to ubuntu-rocm-sdxi's sdxi_commit. The container serves the
-      # emulated device and the guest drives it, so a guest built from a
-      # different tree than the server it talks to is a uapi mismatch:
-      # sdxi_user.h carries the ioctl numbers and the struct layouts both sides
-      # agree on, and a renumbered ioctl fails as EINVAL from sdxi-cli rather
-      # than as anything that names the cause. version-scrub.sh warns when the
-      # two diverge, the same way it does for the guest/container fio pair --
-      # it cannot fix it, because the guest pin is a variant.
-      sdxi_repo: ""
-      sdxi_commit: ""
-      # The login the guest is provisioned with. "ubuntu" is also the name of
-      # the default user Ubuntu's own cloud images ship, so gen-vm is creating
-      # a user cloud-init already knows about rather than a fresh one -- see
-      # the note in the README before changing it back and forth.
-      username: ubuntu
-      vm_name: ""
-      # The host port probe-guest forwards the guest's SSH to during the
-      # verification boot. Per-flavour because a --security=insecure build step
-      # shares the host network namespace, so two flavours building
-      # concurrently -- which is what bake does, and what one job per CI runner
-      # never did -- collide on it and the second fails to boot at all.
-      #
-      # Only ever bound on 127.0.0.1 inside the build, and only while the
-      # verification boot runs. A flavour added below needs its own number.
-      probe_ssh_port: 2222
-      # Marked secret so it stays out of build-args output, the config table
-      # and the generated bake spec -- but it is written verbatim into the
-      # guest's vm-info.json, which ships inside the published artifact. These
-      # are disposable CI guests and the password is deliberately well known;
-      # do not treat one as anything else.
-      password:
-        value: ubuntu
-        secret: true
-    build_args:
-      QEMU_MINIMAL_REPO: "{qemu_minimal_repo}"
-      QEMU_MINIMAL_COMMIT: "{qemu_minimal_commit}"
-      FLAVOUR: "{flavour}"
-      USERNAME: "{username}"
-      VM_NAME: "{vm_name}"
-      PASSWORD: "{password}"
-      RELEASE: "{release}"
-      ARCH: "{arch}"
-      VM_SIZE: "{vm_size}"
-      VM_VCPUS: "{vm_vcpus}"
-      VM_VMEM: "{vm_vmem}"
-      VM_PACKAGES: "{vm_packages}"
-      VM_PLAYBOOK: "{vm_playbook}"
-      POST_PLAYBOOK: "{post_playbook}"
-      PROVISION_FLAVOUR: "{provision_flavour}"
-      TRIM: "{trim}"
-      KERNEL_REF: "{kernel_ref}"
-      AMDGPU_DRIVER_VERSION: "{amdgpu_driver_version}"
-      # Composed here rather than stored as a var, so the version number lives
-      # in exactly one place. A flavour that pins no guest_rocm_version renders
-      # this as the bare "/opt/rocm/core-", which its provision script never
-      # reads.
-      ROCM_PATH: "/opt/rocm/core-{guest_rocm_version}"
-      # The same line, unadorned: the provision scripts append it to the
-      # therock package names so a guest cannot install one line's packages
-      # under another line's root. See the rocm_version note in defaults.
-      ROCM_VERSION: "{guest_rocm_version}"
-      RDMA_CORE_VERSION: "{rdma_core_version}"
-      FIO_COMMIT: "{fio_commit}"
-      SDXI_REPO: "{sdxi_repo}"
-      SDXI_COMMIT: "{sdxi_commit}"
-      PROBE_SSH_PORT: "{probe_ssh_port}"
-    # kernel_ref is deliberately not in the tag: the flavour name already
-    # distinguishes the images, and the resolved kernel goes in vm-info.json
-    # and the label below, where it can carry the full build stamp.
-    variant: "vm.{release}-{flavour}-qm.{qemu_minimal_commit|short}"
-    labels:
-      "{ns}.vm.release": "{release}"
-      "{ns}.vm.flavour": "{flavour}"
-      "{ns}.vm.packages": "{vm_packages}"
-      "{ns}.vm.playbook": "{vm_playbook}"
-      "{ns}.vm.trim": "{trim}"
-      "{ns}.vm.kernel-ref": "{kernel_ref}"
-      "{ns}.vm.amdgpu-driver-version": "{amdgpu_driver_version}"
-      "{ns}.vm.rocm-path": "/opt/rocm/core-{guest_rocm_version}"
-      "{ns}.vm.rdma-core-version": "{rdma_core_version}"
-      "{ns}.vm.fio-commit": "{fio_commit}"
-      "{ns}.qemu-minimal.commit": "{qemu_minimal_commit}"
-    variants:
-      # For ROCm/rocm-ernic's ionic RDMA jobs: drivers/infiniband/hw/ionic
-      # merged in Linux 6.18. The toolchain and rdma-core build deps are
-      # pre-installed to save the jobs wall-clock; the ionic-ernic DKMS modules
-      # are deliberately *not* built here, since building them from pinned
-      # upstream sources is what those jobs exist to test.
-      #
-      # The kernel is mainline v7.2.6, stamp 202609141300 -- the same pin every
-      # other mainline flavour here carries, and the top of the series: the
-      # mainline PPA built v7.2.1 through v7.2.6 and then stopped, so v7.2.7
-      # and up do not exist there however far upstream stable has run. Probe
-      # kernel.ubuntu.com/mainline/<tag>/amd64/ before believing a newer one.
-      #
-      # This was v7.2.3 -- the build rocm-ernic's self-hosted guests pass on --
-      # and moving it had been tried and reverted twice before, because nothing
-      # downstream had been rebuilt against the newer pin. That is still the
-      # risk and it has simply been accepted: the three mainline flavours are
-      # now on one kernel deliberately. No Ubuntu release
-      # ships it -- resolute GA is 7.0.0-31 -- so kernel_ref installs it on top
-      # and the release only decides how painful that is. resolute makes it a
-      # plain dpkg operation; noble needs a run-parts shim, because its
-      # debianutils 5.17 takes one directory and the mainline preinst passes
-      # two, and a third-party PPA for gcc-15, which 7.x headers require and
-      # noble's gcc-13 cannot provide. Both are hand-modifications invisible to
-      # dpkg -V, and both are how the existing guests were built.
-      #
-      # Do not move this below 7.2.4 whatever else changes: ionic_rdma calls
-      # ib_umem_get_va, which exists from 7.2.4 and not in 7.0 or 7.1.13. That
-      # floor is a compile-time fact and is not the same as being tested
-      # -- this pin and rocm-ernic's IONIC_KERNEL_REF are still separate, with
-      # nothing asserting they stay compatible beyond checks/ionic.sh.
-      #
-      # vm_playbook stays empty until vm-ionic.yml lands in qemu-minimal, and
-      # the pre-seeded /opt/ionic-src checkout waits on it.
-      #
-      # rdma_core_version is not an install instruction -- resolute packages
-      # rdma-core, and its ibverbs-providers already carries the ionic
-      # provider, so nothing is built or overwritten. It is the version
-      # provision/ionic.sh asserts the release actually shipped before writing
-      # it into the stamp ernic_guest_setup reads, and it moves when the
-      # release does. Bump it with release: above, never on its own.
-      ionic:
-        suffix: "-ionic"
-        description: >-
-          Ubuntu guest disk on a mainline 7.2.6 kernel with the ionic RDMA
-          driver, for rocm-ernic DKMS jobs.
-        vars:
-          flavour: ionic
-          vm_packages: ionic.txt
-          probe_ssh_port: 2223
-          # SRQ and P4 from one ionic build.
-          #
-          # vm-ernic-srq-p4.yml exists because neither of the two playbooks it
-          # replaces could give a guest both. vm-ernic-srq.yml builds ionic
-          # with patches/srq and knows nothing of P4; vm-ernic-p4.yml goes
-          # through ernic_guest_setup, whose preflight asserts the emulated NIC
-          # is on the PCI bus -- which an image build does not have, and which
-          # failed bake 68210052 here. Running both in sequence does not work
-          # either: each rebuilds ionic from its own series and the second one
-          # wins.
-          #
-          # The combined playbook stages patches/srq and patches/p4 into one
-          # directory, hands that to ernic_srq_dkms as its single
-          # --patches-dir, and then builds ernic_p4.ko against the *same*
-          # srq+p4 tree. That last part is the one that matters: a module
-          # compiled against one ionic and loaded against another is the
-          # symbol-version failure this repo spent a week on.
-          post_playbook: vm-ernic-srq-p4.yml
-          kernel_ref: v7.2.6
-          # This flavour installs no amdgpu at all -- provision/ionic.sh does
-          # not mention it, and there is no GPU in an ionic guest to drive.
-          # Stated rather than inherited: the default is "latest", and a
-          # flavour that silently carried it advertised an amdgpu driver
-          # version it never installs. `none` is the value the amdgpu tree
-          # check in version-scrub.sh already skips on.
-          amdgpu_driver_version: "none"
-          # One kernel in the image, not two. Every flavour that pins
-          # kernel_ref installs it beside the cloud image's own, and grub is
-          # pinned to the right one -- but the other still costs ~368 MB of
-          # modules, headers, vmlinuz and a 64 MB initramfs nobody boots, and
-          # it is the thing a broken grub pin would fall back to. See
-          # trim/kernel-only.sh.
-          trim: kernel-only.sh
-          rdma_core_version: "61.0"
-        # rocm-ernic's two-VM job still copies the scratch payload image with
-        # skopeo rather than pulling the artifact, and pins a dated tag to do
-        # it. Hold this flavour's history longer than the repo default until
-        # that job moves; reclaiming a few hundred GB is not worth breaking it.
-        prune:
-          keep_days: 90
-          keep_count: 20
-
-      # For ROCm/rocm-xio's test-vm-nvme job: a guest that is booted against a
-      # rocjitsu emulated gfx1250 over vfio-user plus an emulated NVMe
-      # controller, then builds and tests rocm-xio inside itself. That job
-      # installed ROCm and amdgpu-dkms over SSH at runtime, costing the better
-      # part of an hour per run; this flavour bakes it in once.
-      #
-      # release: resolute, and amdgpu_driver_version: 31.60, which are one
-      # decision. 31.50 was the first amdgpu driver tree to publish a resolute
-      # suite; 31.60 is the first to ship gfx1250 firmware (see below), and its
-      # amdgpu-dkms is 1:7.1.9.31600000 -- still a driver that builds against
-      # the 7.0 kernel 26.04 boots, still carrying GC 12.1.0 plus the UMSCH HW
-      # IP enumeration (4e07da515d1c) the emulated gfx1250 needs, and still
-      # carrying the kfd_device.c line provision/rocjitsu.sh patches for
-      # atomics. The noble build this replaces could install only a ~24.04
-      # amdgpu-dkms whose kcl layer will not compile against 7.0 at all, so its
-      # module had to be built against the cloud image's 6.8 and could never
-      # load, leaving the in-tree 7.0 driver to reject the device with
-      # "Failed to add vcn/jpeg ip block". Do not move this pin back to
-      # "latest": that symlink is still jammy/noble only.
-      #
-      # This tree can vanish and come back. Between 2026-10-02 and 2026-10-05
-      # repo.radeon.com stopped serving 31.60 entirely -- the directory itself
-      # 404'd and it left the index listing, while 31.50 served normally -- and
-      # then it returned intact. The repin to 31.50 made in the meantime broke
-      # the ernic-rocjitsu flavour outright, because that tree's amdgpu-dkms is
-      # 7.1.3 and the patches below are written against 7.1.9. So do not chase
-      # availability: scripts/version-scrub.sh warns when this tree stops
-      # serving resolute, and a warning is a prompt to look, not to repin.
-      #
-      # Most gfx1250 firmware now comes with the driver. amdgpu-dkms depends on
-      # amdgpu-dkms-firmware, and from 31.60 that package ships real
-      # gc_12_1_0_mec{,_1}.bin, gc_12_1_0_rlc{,_1}.bin, gc_12_1_0_uni_mes.bin
-      # and sdma_7_1_0.bin into /lib/firmware/updates/amdgpu, which is exactly
-      # the "same public driver release as the guest's amdgpu.ko" pairing
-      # upstream's qemu-vfio.md asks for. 31.50 shipped 683 files and not one
-      # of them, which is why this flavour used to carry no firmware at all.
-      #
-      # Three things it still does not carry, all of which stay in rocm-xio's
-      # runtime playbook because they belong to the consumer's rocjitsu pin
-      # rather than to the disk:
-      #
-      #   * ip_discovery.bin -- generated per-config by "rj-ip-discovery
-      #     gfx1250" from the rocjitsu image the consumer runs.
-      #   * gc_12_1_0_imu.bin -- the one blob no driver release ships, and
-      #     AMDGPU_UCODE_REQUIRED under the amdgpu.fw_load_type=0 the vfio
-      #     guest boots with. It comes from ubuntu-rocm-rocjitsu's
-      #     vfio_guest_firmware.py, whose default --set gap emits it and
-      #     nothing that would overwrite the packaged blobs.
-      #   * The CI user's passwordless sudo.
-      #
-      # The amdgpu-probe helper was on that list and is now in, from
-      # assets/shared/ -- offered, not run.  Nothing in the image invokes it and
-      # amdgpu stays blacklisted; it is there because the parameters belong with
-      # the driver build, and because the perf lane calls it by name.
-      #
-      # The KFD atomics patch is applied to the DKMS source and the module is
-      # rebuilt from it, which is what survives a later dkms autoinstall.
-      rocjitsu:
-        suffix: "-rocjitsu"
-        # Kept under Docker Hub's 100-byte short-description cap, which
-        # trims at a word boundary and would otherwise cut the clause saying
-        # what the image is for. `describe --dry-run` reports the byte count.
-        description: >-
-          Ubuntu guest disk with ROCm and a KFD-atomics-patched amdgpu-dkms,
-          for rocm-xio's rocjitsu jobs.
-        vars:
-          flavour: rocjitsu
-          vm_packages: rocjitsu.txt
-          probe_ssh_port: 2224
-          release: resolute
-          # Mainline v7.2.6, the same kernel the ionic and ernic-rocjitsu
-          # flavours pin.
-          #
-          # This ran the release's own 7.0 kernel until 2026-10-28. Moving it
-          # to 7.2.x had been tried and reverted once, for two reasons, and
-          # both are now answered by ernic-rocjitsu, which has been shipping
-          # 7.2.6 with this same amdgpu 31.60 and this same provision recipe:
-          #
-          #   * "it needs the 7.2 amdgpu patch series" -- it does, and that
-          #     series (0001, 0002) now lives in assets/shared/patches/amdgpu/
-          #     rather than under assets/ernic-rocjitsu/, so the Dockerfile
-          #     grafts it onto this flavour's payload too.
-          #   * "the build still ended with amdgpu.ko in the initramfs" --
-          #     provision/rocjitsu.sh grew the same amdgpu-exclude hook its
-          #     sibling has, and the shipped ernic-rocjitsu initramfs carries
-          #     no amdgpu.ko. Verified by reading one.
-          kernel_ref: v7.2.6
-          amdgpu_driver_version: "31.60"
-          guest_rocm_version: "10.1"
-          # One kernel in the image, not two. Every flavour that pins
-          # kernel_ref installs it beside the cloud image's own, and grub is
-          # pinned to the right one -- but the other still costs ~368 MB of
-          # modules, headers, vmlinuz and a 64 MB initramfs nobody boots, and
-          # it is the thing a broken grub pin would fall back to. See
-          # trim/kernel-only.sh.
-          trim: kernel-only.sh
-          fio_commit: "d2dcd7e053d1902d2420f151c83990e6acdd9f8c"
-          # SDXI rides in this flavour rather than getting a flavour of its own.
-          # The guest already carries everything the modules need -- the pinned
-          # kernel with its headers, a toolchain, pipx -- and a guest with both
-          # an emulated GPU and an emulated data-mover is the configuration a
-          # consumer actually wants to measure a copy engine against. The cost
-          # is that rocm-systems is fetched twice at two different pins in one
-          # build: rocjitsu's tree into the container, SDXI's into the guest.
-          # They are different components of one monorepo and move
-          # independently, so that is correct rather than merely tolerated.
-          #
-          # Must equal ubuntu-rocm-sdxi's sdxi_commit; see the vars above.
-          sdxi_repo: https://github.com/ROCm/rocm-systems.git
-          sdxi_commit: c50f2b9a39c64538039712f6b52510d1a8596c72
-
-      # Both devices in one guest, for hipObject's ernic-rocjitsu-gpu lane: an
-      # emulated ionic RDMA NIC served by rocm-ernic *and* an emulated gfx1250
-      # served by rocjitsu. That lane used to derive this image at the start of
-      # every run -- boot the rocjitsu guest bare, install a kernel, patch and
-      # rebuild amdgpu, shut down, boot again with both vfio-user functions
-      # attached -- at about fifteen minutes a run. This bakes it in.
-      #
-      # It is a third flavour rather than a change to either of the two above,
-      # because both of those are consumed today and neither wants what this
-      # one needs -- though the kernel is no longer one of those reasons.
-      # The kernel is the reason: mainline v7.2.6, where ionic -> the 7.2
-      # floor and rocjitsu -> the release kernel pull in opposite directions.
-      #
-      #   kernel_ref: v7.2.4 is a floor, not a preference. ionic_rdma calls
-      #     ib_umem_get_va, a static inline that exists in 7.2.4 and does not
-      #     exist in 7.0 or 7.1.13. v7.2.6 is the top of the mainline PPA's
-      #     7.2 series and clears that floor; the ionic flavour sits on it
-      #     too, but the two pins move independently and nothing asserts they
-      #     stay equal.
-      #
-      #   amdgpu_driver_version: 31.60 for the rocjitsu flavour's reasons --
-      #     the first driver tree with both a resolute suite and real gfx1250
-      #     firmware. It is also the only one that still ships an amdgpu-dkms
-      #     the patches below apply to: they are written against 7.1.9, and
-      #     31.50 -- the next tree down -- carries 7.1.3, where the ptrace
-      #     patch fails both its hunks and the image build with it. But
-      #     amdgpu-dkms 7.1.9 does not build against 7.2.4 as shipped: three
-      #     patches in
-      #     ubuntu-qcow2-gen/assets/ernic-rocjitsu/patches/amdgpu/ make it, and
-      #     one of them changes a KFD security check and is carried unreviewed.
-      #     Read that directory's README before moving either pin.
-      #
-      # Unlike the rocjitsu flavour, this one bakes in the generated firmware
-      # gap set -- gc_12_1_0_imu.bin and the two mes aliases. They are static
-      # fixtures from ubuntu-rocm-rocjitsu's vfio-guest-firmware.py and do not
-      # depend on which rocjitsu build serves the socket, so they can live on
-      # the disk. ip_discovery.bin still cannot: it comes from rj-ip-discovery
-      # at the consumer's own rocjitsu pin.
-      #
-      # No fio: this flavour measures RDMA and HIP, not storage.
-      ernic-rocjitsu:
-        suffix: "-ernic-rocjitsu"
-        # Under Hub's 100-byte cap; see the rocjitsu note above.
-        description: >-
-          Ubuntu guest on mainline 7.2.6 with ionic RDMA and a patched
-          amdgpu-dkms, for hipObject jobs.
-        vars:
-          flavour: ernic-rocjitsu
-          vm_packages: ernic-rocjitsu.txt
-          # The ionic SRQ series, built into the guest after the kernel layer
-          # and the provision script. Without it the in-tree ionic_rdma from
-          # 7.2.4 reports max_srq = 0, UCX declines rc_verbs and offers only
-          # ud_verbs, and NIXL runs about 5.5x slower on a device where RC is
-          # available and much faster -- with nothing in the failure naming
-          # SRQ. Both halves are built: the kernel modules and the rdma-core
-          # provider, because the kernel half alone advertises an SRQ that
-          # ibv_create_srq() then refuses with EOPNOTSUPP.
-          # SRQ *and* P4 now, from one ionic build; see the ionic flavour
-          # above for why a combined playbook rather than two.
-          post_playbook: vm-ernic-srq-p4.yml
-          # Leaves one kernel installed, and nothing else: the toolchain, the
-          # headers and the DKMS trees all stay, because the jobs that consume
-          # this flavour build ionic-ernic in-guest. Only the release's own
-          # 7.0.x kernel goes -- 368 MB of image, and with it the one thing
-          # the three pinned-kernel assertions in build-vm.sh exist to catch.
-          # Not slim.sh, which also takes the compiler; see that file's
-          # header for why these are separate.
-          trim: kernel-only.sh
-          probe_ssh_port: 2225
-          release: resolute
-          kernel_ref: v7.2.6
-          amdgpu_driver_version: "31.60"
-          guest_rocm_version: "10.1"
-          rdma_core_version: "61.0"
-
-      # The same guest as above, with everything a *runtime* consumer cannot
-      # use taken back out: 9.7 GB and a cloud-image boot become something in
-      # the 2-3 GB range that comes up in seconds. For a lane that boots a
-      # prebuilt binary against the two emulated devices, not one that builds
-      # inside the guest.
-      #
-      # Every pin here is deliberately equal to the ernic-rocjitsu variant's.
-      # They are one recipe -- provision_flavour points at that flavour's
-      # script and assets, so the amdgpu patches, the firmware gap set and the
-      # DKMS build exist in exactly one place and this variant cannot drift
-      # from them. Move the pins together or not at all.
-      #
-      # What the trim removes, and what that costs:
-      #
-      #   * The toolchain, the kernel headers and the /usr/src/amdgpu-* DKMS
-      #     source. The patched module is kept and is still what modprobe
-      #     picks, but **nothing can be compiled in this guest** and a kernel
-      #     installed inside it would have no driver. A lane that builds
-      #     ionic-ernic (which is what rocm-ernic's jobs exist to test) wants
-      #     the fat flavour.
-      #   * The release's own kernel, which this guest never boots, and
-      #     linux-firmware, which is microcode for hardware a virtio guest
-      #     does not have. The gfx1250 blobs come from amdgpu-dkms-firmware
-      #     and stay.
-      #   * ROCm's LLVM and headers. The HIP runtime stays; hipcc goes.
-      #   * cloud-init, disabled rather than purged -- so no seed ISO, no
-      #     userdata and no key injection at launch. The baked-in ubuntu login
-      #     and the keypair published beside the image are the way in.
-      #
-      # vm_packages stays ernic-rocjitsu.txt: the shared provision script needs
-      # that toolchain to build amdgpu, and the trim is what removes it
-      # afterwards. build-vm.sh skips its package-presence assertion for any
-      # flavour with a trim, and checks/ernic-rocjitsu-slim.sh asserts both
-      # what survived and what did not.
-      #
-      # vm_size stays 512: the ceiling is virtual and costs nothing in the
-      # payload, and a consumer's build tree has somewhere to go.
-      ernic-rocjitsu-slim:
-        suffix: "-ernic-rocjitsu-slim"
-        # Start from the fat flavour's finished disk rather than rebuilding it.
-        #
-        # Everything in this variant's vars down to trim: is identical to
-        # ernic-rocjitsu's by construction -- same release, same packages, same
-        # kernel pin, same provision script, same post playbook -- so building
-        # it from the cloud image re-ran ~1250s of byte-identical work purely
-        # in order to subtract from the result. On the longest target in the
-        # bake, that was wall-clock on the critical path, not just wasted CPU.
-        # Naming the parent here makes the build adopt that disk and run only
-        # the trim, the compacting convert and the checks.
-        #
-        # Not `base`: a base is what the Dockerfile's FROM resolves to, and for
-        # every guest flavour alike that is the QEMU toolchain. A derived
-        # flavour needs the toolchain *and* a payload, so the payload arrives
-        # as the `parentguest` build context instead -- see parent_context on
-        # the image above, and noparent/README.md.
-        #
-        # The provisioning facts in vm-info.json are copied out of the parent's
-        # manifest rather than recomputed, so this guest still reports which
-        # provision script and playbook actually built it.
-        guest_parent_variant: ernic-rocjitsu
-        # Under Hub's 100-byte cap; see the rocjitsu note above.
-        description: >-
-          Runtime-only ernic-rocjitsu guest: same drivers, no toolchain, fast
-          to boot.
-        vars:
-          flavour: ernic-rocjitsu-slim
-          provision_flavour: ernic-rocjitsu
-          # Kept rather than deleted now that guest_parent_variant means they
-          # are never acted on here: they are what the parent is built with, so
-          # a reader can check the two recipes still agree, `validate` renders
-          # them, and the labels below continue to describe the guest honestly.
-          trim: slim.sh
-          vm_packages: ernic-rocjitsu.txt
-          # Equal to the fat flavour's, and load-bearing here in a way it is
-          # not there: this guest has no toolchain, so a consumer cannot build
-          # the SRQ or P4 stack itself afterwards. The playbook runs before
-          # the trim, while the compiler it needs is still installed.
-          post_playbook: vm-ernic-srq-p4.yml
-          probe_ssh_port: 2226
-          release: resolute
-          kernel_ref: v7.2.6
-          amdgpu_driver_version: "31.60"
-          guest_rocm_version: "10.1"
-          rdma_core_version: "61.0"
-
 # The README's pinned-upstream shields, generated by `ci-images-tool.py badges`
 # so that a pin and the badge advertising it cannot drift apart. CI runs
 # `badges --check` on every PR, so a bump that forgets the README fails review
@@ -1563,108 +949,68 @@ badges:
         # colour. Green is likewise avoided for anything that is not NVIDIA's
         # own 76B900, for the same reason in reverse: a green pin badge reads
         # as "this passed" when it only means "this is the version".
-        - label: ubuntu
+        - label: Ubuntu
           target: ubuntu-base
           var: ubuntu_version
           colour: E95420
           link: https://hub.docker.com/_/ubuntu
-        - label: rocm
+        - label: ROCm
           target: ubuntu-cuda-rocm
           var: rocm_version
           colour: 006F62
           link: https://rocm.docs.amd.com/
-        - label: cuda
+        - label: CUDA
           target: ubuntu-cuda-rocm
           var: cuda_version
           dots: true
           colour: 76B900
           link: https://developer.nvidia.com/cuda-toolkit
-        - label: qemu
+        - label: QEMU
           target: ubuntu-qemu-libvfio-user
           var: qemu_commit
           colour: FF6600
           link: https://gitlab.com/qemu-project/qemu/-/tags/{value}
-        - label: nixl
+        - label: NIXL
           target: ubuntu-rocm-nixl
           var: nixl_tag
           colour: 76B900
           link: https://github.com/ai-dynamo/nixl/releases/tag/{value}
-        - label: abseil
+        - label: Abseil
           target: ubuntu-rocm-nixl
           var: absl_tag
           colour: 4285F4
           link: https://github.com/abseil/abseil-cpp/releases/tag/{value}
-        - label: grpc
+        - label: gRPC
           target: ubuntu-rocm-nixl
           var: grpc_tag
           colour: 244C5A
           link: https://github.com/grpc/grpc/releases/tag/{value}
-        - label: libfabric
+        - label: Libfabric
           target: ubuntu-rocm-nixl
           var: libfabric_tag
           colour: 0F4C81
           link: https://github.com/ofiwg/libfabric/releases/tag/{value}
-    # What is inside a published qcow2, kept apart from the two groups above
-    # because it answers a different question. Those say what the *containers*
-    # were built from; these say what a guest boots and carries once you pull
-    # it. A reader chasing "which ROCm is in the VM" was previously landing on
-    # the container's rocm badge, which is a different number for a different
-    # artifact.
-    - title: Pinned In The Guest
-      entries:
-        - label: guest
-          target: ubuntu-qcow2-gen
-          var: release
-          colour: 772953
-          link: https://cloud-images.ubuntu.com/
-        # Two flavours install a kernel of their own, so these read the variant
-        # rather than the default target. They are pinned separately on
-        # purpose -- they are equal today only because all three were moved
-        # to v7.2.6 together, and nothing asserts they stay that way.
-        - label: guest kernel (ionic)
-          target: ubuntu-qcow2-gen@ionic
-          var: kernel_ref
-          colour: 772953
-          link: https://kernel.ubuntu.com/mainline/{value}/
-        - label: guest kernel (ernic-rocjitsu)
-          target: ubuntu-qcow2-gen@ernic-rocjitsu
-          var: kernel_ref
-          colour: 772953
-          link: https://kernel.ubuntu.com/mainline/{value}/
-        # The driver tree and ROCm line the GPU flavours install. Read off
-        # ernic-rocjitsu, which the rocjitsu flavour is kept equal to; the
-        # ionic flavour installs no amdgpu at all and so has nothing here.
-        - label: guest amdgpu
-          target: ubuntu-qcow2-gen@ernic-rocjitsu
-          var: amdgpu_driver_version
-          colour: 772953
-          link: https://repo.radeon.com/amdgpu/{value}/ubuntu/
-        - label: guest rocm
-          target: ubuntu-qcow2-gen@ernic-rocjitsu
-          var: guest_rocm_version
-          colour: 772953
-          link: https://rocm.docs.amd.com/
     - title: Pinned Commits
       entries:
-        - label: libvfio-user
+        - label: Libvfio-User
           target: ubuntu-libvfio-user
           var: libvfio_user_commit
           short: true
           colour: FF6600
           link: https://gitlab.com/qemu-project/libvfio-user/-/commit/{value}
-        - label: qemu-minimal
+        - label: QEMU-Minimal
           target: ubuntu-qemu-libvfio-user
           var: qemu_minimal_commit
           short: true
           colour: FF6600
           link: https://github.com/sbates130272/qemu-minimal/commit/{value}
-        - label: rocm-ernic
+        - label: ROCm-ERNIC
           target: ubuntu-rocm-ernic
           var: rocm_ernic_commit
           short: true
           colour: 006F62
           link: https://github.com/ROCm/rocm-ernic/commit/{value}
-        - label: rocjitsu
+        - label: Rocjitsu
           target: ubuntu-rocm-rocjitsu
           var: rocjitsu_commit
           short: true
@@ -1673,32 +1019,32 @@ badges:
         # Same repository as rocjitsu above and a different component of it, so
         # it shares the ROCm-family colour. The link resolves because the
         # branch is pushed to ROCm/rocm-systems itself rather than to a fork.
-        - label: sdxi
+        - label: SDXI
           target: ubuntu-rocm-sdxi
           var: sdxi_commit
           short: true
           colour: 006F62
           link: https://github.com/ROCm/rocm-systems/commit/{value}
         # Links into the fork, not spdk/spdk: the commit only exists there.
-        - label: spdk
+        - label: SPDK
           target: ubuntu-spdk-libvfio-user
           var: spdk_commit
           short: true
           colour: 00A3E0
           link: https://github.com/mmgaggle/spdk/commit/{value}
-        - label: fio
+        - label: Fio
           target: ubuntu-cuda-rocm-fio
           var: fio_commit
           short: true
           colour: 4B8BBE
           link: https://github.com/axboe/fio/commit/{value}
-        - label: ucx
+        - label: UCX
           target: ubuntu-rocm-nixl
           var: ucx_commit
           short: true
           colour: 4B8BBE
           link: https://github.com/openucx/ucx/commit/{value}
-        - label: etcd-cpp-apiv3
+        - label: Etcd-Cpp-Apiv3
           target: ubuntu-rocm-nixl
           var: etcd_commit
           short: true

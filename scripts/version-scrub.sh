@@ -175,21 +175,12 @@ if check_nonempty "$LIBVFIO_LATEST" "libvfio-user HEAD" && [[ "$LIBVFIO_CURRENT"
 fi
 
 echo "==> Fetching latest qemu-minimal HEAD..."
-# Scrubbed again as of 2026-10-29. This was held at c079195 and *reported*
-# rather than rewritten while a three-repo sequence ran: rocm-ernic had to
-# clean up its guest half, then qemu-minimal had to repin onto that, and
-# taking this bump first would have moved the guest half of SRQ onto a tree
-# chosen before the cleanup. qemu-minimal 5ee7176 completed that -- its
-# requirements.yml and vars/ernic-pins.yml now name one rocm-ernic SHA rather
-# than two, and ionic_kernel_pin reached v7.2.6 -- so the gate is gone.
-#
-# One coupling outlives it and is the reason this sits next to the ernic
-# block below rather than anywhere else: moving qemu-minimal moves the guest
-# half of SRQ, while rocm_ernic_commit moves the server half. Upstream's own
-# requirements.yml says a guest ahead of its server fails ibv_create_srq(),
-# UCX declines rc_verbs and NIXL falls back to TCP -- silently, as a
-# throughput number rather than an error. Both pins track HEAD here, which
-# keeps the server at or ahead of the guest, which is the safe direction.
+# This pin only selects the qemu-tool CLI installed in
+# ubuntu-qemu-libvfio-user. It used to move the guest half of the ernic and
+# SDXI drivers as well, because this repo ran qemu-minimal's playbooks to build
+# its own guests. It builds none now: the guest is whatever guest_qcow2 names,
+# and qemu-minimal's tests/test_playbook_pins.py holds that guest's driver pins
+# to the server images published from here.
 QEMU_MINIMAL_LATEST=$(gh_curl \
     "https://api.github.com/repos/sbates130272/qemu-minimal/commits/main" \
     | jq -r '.sha')
@@ -243,8 +234,7 @@ if [[ -d "$REPO_ROOT/ubuntu-rocm-rocjitsu/patches" ]]; then
 else
     ROCJITSU_PATCHES=0
 fi
-# Reported, never rewritten -- as with the amdgpu trees and the therock
-# lines below.
+# Reported, never rewritten -- as with the therock lines below.
 #
 # This used to take develop's head on every run. develop moves several times a
 # day, so the pin moved six times in the life of a single branch, and each
@@ -290,25 +280,8 @@ echo "    current: $SDXI_CURRENT  latest: $SDXI_LATEST  (branch: $SDXI_BRANCH)"
 if check_nonempty "$SDXI_LATEST" "SDXI HEAD" \
     && [[ "$SDXI_CURRENT" != "$SDXI_LATEST" ]]; then
     echo "    note: ${SDXI_BRANCH} has moved to ${SDXI_LATEST:0:7}." \
-         "Pinned deliberately -- bump it by hand, and move the guest pin with" \
-         "it (see the warning below)."
-fi
-
-# The rocjitsu guest builds the SDXI modules and CLI, and images.yml says its
-# pin must equal the container's: sdxi_user.h carries the ioctl numbers and
-# struct layouts the emulated device and the guest driver both agree on, so two
-# different trees is a uapi mismatch that surfaces as EINVAL from sdxi-cli
-# rather than as anything naming the cause.
-#
-# Warned about rather than rewritten, exactly like the guest fio pin above: the
-# guest pin lives inside a variants: block, which replace_in_yaml skips on
-# purpose.
-GUEST_SDXI=$(current_pin ubuntu-qcow2-gen@rocjitsu sdxi_commit)
-if [[ -n "$GUEST_SDXI" && "$GUEST_SDXI" != "$SDXI_CURRENT" ]]; then
-    echo "  WARNING: ubuntu-qcow2-gen@rocjitsu pins SDXI ${GUEST_SDXI:0:7} but" \
-         "ubuntu-rocm-sdxi pins ${SDXI_CURRENT:0:7}." \
-         "images.yml asks for these to be equal; the guest pin is a variant," \
-         "so align it by hand."
+         "Pinned deliberately -- bump it by hand, and move sdxi_source_pin" \
+         "in qemu-minimal's vm-rocm-golden.yml with it."
 fi
 
 echo "==> Fetching latest SPDK HEAD..."
@@ -368,24 +341,6 @@ if check_nonempty "$FIO_LATEST" "fio release commit" \
     fi
 fi
 
-# The rocjitsu guest builds fio too, and images.yml says its pin must equal
-# the container's: the point of measuring hipFile in the guest is to compare
-# against the container's numbers, and two different fios make that
-# comparison meaningless.
-#
-# Warned about rather than rewritten. The guest pin lives inside a variants:
-# block, which replace_in_yaml skips on purpose -- a variant exists to sit at
-# a ref of its own -- so this is the one pin the scrub can see diverging and
-# must not fix. It diverged for a month without anyone noticing, which is why
-# it is now said out loud on every run.
-GUEST_FIO=$(current_pin ubuntu-qcow2-gen@rocjitsu fio_commit)
-if [[ -n "$GUEST_FIO" && "$GUEST_FIO" != "$(current_pin ubuntu-cuda-rocm-fio fio_commit)" ]]; then
-    echo "  WARNING: ubuntu-qcow2-gen@rocjitsu pins fio ${GUEST_FIO:0:7} but" \
-         "ubuntu-cuda-rocm-fio pins $(current_pin ubuntu-cuda-rocm-fio fio_commit | cut -c1-7)." \
-         "images.yml asks for these to be equal; the guest pin is a variant," \
-         "so align it by hand."
-fi
-
 # The five -sbates-fork variants carry the host-doorbell-fd libvfio-user, and
 # they exist to be built against the *same* one as the QEMU that talks to them:
 # a server on one side of VFIO_USER_HOST_DOORBELL_FD and a client on the other
@@ -393,8 +348,8 @@ fi
 # variant may only override `vars:`, which are taken literally -- there is no
 # var indirection to share, so nothing but this check stops them drifting.
 #
-# Warned about rather than rewritten, exactly like the guest fio pin above:
-# these live inside variants: blocks, which replace_in_yaml skips on purpose.
+# Warned about rather than rewritten: these live inside variants: blocks,
+# which replace_in_yaml skips on purpose.
 FORK_VFU=$(current_pin ubuntu-libvfio-user@sbates-fork libvfio_user_commit)
 for peer in ubuntu-rocm-ernic@sbates-fork:libvfio_user_commit \
             ubuntu-qemu-libvfio-user@sbates-fork:libvfio_user_commit \
@@ -558,9 +513,9 @@ if check_nonempty "$CUDA_LATEST" "CUDA toolkit version" \
 fi
 
 echo "==> Checking the therock component lines the pins name..."
-# Deliberately a check and not a bump, as with the amdgpu trees below.
+# Deliberately a check and not a bump.
 #
-# rocm_version and guest_rocm_version used to be descriptive: the therock apt
+# rocm_version used to be descriptive: the therock apt
 # source is versionless, the Dockerfiles installed bare package names, and this
 # block read the amdrocm metapackage version back out of the index to keep the
 # label honest.
@@ -619,37 +574,41 @@ else
     echo "    stream is '$ROCM_STREAM_CURRENT', not therock — rocm_version selects a repo URL, skipping."
 fi
 
-# The guests are resolute and read ubuntu2604, where the container above reads
-# ubuntu2404; the two lines can legitimately differ.
-rocm_line_report "ubuntu-qcow2-gen guests" \
-    "https://stable.repo.amd.com/rocm/core/packages/ubuntu2604/dists/stable/main/binary-amd64/Packages" \
-    "$(current_pin ubuntu-qcow2-gen@rocjitsu guest_rocm_version)"
-
-echo "==> Checking the pinned amdgpu driver trees still serve their release..."
-# Deliberately a check and not a bump.
-#
-# repo.radeon.com withdraws these directories without notice -- 31.60 was
-# removed outright, taking the resolute suite with it, and the first anyone
-# knew was a consumer's apt-get update failing in a published guest. But
-# bumping to the newest tree is precisely the wrong reflex: the newer trees are
-# the ones that dropped resolute, so an auto-bump would walk the pin straight
-# off a cliff. Warn, and let a human choose the replacement.
-for t in ubuntu-qcow2-gen@rocjitsu ubuntu-qcow2-gen@ernic-rocjitsu \
-         ubuntu-qcow2-gen@ernic-rocjitsu-slim; do
-    drv=$(current_pin "$t" amdgpu_driver_version)
-    rel=$(current_pin "$t" release)
-    [[ -z "$drv" || "$drv" == "none" ]] && continue
-    if curl -fsS --max-time 30 -o /dev/null \
-        "https://repo.radeon.com/amdgpu/${drv}/ubuntu/dists/${rel}/Release" 2>/dev/null
-    then
-        echo "    $t: amdgpu/$drv serves $rel"
-    else
-        echo "  WARNING: $t pins amdgpu_driver_version $drv, which no longer" \
-             "serves '$rel'. The guest build will fail at the suite guard in" \
-             "provision/. Pick another tree that does -- do not simply take" \
-             "the newest."
-    fi
-done
+echo "==> Checking the pinned guest qcow2..."
+# Reported, never rewritten. The guest is built and published by qemu-minimal,
+# against server images it pins by tag, so a newer guest is only safe to take
+# once the images it was qualified against are the ones released from here.
+GUEST_QCOW2=$(current_pin ubuntu-qemu-libvfio-user guest_qcow2)
+GUEST_REPO=${GUEST_QCOW2#docker.io/}
+GUEST_TAG=${GUEST_REPO##*:}
+GUEST_REPO=${GUEST_REPO%:*}
+echo "    current: $GUEST_QCOW2"
+# On the status code, not curl's exit status: a timeout or a rate limit is not
+# a missing tag, and reporting it as one sends someone off to repin a guest
+# that is there.
+GUEST_HTTP=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' \
+    "https://hub.docker.com/v2/repositories/${GUEST_REPO}/tags/${GUEST_TAG}" \
+    2>/dev/null) || GUEST_HTTP=000
+case "$GUEST_HTTP" in
+    200) ;;
+    404)
+        echo "  WARNING: guest_qcow2 names ${GUEST_REPO}:${GUEST_TAG}, which Docker" \
+             "Hub does not serve. The compose smoke test cannot pull it."
+        ;;
+    *)
+        echo "    note: could not check ${GUEST_REPO}:${GUEST_TAG} on Docker Hub" \
+             "(HTTP ${GUEST_HTTP}); not a statement about the tag."
+        ;;
+esac
+GUEST_NEWEST=$(curl -fsS --max-time 30 \
+    "https://hub.docker.com/v2/repositories/${GUEST_REPO}/tags?page_size=100" 2>/dev/null \
+    | jq -r '[.results[] | select(.name | test("^[0-9]{8}\\.g[0-9a-f]{7}$"))]
+             | sort_by(.last_updated) | last | .name // empty' \
+    || true)
+if [[ -n "$GUEST_NEWEST" && "$GUEST_NEWEST" != "$GUEST_TAG" ]]; then
+    echo "    note: ${GUEST_REPO} has published ${GUEST_NEWEST}. Take it by" \
+         "hand, after checking which server images it was qualified against."
+fi
 
 if [[ "$changed" -eq 0 ]]; then
     echo "==> All versions are current, no changes needed."

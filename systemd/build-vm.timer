@@ -1,5 +1,5 @@
 [Unit]
-Description=Daily QEMU VM Image Build Timer
+Description=Daily CI image build timer
 Requires=build-vm.service
 
 [Timer]

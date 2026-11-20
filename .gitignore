@@ -7,24 +7,16 @@
 images.local.yml
 # Python virtual environment
 .venv/
-# Cached cloud images (downloaded in CI)
-**/cloud-image-cache/*.img
-# Guest payload extracted from ubuntu-qcow2-gen for the compose stack
+# Cloud images left behind by the guest builds this repo used to run
+**/cloud-image-cache/
+# The guest pulled for the compose stack; see compose/docker-compose.yml
 compose/vm/
 # AMD corporate root CA (ZScaler) - local only, not committed
 **/amd-root-ca.crt
 
-# The shared guest SSH keypair. Every guest flavour is provisioned with this
-# key when it is present, so a consumer can hold one known_hosts entry instead
-# of a different key per flavour per rebuild. Never committed: it is a private
-# key and this repository is public. build-vm.sh falls back to generating a
-# throwaway pair per flavour when it is absent, so a fresh clone still builds.
+# A guest SSH keypair from when this repo built guests. Nothing reads it now,
+# but it is a private key and this repository is public: never committed.
 common/ssh/
-# Downloaded mainline kernel .debs; see context_dirs in images.yml. The
-# directory is tracked (.gitkeep) so the bind mount always has something to
-# point at, but its contents never are.
-common/kernel-cache/*
-!common/kernel-cache/.gitkeep
 # VSCode 
 .vscode
 # Python cache
@@ -33,8 +25,7 @@ __pycache__/
 # pyspelling compiled dictionary (.spellcheck.yaml output)
 wordlist.dic
 
-# Guest payloads exported by `ci-images-tool.py build` (qcow2, SSH keys,
-# vm-info.json). Multi-GB; published as ORAS artifacts, never committed.
+# Slurm build logs, and anything else a local run leaves behind.
 output/
 
 # The generated half of the bake definition, written by `ci-images-tool.py

@@ -55,7 +55,7 @@ NOT_BUILT = ("no run", "lightgrey")
 def slug(job: str) -> str:
     """The badge filename for *job*, matching status_badge_slug() in the tool.
 
-    Job names carry `@` and `.` (``Build ubuntu-qcow2-gen@ernic-rocjitsu``),
+    Job names carry `@` and `.` (``Build ubuntu-rocm-ernic@sbates-fork``),
     neither of which belongs in a URL path served off gh-pages, so everything
     outside [a-z0-9] collapses to a single dash.
     """
@@ -90,7 +90,7 @@ def job_badges(jobs: list[dict]) -> dict[str, dict]:
             message, colour = CONCLUSIONS.get(
                 str(job.get("conclusion")), ("unknown", "lightgrey")
             )
-        label = "build" if name == BASES_JOB else name[len(JOB_PREFIX) :]
+        label = "Build" if name == BASES_JOB else name[len(JOB_PREFIX) :]
         out[slug(name)] = badge(label, message, colour)
     return out
 

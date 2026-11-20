@@ -1,5 +1,5 @@
 [Unit]
-Description=Build QEMU VM Image and Push to Registry Daily
+Description=Build the CI images and push them to the registry daily
 After=network.target docker.service
 Requires=docker.service
 
@@ -7,21 +7,12 @@ Requires=docker.service
 Type=oneshot
 EnvironmentFile=/etc/batesste-ci-images/.env
 WorkingDirectory=/opt/batesste-ci-images
-# First, build and push the Docker image.
-#
 # --push is required and not decorative: `build` publishes nothing without it.
 # This unit is the one caller in the tree that depends on that -- it exists to
 # keep the registry refreshed nightly, and without the flag it would build,
 # exit 0, and quietly stop publishing, with one dim line in the journal as the
 # only sign.
-ExecStartPre=/opt/batesste-ci-images/.venv/bin/python /opt/batesste-ci-images/ci-images-tool.py build --push
-# Then, run the container to build the VM image
-ExecStart=/usr/bin/docker run --rm \
-    -v /home/stebates/Projects/qemu-minimal:/build/qemu-minimal \
-    -v /opt/batesste-ci-images/output:/output \
-    -v /opt/batesste-ci-images/.env:/build/.env:ro \
-    --name batesste-ci-vm-builder \
-    ${REGISTRY:-docker.io}/${REGISTRY_IMAGE:-batesste-ci-images}:${IMAGE_TAG:-latest}
+ExecStart=/opt/batesste-ci-images/.venv/bin/python /opt/batesste-ci-images/ci-images-tool.py build --push
 StandardOutput=journal
 StandardError=journal
 

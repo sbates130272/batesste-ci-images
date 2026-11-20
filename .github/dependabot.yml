@@ -23,7 +23,6 @@ updates:
       - "/ubuntu-rocm-nixl"
       - "/ubuntu-rocm-ernic"
       - "/ubuntu-rocm-rocjitsu"
-      - "/ubuntu-qcow2-gen"
     schedule:
       interval: "weekly"
     labels:
