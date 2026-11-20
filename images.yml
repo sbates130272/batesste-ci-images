@@ -240,20 +240,32 @@ images:
       # Selective on both streams, and a real pin.
       #
       # The therock apt source is versionless ("stable"), but it carries
-      # several component lines side by side -- core-10.0 and core-10.1 today
-      # -- and /opt/rocm is a Debian alternatives symlink resolving to exactly
-      # one of them. A bare package name follows whichever line is newest, so
-      # it can install outside the root everything else resolves through: that
-      # is how a 10.1 hipFile landed in /opt/rocm/core-10.1 on a 10.0 image and
-      # broke the fio build with the headers present but unreachable. So the
-      # Dockerfile appends this to the package names (amdrocm10.1,
-      # amdrocm-runtime-dev10.1, ...) and asserts the resolved root matches.
-      # The legacy stream builds it into a repo URL, as before.
+      # several component lines side by side -- core-10.0, core-10.1 and
+      # core-10.2 today -- and /opt/rocm is a Debian alternatives symlink
+      # resolving to exactly one of them. A bare package name follows whichever
+      # line is newest, so it can install outside the root everything else
+      # resolves through: that is how a 10.1 hipFile landed in
+      # /opt/rocm/core-10.1 on a 10.0 image and broke the fio build with the
+      # headers present but unreachable. So the Dockerfile appends this to the
+      # package names (amdrocm10.2, amdrocm-runtime-dev10.2, ...) and asserts
+      # the resolved root matches. The legacy stream builds it into a repo URL,
+      # as before.
+      #
+      # Note that the versionless `amdrocm` metapackage still resolves to
+      # 10.0.0-4 -- therock's "default" line trails what it publishes by two.
+      # That is not a reason to hold this pin back; it is the reason the
+      # suffixed package names exist. Do not read the metapackage version as
+      # "the newest ROCm therock has".
       #
       # Not auto-bumped. version-scrub.sh warns when a newer line appears but
       # leaves the pin alone -- moving ROCm is a decision, and taking it
       # silently is the failure mode this replaced.
-      rocm_version: "10.1"
+      #
+      # Moved 2026-11-20, 10.1 -> 10.2. All three packages the Dockerfiles
+      # install exist at 10.2.0-2: amdrocm10.2, amdrocm-runtime-dev10.2 and
+      # amdrocm-hipfile-dev10.2, the last being what ubuntu-cuda-rocm-fio needs
+      # from the same line the base was built on.
+      rocm_version: "10.2"
       # 'therock' (repo.amd.com, ROCm 7.13+) or 'legacy' (repo.radeon.com, <=7.2)
       rocm_stream: therock
     build_args:

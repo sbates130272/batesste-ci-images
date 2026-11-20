@@ -27,7 +27,7 @@ carries is pinned in qemu-minimal, which builds it; see
 **Pinned Versions**
 
 [![Ubuntu 24.04](https://img.shields.io/badge/Ubuntu-24.04-E95420)](https://hub.docker.com/_/ubuntu)
-[![ROCm 10.1](https://img.shields.io/badge/ROCm-10.1-006F62)](https://rocm.docs.amd.com/)
+[![ROCm 10.2](https://img.shields.io/badge/ROCm-10.2-006F62)](https://rocm.docs.amd.com/)
 [![CUDA 13.5](https://img.shields.io/badge/CUDA-13.5-76B900)](https://developer.nvidia.com/cuda-toolkit)
 [![QEMU v11.1.3](https://img.shields.io/badge/QEMU-v11.1.3-FF6600)](https://gitlab.com/qemu-project/qemu/-/tags/v11.1.3)
 [![NIXL v1.5.2](https://img.shields.io/badge/NIXL-v1.5.2-76B900)](https://github.com/ai-dynamo/nixl/releases/tag/v1.5.2)
