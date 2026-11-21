@@ -1,6 +1,6 @@
 # ubuntu-rocm-nixl
 
-Ubuntu 24.04 image containing NIXL and NIXLBench built with ROCm/HIP support
+Ubuntu 26.04 image containing NIXL and NIXLBench built with ROCm/HIP support
 for AMD GPUs. UCX is built from source with its ROCm transport enabled before
 NIXL and NIXLBench are built.
 

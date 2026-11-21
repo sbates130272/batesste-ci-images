@@ -60,6 +60,17 @@ ARG ROCJITSU_VRAM_APERTURE_BYTES=keep
 # The upstream tree is still built unmodified -- this goes in through
 # FETCHCONTENT_SOURCE_DIR_LIBVFIO-USER below, CMake's own escape hatch, rather
 # than by patching the cmake that declares the pin.
+#
+# Note that since upstream 1fb2065f3, rj_libvfio_user.cmake `git apply`s a
+# one-hunk fix of its own into whatever tree FetchContent hands it
+# (patches/libvfio-user/0001-preserve-small-64-bit-bar-upper-address.patch,
+# which stops a sub-4GiB 64-bit BAR having its upper address masked to zero).
+# It FATAL_ERRORs if the patch neither applies nor reverse-applies, so the tree
+# named here has to be close enough to v0.8 for it to land. The fork at
+# 3719c3a is: get_bar_eff_size() there is byte-identical to v0.8, so the patch
+# applies cleanly. That also means /build/libvfio-user must be a real git
+# repository, which is why it is `git init`ed below rather than fetched as a
+# tarball -- `git apply` has nowhere to run otherwise.
 ARG LIBVFIO_USER_REPO=
 ARG LIBVFIO_USER_COMMIT=
 
@@ -86,11 +97,67 @@ RUN git init /build/rocm-systems && \
         echo rocjitsu-cmake > /build/libvfio-user-source.txt; \
     fi
 
-# This tree is built unmodified. It used to carry a five-patch series against
-# ROCJITSU_COMMIT without which the served device could not boot a guest, let
-# alone run a kernel needing private memory; all five are in develop now. If a
-# future head regresses, re-add the series and a pin freeze together -- git log
-# for the patches/ directory.
+# Local patches against ROCJITSU_COMMIT, applied in filename order. Each patch
+# states its own case in its header; today there is one, and it is what lets
+# develop compile at all here: ROCm/rocm-systems#13852 brought two call sites
+# that discard ::read/::write results with a cast to void, which GCC rejects
+# under the -Werror rocjitsu's own CMakeLists sets. See the patch.
+#
+# This directory was empty between 8245ae9 and now. The note that stood here
+# said "if a future head regresses, re-add the series and a pin freeze
+# together" -- this is that. Carrying any patch re-freezes rocjitsu_commit in
+# scripts/version-scrub.sh, which stops tracking the branch head and reports
+# the patch count instead; that is the designed behaviour, not a side effect.
+#
+# Each patch is applied if it is needed, skipped if the pinned tree already
+# has it, and fails the build if neither -- which is the same shape upstream's
+# own rj_libvfio_user.cmake uses for the libvfio-user fix it carries.
+#
+# "Already has it" is not hypothetical: ROCJITSU_COMMIT is a var, and the
+# -sbates-fork variant pins a branch that carries this very fix, because that
+# is where the fix was written. A series applied unconditionally turns every
+# such variant red, which is exactly what the first version of this block did.
+#
+# So what gets asserted is the *outcome* rather than the mechanism. The patch
+# count proves nothing -- zero is the right answer for a tree that already has
+# the fix -- so the behaviour assert further down greps the built source for
+# the fixed form instead. That is true whichever way the tree got there, and a
+# pin that has neither the fix nor the bug's context still fails here.
+#
+# No --3way, deliberately. The clone above is `fetch --depth 1`, so the object
+# store has no preimage blob to merge against and git reports "repository
+# lacks the necessary blob to perform 3-way merge" before falling back to a
+# direct apply anyway. The patch carries real index lines for the benefit of
+# anyone applying it to a full checkout by hand; they do nothing here.
+#
+# Keep the series short. A patch that survives more than a couple of pin bumps
+# belongs upstream, not here.
+COPY ubuntu-rocm-rocjitsu/patches/ /build/patches/
+RUN set -eu; \
+    git -C /build/rocm-systems config user.email ci-images@invalid; \
+    git -C /build/rocm-systems config user.name "ci-images build"; \
+    : > /build/rocjitsu-patch-list.txt; \
+    : > /build/rocjitsu-skipped-list.txt; \
+    for patch in /build/patches/*.patch; do \
+        name="$(basename "${patch}")"; \
+        if git -C /build/rocm-systems apply --check "${patch}" 2>/dev/null; then \
+            echo "applying ${name}"; \
+            git -C /build/rocm-systems apply --verbose "${patch}"; \
+            echo "${name}" >> /build/rocjitsu-patch-list.txt; \
+        elif git -C /build/rocm-systems apply --reverse --check "${patch}" \
+                 2>/dev/null; then \
+            echo "skipping ${name}: already present at ${ROCJITSU_COMMIT}"; \
+            echo "${name}" >> /build/rocjitsu-skipped-list.txt; \
+        else \
+            echo "ERROR: ${name} neither applies to nor is already present" \
+                 "in ${ROCJITSU_COMMIT}. Rebase it, or drop it if upstream" \
+                 "has reworked the code it touches." >&2; \
+            exit 1; \
+        fi; \
+    done; \
+    git -C /build/rocm-systems diff --stat HEAD \
+        > /build/rocjitsu-local-patches.txt; \
+    cat /build/rocjitsu-local-patches.txt
 
 # _Static_assert is a C11 keyword with no C++ spelling, and libvfio-user v0.8's
 # pci_caps/{common,msix}.h use it; rocjitsu includes those from C++ in
@@ -297,12 +364,23 @@ RUN set -eu; \
 # is what the tree declares, libvfio_user_tag is what was really built, and
 # libvfio_user_source says which of the two supplied it.
 #
-# local_patches stays in the schema and stays empty. Consumers grew a habit of
-# reading it to tell a patched build from an unpatched one, and an absent key
-# reads the same as an unpatched image to a careless `.get()`; an explicit []
-# says the tree was built unmodified -- which stays true under the override,
-# because FETCHCONTENT_SOURCE_DIR redirects the fetch without touching the
-# rocm-systems checkout.
+# local_patches reports what was applied here, patches_already_present what the
+# pinned tree already carried, and patches.diffstat is generated from what git
+# actually changed. Consumers read these to tell a patched build from an
+# unpatched one at runtime -- which is exactly the confusion that once made a
+# consumer pin a hand-built image -- so adding a patch must need no edit in the
+# places that report them.
+#
+# The two lists together, not either alone, say what the tree contains: an
+# empty local_patches on the -sbates-fork variant means its branch already had
+# the fix, not that the image is unpatched in the sense a consumer cares about.
+# patches.diffstat is empty in that case for the same reason.
+#
+# Read local_patches as "*this repo's* patches". It is not a claim about every
+# byte compiled here: since 1fb2065f3, rocjitsu's own cmake patches
+# libvfio-user during configure (see the note above). That patch is upstream's,
+# applied by upstream's build, and so is no more a local patch than the GIT_TAG
+# beside it.
 RUN set -eu; \
     cmake_pins=/build/rocm-systems/emulation/rocjitsu/cmake/rj_libvfio_user.cmake; \
     read_pin() { awk -v url="$1" '/FetchContent_Declare\(/{inblk=1;tag="";hit=0;next} inblk{ if(index($0,url)) hit=1; if($1=="GIT_TAG") tag=$2; if($0 ~ /^[[:space:]]*\)/){ if(hit && tag!=""){print tag; exit} inblk=0 } }' "$2"; }; \
@@ -315,11 +393,20 @@ RUN set -eu; \
         libvfio_user_tag="$(cat /build/libvfio-user-commit.txt)"; \
     fi; \
     cp /build/rocjitsu-commit.txt /usr/local/share/rocjitsu-commit.txt; \
+    mkdir -p /usr/local/share/rocjitsu; \
+    cp /build/rocjitsu-local-patches.txt \
+        /usr/local/share/rocjitsu/patches.diffstat; \
+    patches_json="$(awk '{printf "%s\"%s\"", (NR>1 ? ", " : ""), $0}' \
+        /build/rocjitsu-patch-list.txt)"; \
+    skipped_json="$(awk '{printf "%s\"%s\"", (NR>1 ? ", " : ""), $0}' \
+        /build/rocjitsu-skipped-list.txt)"; \
     printf '{\n\
   "rocjitsu_repo": "%s",\n\
   "rocjitsu_branch": "%s",\n\
   "rocjitsu_commit": "%s",\n\
-  "local_patches": [],\n\
+  "local_patches": [%s],\n\
+  "patches_already_present": [%s],\n\
+  "patches_diffstat": "/usr/local/share/rocjitsu/patches.diffstat",\n\
   "libvfio_user_source": "%s",\n\
   "libvfio_user_upstream_tag": "%s",\n\
   "libvfio_user_tag": "%s",\n\
@@ -335,6 +422,8 @@ RUN set -eu; \
         "${ROCJITSU_REPO}" \
         "${ROCJITSU_BRANCH}" \
         "$(cat /build/rocjitsu-commit.txt)" \
+        "${patches_json}" \
+        "${skipped_json}" \
         "$(cat /build/libvfio-user-source.txt)" \
         "${libvfio_user_upstream_tag}" \
         "${libvfio_user_tag}" \
@@ -467,18 +556,33 @@ RUN set -eux; \
 # Grepping source is crude, but these are behaviours with no runtime probe
 # short of booting a guest, and each marker is the identifier the behaviour is
 # implemented under rather than incidental text.
+#
+# The eventfd fix is asserted the same way, against the source rather than
+# against a patch count. Counting patches would be asserting the mechanism:
+# zero applied is the right answer for a ROCJITSU_COMMIT that already carries
+# the fix, which is what the -sbates-fork variant pins, and a count cannot
+# tell that apart from an apply step that silently did nothing. The compiled
+# form can. Every patch in patches/ is either applied or already present by
+# the time this runs -- the loop above fails the build otherwise -- so this
+# checks that the result is what those two paths were supposed to produce.
+#
+# Reaching for the identifier rather than the whole line: the point is that
+# the return value is consumed, not how the surrounding call is spelled.
 RUN set -eux; \
     src=/build/rocm-systems/emulation/rocjitsu; \
     vm=${src}/lib/rocjitsu/src/rocjitsu/vm/amdgpu; \
-    unpatched=$(python3 -c \
-        'import json;print(len(json.load(open("/usr/local/share/rocjitsu-build.json"))["local_patches"]))'); \
-    test "${unpatched}" -eq 0; \
+    vfu=${src}/lib/rocjitsu/src/rocjitsu/vmm/vfu; \
+    grep -q 'maybe_unused.*ssize_t.*::write' "${vfu}/vfio_target_grants.cpp"; \
+    grep -q 'maybe_unused.*ssize_t.*::read' "${vfu}/vfio_device_host.cpp"; \
+    ! grep -q '(void)::write' "${vfu}/vfio_target_grants.cpp"; \
+    ! grep -q '(void)::read' "${vfu}/vfio_device_host.cpp"; \
+    cat /usr/local/share/rocjitsu/patches.diffstat; \
     grep -q 'kPageTableRootFlags' "${vm}/gpu_vm.cpp"; \
     grep -q 'RoutesAddressesOutsideTheGartApertureToVram' \
         "${src}/tests/pci/gpu_pci_device_test.cpp"; \
     grep -q 'request_dynamic_scratch' "${vm}/command_processor.cpp"
 
-RUN rm -rf /build/rocm-systems /build/libvfio-user /tmp/deps
+RUN rm -rf /build/rocm-systems /build/libvfio-user /build/patches /tmp/deps
 
 ENV PATH=/usr/local/bin:${PATH}
 

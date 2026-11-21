@@ -4,7 +4,7 @@
 [![Dockerfile Test](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-dockerfile-test.yml?branch=main&label=Dockerfile%20Test)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml)
 [![Release](https://img.shields.io/github/actions/workflow/status/sbates130272/batesste-ci-images/batesste-ci-images-release.yml?branch=main&label=Release)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-release.yml)
 [![Latest Release](https://img.shields.io/github/v/release/sbates130272/batesste-ci-images?label=Latest%20Release)](https://github.com/sbates130272/batesste-ci-images/releases)
-[![Python 3.12](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.14](https://img.shields.io/badge/Python-3.14-blue.svg)](https://www.python.org/downloads/)
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-sbates130272-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/u/sbates130272)
 
 Both shield blocks below are generated from `images.yml` by
@@ -26,8 +26,8 @@ carries is pinned in qemu-minimal, which builds it; see
 
 **Pinned Versions**
 
-[![Ubuntu 24.04](https://img.shields.io/badge/Ubuntu-24.04-E95420)](https://hub.docker.com/_/ubuntu)
-[![ROCm 10.1](https://img.shields.io/badge/ROCm-10.1-006F62)](https://rocm.docs.amd.com/)
+[![Ubuntu 26.04](https://img.shields.io/badge/Ubuntu-26.04-E95420)](https://hub.docker.com/_/ubuntu)
+[![ROCm 10.2](https://img.shields.io/badge/ROCm-10.2-006F62)](https://rocm.docs.amd.com/)
 [![CUDA 13.5](https://img.shields.io/badge/CUDA-13.5-76B900)](https://developer.nvidia.com/cuda-toolkit)
 [![QEMU v11.1.3](https://img.shields.io/badge/QEMU-v11.1.3-FF6600)](https://gitlab.com/qemu-project/qemu/-/tags/v11.1.3)
 [![NIXL v1.5.2](https://img.shields.io/badge/NIXL-v1.5.2-76B900)](https://github.com/ai-dynamo/nixl/releases/tag/v1.5.2)
@@ -37,14 +37,14 @@ carries is pinned in qemu-minimal, which builds it; see
 
 **Pinned Commits**
 
-[![Libvfio-User 05bb5e5](https://img.shields.io/badge/Libvfio--User-05bb5e5-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/05bb5e5237817e0d77879b93d6145f6436b56fd0)
-[![QEMU-Minimal ac6c325](https://img.shields.io/badge/QEMU--Minimal-ac6c325-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/ac6c325300139af25353b9966340780447d643d4)
-[![ROCm-ERNIC 90434a2](https://img.shields.io/badge/ROCm--ERNIC-90434a2-006F62)](https://github.com/ROCm/rocm-ernic/commit/90434a237232275fc8002cb3a6b5121ba836c594)
-[![Rocjitsu 50be05a](https://img.shields.io/badge/Rocjitsu-50be05a-006F62)](https://github.com/ROCm/rocm-systems/commit/50be05a34892867c6ef5bc125696223df889f3e4)
+[![Libvfio-User 8276998](https://img.shields.io/badge/Libvfio--User-8276998-FF6600)](https://gitlab.com/qemu-project/libvfio-user/-/commit/827699874352e8e31d33e45c5877016f7619e87d)
+[![QEMU-Minimal fddac6f](https://img.shields.io/badge/QEMU--Minimal-fddac6f-FF6600)](https://github.com/sbates130272/qemu-minimal/commit/fddac6f2c69e0782228ead604f03d244ec065443)
+[![ROCm-ERNIC bd90234](https://img.shields.io/badge/ROCm--ERNIC-bd90234-006F62)](https://github.com/ROCm/rocm-ernic/commit/bd902345b0f8f3863f535a0a09da9f21ce744737)
+[![Rocjitsu 986a5c8](https://img.shields.io/badge/Rocjitsu-986a5c8-006F62)](https://github.com/ROCm/rocm-systems/commit/986a5c8e6580c5cdf7f367a13d23a371823d5354)
 [![SDXI dfd76f2](https://img.shields.io/badge/SDXI-dfd76f2-006F62)](https://github.com/ROCm/rocm-systems/commit/dfd76f23f6f10561333fc0a9a9f23e9f3b255c04)
 [![SPDK 18d1d8d](https://img.shields.io/badge/SPDK-18d1d8d-00A3E0)](https://github.com/mmgaggle/spdk/commit/18d1d8dab4f2020e10349009e69f94d47de100f9)
 [![Fio d2dcd7e](https://img.shields.io/badge/Fio-d2dcd7e-4B8BBE)](https://github.com/axboe/fio/commit/d2dcd7e053d1902d2420f151c83990e6acdd9f8c)
-[![UCX dd2b212](https://img.shields.io/badge/UCX-dd2b212-4B8BBE)](https://github.com/openucx/ucx/commit/dd2b21269d36c1985eabfbde4987f0554fb98e37)
+[![UCX 79ecdbd](https://img.shields.io/badge/UCX-79ecdbd-4B8BBE)](https://github.com/openucx/ucx/commit/79ecdbdec77290d5d4c3ec95a27e7e2289e5c811)
 [![Etcd-Cpp-Apiv3 7c6e714](https://img.shields.io/badge/Etcd--Cpp--Apiv3-7c6e714-419EDA)](https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3/commit/7c6e714f188f9576e25e0350cac4181139eec23e)
 
 <!-- END PINNED BADGES -->
@@ -55,10 +55,10 @@ carries is pinned in qemu-minimal, which builds it; see
 
 | Image | What It Is | BAR | Published As | Main Status |
 | --- | --- | --- | --- | --- |
-| ubuntu-base (shared base job) | Ubuntu 24.04 base layer every other image here inherits, with build-essential, cmake and ccache. | &mdash; | [`batesste-ci-images-ubuntu-base`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-base) | [![ubuntu-base main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-base-images.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| ubuntu-base (shared base job) | Ubuntu 26.04 base layer every other image here inherits, with build-essential, cmake and ccache. | &mdash; | [`batesste-ci-images-ubuntu-base`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-base) | [![ubuntu-base main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-base-images.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | ubuntu-libvfio-user (shared base job) | Ubuntu with libvfio-user built from source, the vfio-user protocol library consumers link against. | &mdash; | [`batesste-ci-images-ubuntu-libvfio-user`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-libvfio-user) | [![ubuntu-libvfio-user main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-base-images.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
-| ubuntu-kernel-build | Ubuntu 24.04 carrying bison, flex, libelf and linux-headers-generic for kernel and module builds. | &mdash; | [`batesste-ci-images-ubuntu-kernel-build`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-kernel-build) | [![ubuntu-kernel-build main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-kernel-build.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
-| ubuntu-cuda-rocm | Ubuntu 24.04 carrying nvcc and hipcc, the CUDA and ROCm/HIP toolkits, with no GPU kernel drivers. | &mdash; | [`batesste-ci-images-ubuntu-cuda-rocm`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-cuda-rocm) | [![ubuntu-cuda-rocm main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-cuda-rocm.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| ubuntu-kernel-build | Ubuntu 26.04 carrying bison, flex, libelf and linux-headers-generic for kernel and module builds. | &mdash; | [`batesste-ci-images-ubuntu-kernel-build`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-kernel-build) | [![ubuntu-kernel-build main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-kernel-build.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| ubuntu-cuda-rocm | Ubuntu 26.04 carrying nvcc and hipcc, the CUDA and ROCm/HIP toolkits, with no GPU kernel drivers. | &mdash; | [`batesste-ci-images-ubuntu-cuda-rocm`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-cuda-rocm) | [![ubuntu-cuda-rocm main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-cuda-rocm.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | ubuntu-cuda-rocm-fio | fio with AMD libhipfile and NVIDIA libcufile direct-to-GPU engines, on a CUDA + ROCm toolkit base. | &mdash; | [`batesste-ci-images-ubuntu-cuda-rocm-fio`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-cuda-rocm-fio) | [![ubuntu-cuda-rocm-fio main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-cuda-rocm-fio.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | ubuntu-cuda-rocm-fio-async-hipfile (job: ubuntu-cuda-rocm-fio@async-hipfile) | fio from ROCm's unmerged async hipFile branch, adding hipfile_mode=sync\|batch\|stream to libhipfile. | &mdash; | [`batesste-ci-images-ubuntu-cuda-rocm-fio-async-hipfile`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-cuda-rocm-fio-async-hipfile) | [![ubuntu-cuda-rocm-fio-async-hipfile main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-cuda-rocm-fio-async-hipfile.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | ubuntu-rocm-nixl | NIXL, NIXLBench and libfabric built from source over a ROCm-enabled UCX, for AMD GPU transfers. | &mdash; | [`batesste-ci-images-ubuntu-rocm-nixl`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-rocm-nixl) | [![ubuntu-rocm-nixl main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-rocm-nixl.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
@@ -67,8 +67,8 @@ carries is pinned in qemu-minimal, which builds it; see
 | ubuntu-rocm-rocjitsu | An emulated gfx1250 GPU served by rocjitsu over vfio-user, so a guest needs no physical GPU. | BAR0 `max` | [`batesste-ci-images-ubuntu-rocm-rocjitsu`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu) | [![ubuntu-rocm-rocjitsu main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-rocm-rocjitsu.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | ubuntu-rocm-rocjitsu-sbates-fork (job: ubuntu-rocm-rocjitsu@sbates-fork) | rocjitsu from the vfio-doorbell branch, built against the sbates130272 libvfio-user fork, calling the host MMIO doorbell and vfu_mmio_write paths rather than only linking against them. | BAR0 `max` | [`batesste-ci-images-ubuntu-rocm-rocjitsu-sbates-fork`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu-sbates-fork) | [![ubuntu-rocm-rocjitsu-sbates-fork main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-rocm-rocjitsu-sbates-fork.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | ubuntu-rocm-sdxi | An emulated AMD SDXI data-mover served over vfio-user, so a guest needs no SDXI silicon. | &mdash; | [`batesste-ci-images-ubuntu-rocm-sdxi`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-rocm-sdxi) | [![ubuntu-rocm-sdxi main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-rocm-sdxi.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
-| ubuntu-spdk-libvfio-user | SPDK's NVMe-oF target serving an NVMe controller with LBA and KV namespaces over vfio-user. | &mdash; | [`batesste-ci-images-ubuntu-spdk-libvfio-user`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-spdk-libvfio-user) | [![ubuntu-spdk-libvfio-user main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-spdk-libvfio-user.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
-| ubuntu-spdk-libvfio-user-sbates-fork (job: ubuntu-spdk-libvfio-user@sbates-fork) | SPDK's NVMe-oF target built against the sbates130272 libvfio-user fork, with the host MMIO doorbell fd protocol available to the target. | &mdash; | [`batesste-ci-images-ubuntu-spdk-libvfio-user-sbates-fork`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-spdk-libvfio-user-sbates-fork) | [![ubuntu-spdk-libvfio-user-sbates-fork main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-spdk-libvfio-user-sbates-fork.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| ubuntu-spdk-libvfio-user | SPDK serving a PCIe NVMe controller with LBA and KV namespaces to a guest over vfio-user. | &mdash; | [`batesste-ci-images-ubuntu-spdk-libvfio-user`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-spdk-libvfio-user) | [![ubuntu-spdk-libvfio-user main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-spdk-libvfio-user.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
+| ubuntu-spdk-libvfio-user-sbates-fork (job: ubuntu-spdk-libvfio-user@sbates-fork) | SPDK's PCIe NVMe controller built against the sbates130272 libvfio-user fork, with the host MMIO doorbell fd protocol available to the target. | &mdash; | [`batesste-ci-images-ubuntu-spdk-libvfio-user-sbates-fork`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-spdk-libvfio-user-sbates-fork) | [![ubuntu-spdk-libvfio-user-sbates-fork main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-spdk-libvfio-user-sbates-fork.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | ubuntu-qemu-libvfio-user | QEMU built with vfio-user, the qemu-tool CLI and ansible-core, but no guest; mount one at /output. | &mdash; | [`batesste-ci-images-ubuntu-qemu-libvfio-user`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user) | [![ubuntu-qemu-libvfio-user main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-qemu-libvfio-user.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 | ubuntu-qemu-libvfio-user-sbates-fork (job: ubuntu-qemu-libvfio-user@sbates-fork) | QEMU from the sbates130272 fork, not the pinned upstream tag, adding unmerged PCI MMIO bridge work. | &mdash; | [`batesste-ci-images-ubuntu-qemu-libvfio-user-sbates-fork`](https://hub.docker.com/r/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user-sbates-fork) | [![ubuntu-qemu-libvfio-user-sbates-fork main](https://img.shields.io/endpoint?url=https%3A%2F%2Fsbates130272.github.io%2Fbatesste-ci-images%2Fbuilds%2Fbadge-build-ubuntu-qemu-libvfio-user-sbates-fork.json)](https://github.com/sbates130272/batesste-ci-images/actions/workflows/batesste-ci-images-dockerfile-test.yml?query=branch%3Amain+event%3Apush) |
 
@@ -82,7 +82,7 @@ and pushing of these images.
 
 ## Available Images
 
-- **ubuntu-base**: Ubuntu 24.04 plus the apt tuning, shared toolchain packages
+- **ubuntu-base**: Ubuntu 26.04 plus the apt tuning, shared toolchain packages
   and AMD root CA that every other image needs. Every image below is layered
   on it, so that work happens once instead of once per image. See `ubuntu-base/`
   for details.
@@ -99,7 +99,7 @@ and pushing of these images.
   kernels and out-of-tree kernel modules. See `ubuntu-kernel-build/` for
   details.
 - **ubuntu-cuda-rocm**: Toolkit-only dual-stack environment with CUDA and
-  ROCm/HIP tools on Ubuntu 24.04. See `ubuntu-cuda-rocm/` for details.
+  ROCm/HIP tools on Ubuntu 26.04. See `ubuntu-cuda-rocm/` for details.
 - **ubuntu-cuda-rocm-fio**: `ubuntu-cuda-rocm` plus fio built from a pinned
   upstream commit with both direct-to-GPU storage engines enabled:
   `libhipfile` (AMD hipFile) and `libcufile` (NVIDIA GPUDirect Storage). Also
@@ -109,10 +109,10 @@ and pushing of these images.
   `ubuntu-cuda-rocm-fio/` for details.
 - **ubuntu-rocm-nixl**: `ubuntu-cuda-rocm` plus UCX, NIXL, and NIXLBench built
   with ROCm/HIP support for AMD GPUs. See `ubuntu-rocm-nixl/` for details.
-- **ubuntu-rocm-ernic**: Ubuntu 24.04 image with libvfio-user and rocm-ernic
+- **ubuntu-rocm-ernic**: Ubuntu 26.04 image with libvfio-user and rocm-ernic
   built from pinned source commits. Designed for RDMA/ERNIC development and
   CI. See `ubuntu-rocm-ernic/` for details.
-- **ubuntu-rocm-rocjitsu**: Ubuntu 24.04 image with rocjitsu built from a
+- **ubuntu-rocm-rocjitsu**: Ubuntu 26.04 image with rocjitsu built from a
   pinned source commit with `-DROCJITSU_ENABLE_VFIO=ON`. Provides a
   software-emulated AMD GPU vfio-user server for KFD/amdgpu bring-up without
   real hardware. Tracks `develop`: the gfx1250 vfio-compute work this image
@@ -130,11 +130,16 @@ and pushing of these images.
   image also stages the guest-side driver and CLI sources. The guest's own
   driver is built by qemu-minimal from the same commit, and its pin test holds
   the two together. See `ubuntu-rocm-sdxi/` for details.
-- **ubuntu-spdk-libvfio-user**: SPDK's NVMe-oF target built from source and
-  served over vfio-user, so a guest gets an emulated NVMe controller carrying
+- **ubuntu-spdk-libvfio-user**: SPDK built from source and served over
+  vfio-user, so a guest gets an emulated **PCIe NVMe** controller carrying
   any mix of LBA namespaces (memory or file backed) and Key Value namespaces
-  (memory backed). It is the storage counterpart to `ubuntu-rocm-ernic`'s NIC
-  and `ubuntu-rocm-rocjitsu`'s GPU. Built from `mmgaggle/spdk@rados-nkv`
+  (memory backed). SPDK builds this on its NVMe-oF target framework -- hence
+  `nvmf_tgt`, subsystems and NQNs -- but none of that reaches the guest, which
+  binds its ordinary `nvme` PCI driver to a PCIe endpoint. Contrast
+  `ubuntu-rocm-ernic`, which serves real NVMe-oF over an RDMA NIC — both run
+  side by side in qemu-minimal's `xio` stack. It is the storage counterpart to
+  that NIC and to `ubuntu-rocm-rocjitsu`'s GPU. Built from
+  `mmgaggle/spdk@rados-nkv`
   because upstream SPDK v26.05 added the KV command set to the NVMe
   *initiator* only — the target-side `kvdev` layer exists nowhere upstream, so
   the fork is the only tree that can serve a KV namespace. Layered on
@@ -982,7 +987,7 @@ payload half is the *variant*:
 | `ubuntu-rocm-nixl` | `nixl1.4.1-ucx.<sha>` |
 | `ubuntu-qemu-libvfio-user` | `qemu11.1.1-vfu.<sha>` |
 | `ubuntu-spdk-libvfio-user` | `spdk.<sha>` |
-| `ubuntu-kernel-build` | `ubuntu24.04` |
+| `ubuntu-kernel-build` | `ubuntu26.04` |
 
 `<sha>` is the pinned upstream commit abbreviated to seven characters;
 `vfu` is libvfio-user, which both of those images link against.

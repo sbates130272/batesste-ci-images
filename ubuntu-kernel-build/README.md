@@ -11,7 +11,7 @@ This image provides a complete environment for:
 
 ## Base Image
 
-- Ubuntu 24.04
+- Ubuntu 26.04
 
 ## Installed Packages
 
@@ -87,7 +87,7 @@ or copied from the container.
 
 ## Notes
 
-- The image uses Ubuntu 24.04 as the base
+- The image uses Ubuntu 26.04 as the base
 - Kernel headers are installed for building out-of-tree modules
 - For cross-compilation, additional packages may be needed
 - The working directory is `/build`

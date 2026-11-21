@@ -1,15 +1,37 @@
 # ubuntu-spdk-libvfio-user
 
-[SPDK](https://spdk.io)'s NVMe-oF target built from source and configured to
-serve an NVMe controller over vfio-user, with both LBA and Key Value
-namespaces.
+[SPDK](https://spdk.io) built from source and configured to serve a **PCIe
+NVMe controller** over vfio-user, with both LBA and Key Value namespaces.
 
 ## Overview
 
 SPDK emulates an NVMe controller in a process outside the VMM and offers it to
-a guest over a vfio-user socket, using its existing NVMe-oF target with
-vfio-user as a shared-memory transport. It is the device *provider*;
+a guest over a vfio-user socket. It is the device *provider*;
 [`ubuntu-qemu-libvfio-user`](../ubuntu-qemu-libvfio-user/) is the consumer.
+
+### It is PCIe NVMe, not NVMe-oF
+
+Worth stating plainly, because the machinery says otherwise. The binary is
+`nvmf_tgt`, the RPCs are `nvmf_create_subsystem` and `nvmf_subsystem_add_ns`,
+and everything is addressed by NQN -- all of which belong to SPDK's NVMe-oF
+*target framework*. SPDK implemented vfio-user as one more transport under
+that framework so it could reuse subsystems, namespaces and controllers.
+
+None of it reaches the guest. `lib/nvmf/vfio_user.c` calls
+`vfu_pci_init(..., VFU_PCI_TYPE_EXPRESS, ...)`, sets class `01:08:02` (mass
+storage / NVM / NVMe programming interface) and maps the NVMe doorbells into
+BAR0 at offset `0x1000`. The guest enumerates an ordinary PCIe endpoint and
+binds its ordinary `nvme` PCI driver. There is no discovery controller, no
+transport address, and nothing to `nvme connect` to.
+
+Those are the same three lines [`pci-vendor-amd.patch`](pci-vendor-amd.patch)
+edits, which is the clearest proof of what this is: a vendor ID, a device ID
+and a PCI class code are properties of a PCI function, not of a fabric.
+
+The distinction matters in a mixed stack. qemu-minimal's `xio` flavour runs
+[`ubuntu-rocm-ernic`](../ubuntu-rocm-ernic/) serving **real NVMe-oF** over its
+RDMA NIC *and* this image serving a **PCIe NVMe** function, behind one guest.
+Calling both "NVMe-oF" makes that stack impossible to reason about.
 
 It completes the set of device servers in this repo:
 [`ubuntu-rocm-ernic`](../ubuntu-rocm-ernic/) serves an RDMA NIC,
@@ -334,13 +356,54 @@ docker run --rm \
   docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
 ```
 
-In the guest, `nvme list` shows an "SPDK bdev Controller" and
+In the guest, `lspci` shows the controller as `1022:0001`, "Advanced Micro
+Devices, Inc. [AMD] Device 0001" -- see
+[What the guest sees it as](#what-the-guest-sees-it-as) below. `nvme list`
+shows an "SPDK bdev Controller" and
 `nvme list-ns --csi` distinguishes the LBA and KV namespaces. Exercising the KV
 command set needs a KV-aware client -- `nvme-cli` does not speak it -- and that
 client has to be told a value size at or under the 128 KiB ceiling above.
 
 That entrypoint takes one socket, so this and a rocjitsu GPU cannot currently
 be attached to the same guest through it.
+
+### What the guest sees it as
+
+The controller identifies as **AMD**, `1022:0001`, and this image patches SPDK
+to make that so. Stock SPDK presents `4e58:0001` -- Nutanix -- and also writes
+Nutanix into the Identify Controller `VID`/`SSVID` and IEEE OUI fields, so an
+unpatched build is visibly Nutanix in both `lspci` and `nvme id-ctrl`.
+
+That is not a statement about NVMe. `SPDK_PCI_VID_NUTANIX` is hardcoded in
+`lib/nvmf/vfio_user.c` because libvfio-user is a Nutanix project, and SPDK's
+vfio-user transport used its own vendor ID rather than squat on a real NVMe
+vendor's. There is no RPC or `configure` option to change it, which is why this
+is `pci-vendor-amd.patch` rather than an entrypoint argument.
+
+Every other device this repository serves over vfio-user models an AMD part --
+`rocm-ernic` a NIC, `rocm-rocjitsu` a GPU, `rocm-sdxi` a data mover -- and in a
+mixed stack such as qemu-minimal's `xio` flavour, which runs several of these
+behind one guest, this was the only device claiming a different vendor with
+nothing to explain it.
+
+Why the relabel is safe, rather than merely cosmetic risk:
+
+| | |
+| --- | --- |
+| Driver binding | The guest's `nvme` driver binds on PCI class code (`01:08:02`), which is unchanged. |
+| Kernel quirks | `drivers/nvme/host/pci.c` has no quirk entry for `0x1022`, so nothing in the guest changes behaviour. The Nutanix ID has none either, so this neither gains nor loses one. |
+| ID collision | `1022:0001` is unassigned — AMD's device-ID space in `pci.ids` starts at `0x1100` — so it names no real AMD part. |
+| IEEE OUI | Moves with the vendor ID, or the identify data would contradict itself: `50:6B:8D` (Nutanix) becomes `74:27:2C`, AMD's MA-L assignment. |
+
+The device ID stays `0x0001`, which is SPDK's own value and means nothing.
+Changing it too would invent an AMD part number that does not exist.
+
+Read it back off the image rather than trusting this page:
+
+```bash
+docker run --rm --entrypoint cat <image> /usr/local/share/spdk-build.json \
+  | jq '{pci_vendor, pci_vendor_id, pci_device_id, local_patches}'
+```
 
 ### Compose
 
@@ -389,7 +452,7 @@ own without taking the default with it.
 Being a forward move was not sufficient on its own. Three public functions
 changed signature over those 35 commits, and SPDK calls one of them:
 `vfu_setup_device_dma()` gained a `max_regions` parameter, which broke both its
-call sites — `lib/nvmf/vfio_user.c` (the NVMe-oF target this image exists for)
+call sites — `lib/nvmf/vfio_user.c` (the vfio-user NVMe target this image exists for)
 and `lib/vfu_tgt/tgt_endpoint.c` (the virtio target). `vfu-max-dma-regions.patch`
 passes `LIBVFIO_USER_MAX_DMA_REGIONS`, the default the header documents for
 exactly this, and is applied *only* when the override is active. The other two,

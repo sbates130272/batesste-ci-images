@@ -484,9 +484,13 @@ else
     fi
 fi
 
+# The ubuntuXXYY segment in this URL and the two below has to match the
+# release ubuntu-base is FROM. The Dockerfiles derive theirs from the running
+# image's own VERSION_ID; this script has no image to ask, so it is written
+# out. Three literals to move on the next release bump -- grep ubuntu26 here.
 echo "==> Fetching latest cuda-keyring deb..."
 KEYRING_PAGE=$(curl -fsSL \
-    "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/")
+    "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2604/x86_64/")
 KEYRING_LATEST=$(echo "$KEYRING_PAGE" \
     | grep -oP 'cuda-keyring_[0-9.]+-[0-9]+_all\.deb' \
     | sort -V | tail -1)
@@ -502,7 +506,7 @@ echo "==> Fetching latest CUDA toolkit version..."
 # Same query the in-image cuda-latest helper makes, kept here so the scrub does
 # not need a built image to run.
 CUDA_LATEST=$(curl -fsSL \
-    "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/Packages" \
+    "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2604/x86_64/Packages" \
     | awk '/^Package: cuda-toolkit-[0-9]+-[0-9]+$/{print $2}' \
     | sed 's/^cuda-toolkit-//' | sort -V | tail -1)
 CUDA_CURRENT=$(current_pin ubuntu-cuda-rocm cuda_version)
@@ -568,7 +572,7 @@ rocm_line_report() {
 ROCM_STREAM_CURRENT=$(current_pin ubuntu-cuda-rocm rocm_stream)
 if [[ "$ROCM_STREAM_CURRENT" == "therock" ]]; then
     rocm_line_report "ubuntu-cuda-rocm" \
-        "https://stable.repo.amd.com/rocm/core/packages/ubuntu2404/dists/stable/main/binary-amd64/Packages" \
+        "https://stable.repo.amd.com/rocm/core/packages/ubuntu2604/dists/stable/main/binary-amd64/Packages" \
         "$(current_pin ubuntu-cuda-rocm rocm_version)"
 else
     echo "    stream is '$ROCM_STREAM_CURRENT', not therock — rocm_version selects a repo URL, skipping."

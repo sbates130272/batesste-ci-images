@@ -17,6 +17,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     automake \
     flex \
     libasio-dev \
+    libc-ares-dev \
     libclang-dev \
     libcpprest-dev \
     libgflags-dev \
@@ -101,6 +102,28 @@ RUN set -eux; \
     cmake --install /build/abseil-cpp/build; \
     ldconfig
 
+# gRPC_CARES_PROVIDER=package, which the others here have always been and this
+# one was not. gRPC vendors c-ares as a submodule, and that submodule's
+# CMakeLists.txt opens with a cmake_minimum_required below 3.5:
+#
+#   CMake Error at third_party/cares/cares/CMakeLists.txt:1:
+#     Compatibility with CMake < 3.5 has been removed from CMake.
+#
+# Ubuntu 26.04 ships CMake 4.2.3, which removed that compatibility outright --
+# 24.04's 3.28 still honoured it. So this is a release-move break, not a gRPC
+# one, and it would equally have appeared on any other distro that moved to
+# CMake 4.
+#
+# Taking the distro's c-ares rather than forcing the policy back with
+# -DCMAKE_POLICY_VERSION_MINIMUM=3.5: that flag is CMake's documented escape
+# hatch and would also work, but it is a blanket "treat every old policy as
+# fine" over gRPC and all its submodules, where this is one dependency
+# resolved the same way ABSL, SSL and ZLIB already are. resolute carries
+# libc-ares-dev 1.34.6.
+#
+# PROTOBUF stays `module` deliberately -- the distro's is 3.21, too old for
+# this gRPC -- so the vendored protobuf is still built, and it is the next
+# thing to look at if a future CMake removes more policy compatibility.
 RUN set -eux; \
     git clone --depth 1 --branch "${GRPC_TAG}" \
         --recurse-submodules --shallow-submodules "${GRPC_REPO}" /build/grpc; \
@@ -115,6 +138,7 @@ RUN set -eux; \
         -DgRPC_INSTALL=ON \
         -DgRPC_BUILD_TESTS=OFF \
         -DgRPC_ABSL_PROVIDER=package \
+        -DgRPC_CARES_PROVIDER=package \
         -DgRPC_PROTOBUF_PROVIDER=module \
         -DgRPC_SSL_PROVIDER=package \
         -DgRPC_ZLIB_PROVIDER=package \
@@ -126,6 +150,29 @@ RUN set -eux; \
 ARG ETCD_REPO=https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git
 ARG ETCD_COMMIT
 
+# CMAKE_POLICY_VERSION_MINIMUM=3.5, needed since Ubuntu 26.04's CMake 4.2.3.
+# etcd-cpp-apiv3's own CMakeLists.txt opens with
+#
+#   cmake_minimum_required (VERSION 3.3 FATAL_ERROR)
+#
+# and CMake 4 removed compatibility below 3.5 outright, so configure dies on
+# line 1. 24.04's CMake 3.28 still honoured it.
+#
+# The policy flag here rather than the dependency swap used for gRPC's c-ares
+# above, because the options are not the same shape. There the offender was a
+# vendored submodule that gRPC can be told to take from the distro instead;
+# here it is the project's own top-level CMakeLists, and there is nothing to
+# swap. Nor is there a newer pin to take: upstream HEAD *is* ETCD_COMMIT and
+# has been since 2025-03-28, so this dependency is dormant rather than merely
+# behind.
+#
+# Narrow despite being a policy override: BUILD_ETCD_CORE_ONLY=ON means this
+# configure covers etcd-cpp-apiv3 alone, with gRPC, protobuf and abseil already
+# installed and found as packages. It is not relaxing policy across a tree of
+# third-party submodules.
+#
+# Retire it if upstream ever raises its floor; `cmake_minimum_required` is the
+# only thing this flag is here for.
 RUN git init /build/etcd-cpp-apiv3 && \
     git -C /build/etcd-cpp-apiv3 remote add origin "${ETCD_REPO}" && \
     git -C /build/etcd-cpp-apiv3 fetch --depth 1 origin "${ETCD_COMMIT}" && \
@@ -136,6 +183,7 @@ RUN git init /build/etcd-cpp-apiv3 && \
         -G Ninja \
         -S /build/etcd-cpp-apiv3 \
         -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
         -DCMAKE_INSTALL_PREFIX=/usr/local \
         -DCMAKE_INSTALL_LIBDIR=lib \
         -DCMAKE_CXX_STANDARD=20 \

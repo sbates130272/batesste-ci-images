@@ -27,10 +27,17 @@ collide.
 
 ## What is installed
 
-- `libvfio-user` built with meson/ninja and installed under `/usr/local`, so
-  downstream images find it at the prefix they build against
+- `libvfio-user` built with meson/ninja `--buildtype=release` and installed
+  under `/usr/local`, so downstream images find it at the prefix they build
+  against
 - its build dependencies: `meson`, `libglib2.0-dev`, `libjson-c-dev`,
   `libcmocka-dev`
+
+`--buildtype=release` is passed explicitly because upstream's `meson.build`
+defaults to `buildtype=debug`. Without it this image shipped an `-O0` build of
+the library that QEMU, `rocm-ernic` and every vfio-user stack downstream link
+against. Note that assertions are **not** compiled out: meson's `b_ndebug`
+defaults to false, so this is `-O3` with the checks still live.
 
 The resolved commit is recorded in the image at
 `/usr/local/share/libvfio-user-commit.txt`, which is also the container's
